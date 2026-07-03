@@ -34,38 +34,78 @@ class ToolTip:
         self.widget = widget
         self.text = text
         self.tooltip = None
-        self.widget.bind("<Enter>", self.show_tooltip)
-        self.widget.bind("<Leave>", self.hide_tooltip)
+        self.widget.bind("<Enter>", self.show_tooltip, add="+")
+        self.widget.bind("<Leave>", self.hide_tooltip, add="+")
 
-    def show_tooltip(self, event):
-        try:
-            x, y, _, _ = self.widget.bbox("insert")
-            x += self.widget.winfo_rootx() + 25
-            y += self.widget.winfo_rooty() + 25
-        except Exception:
-            x = self.widget.winfo_rootx() + 25
-            y = self.widget.winfo_rooty() + 25
+    def show_tooltip(self, _event=None):
+        self.hide_tooltip()
+        x = self.widget.winfo_rootx() + 24
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
         self.tooltip = tk.Toplevel(self.widget)
         self.tooltip.wm_overrideredirect(True)
         self.tooltip.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(self.tooltip, text=self.text, justify='left',
-                         background="#FFFFE0", relief='solid', borderwidth=1,
-                         font=("Calibri", "10", "normal"), wraplength=400)
-        label.pack(ipadx=1)
+        label = tk.Label(
+            self.tooltip, text=self.text, justify="left", background="#E2E8F0",
+            foreground="#0F172A", relief="solid", borderwidth=1,
+            font=("Segoe UI", 9), wraplength=420, padx=8, pady=6,
+        )
+        label.pack()
 
-    def hide_tooltip(self, event):
+    def hide_tooltip(self, _event=None):
         if self.tooltip:
             self.tooltip.destroy()
         self.tooltip = None
+
+
+class ScrollableTab(ttk.Frame):
+    """Notebook page with a fixed viewport and independently scrolling content."""
+
+    def __init__(self, parent, background="#111827"):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, background=background, highlightthickness=0, bd=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.content = ttk.Frame(self.canvas, style="Page.TFrame")
+        self._window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        self.content.bind("<Configure>", self._sync_scrollregion)
+        self.canvas.bind("<Configure>", self._sync_width)
+
+    def _sync_scrollregion(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _sync_width(self, event):
+        self.canvas.itemconfigure(self._window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        if getattr(event, "num", None) == 4:
+            direction = -1
+        elif getattr(event, "num", None) == 5:
+            direction = 1
+        else:
+            direction = -int(event.delta / 120) if event.delta else 0
+        if direction:
+            self.canvas.yview_scroll(direction * 3, "units")
+        return "break"
 
 # --- Main Application ---
 class MusubiTunerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Musubi Tuner GUI - WAN 2.2 LoRA Training")
-        self.root.geometry("1200x900")
+        self.root.title("Musubi Tuner · LoRA Training Studio")
+        self.root.minsize(980, 680)
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        window_w = min(1280, max(980, screen_w - 100))
+        window_h = min(820, max(680, screen_h - 120))
+        pos_x = max(0, (screen_w - window_w) // 2)
+        pos_y = max(0, (screen_h - window_h) // 2)
+        self.root.geometry(f"{window_w}x{window_h}+{pos_x}+{pos_y}")
 
         self.entries = {}
+        self.field_labels = {}
+        self.field_label_text = {}
         self.hidden_frames = {}
         self.training_mode_var = tk.StringVar(value="Wan 2.2")
         self.setup_styles()
@@ -94,63 +134,82 @@ class MusubiTunerGUI:
         self.update_button_states()
 
     def setup_styles(self):
-        BG_COLOR = '#2B2B2B'; TEXT_COLOR = '#D3D3D3'; FIELD_BG_COLOR = '#3C3F41'
-        SELECT_BG_COLOR = '#4A6185'; BORDER_COLOR = '#555555'; ERROR_BORDER = '#E53935'
-        
+        self.colors = {
+            "bg": "#0B1120", "page": "#111827", "surface": "#172033",
+            "surface_alt": "#202B40", "field": "#0F172A", "border": "#334155",
+            "text": "#E5E7EB", "muted": "#94A3B8", "accent": "#38BDF8",
+            "accent_hover": "#0EA5E9", "success": "#22C55E", "warning": "#F59E0B",
+            "danger": "#EF4444", "selection": "#075985",
+        }
+        BG_COLOR = self.colors["bg"]; TEXT_COLOR = self.colors["text"]
+        FIELD_BG_COLOR = self.colors["field"]; SELECT_BG_COLOR = self.colors["selection"]
+        BORDER_COLOR = self.colors["border"]; ERROR_BORDER = self.colors["danger"]
+
         self.root.configure(bg=BG_COLOR)
         style = ttk.Style()
         try: style.theme_use('clam')
         except Exception: pass
-        
-        style.configure('.', background=BG_COLOR, foreground=TEXT_COLOR, font=('Calibri', 9))
-        style.configure('TLabel', font=('Calibri', 10)); style.configure('TFrame', background=BG_COLOR)
-        style.configure('TLabelframe', background=BG_COLOR, bordercolor=BORDER_COLOR, relief='solid', borderwidth=1)
-        style.configure('TLabelframe.Label', background=BG_COLOR, foreground=TEXT_COLOR, font=('Calibri', 11, 'bold'))
-        style.configure('TNotebook', background=BG_COLOR, borderwidth=0)
-        style.configure('TNotebook.Tab', background='#3C3F41', foreground=TEXT_COLOR, padding=[10, 5], borderwidth=0)
-        style.map('TNotebook.Tab', background=[('selected', BG_COLOR)])
-        style.configure('TButton', background='#3C3F41', foreground=TEXT_COLOR, font=('Calibri', 10), borderwidth=1, relief='solid')
-        style.map('TButton', background=[('active', '#4E5254'), ('pressed', '#585C5E')], bordercolor=[('active', BORDER_COLOR)], foreground=[('disabled', '#6A6A6A')])
-        style.configure('TEntry', foreground=TEXT_COLOR, fieldbackground=FIELD_BG_COLOR, insertcolor=TEXT_COLOR, borderwidth=1, relief='solid', bordercolor=BORDER_COLOR, padding=3)
+
+        style.configure('.', background=BG_COLOR, foreground=TEXT_COLOR, font=('Segoe UI', 10))
+        style.configure('TFrame', background=self.colors["page"])
+        style.configure('Page.TFrame', background=self.colors["page"])
+        style.configure('Surface.TFrame', background=self.colors["surface"])
+        style.configure('TLabel', background=BG_COLOR, foreground=TEXT_COLOR, font=('Segoe UI', 10))
+        style.configure('Page.TLabel', background=self.colors["page"])
+        style.configure('Muted.TLabel', background=BG_COLOR, foreground=self.colors["muted"], font=('Segoe UI', 9))
+        style.configure('PageTitle.TLabel', background=self.colors["page"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 16))
+        style.configure('PageHelp.TLabel', background=self.colors["page"], foreground=self.colors["muted"], font=('Segoe UI', 9))
+        style.configure('Header.TFrame', background=self.colors["surface"])
+        style.configure('Header.TLabel', background=self.colors["surface"], foreground=TEXT_COLOR)
+        style.configure('TLabelframe', background=self.colors["page"], bordercolor=BORDER_COLOR, relief='solid', borderwidth=1)
+        style.configure('TLabelframe.Label', background=self.colors["page"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 11))
+        style.configure('TNotebook', background=BG_COLOR, borderwidth=0, tabmargins=[0, 0, 0, 0])
+        style.configure('TNotebook.Tab', background=self.colors["surface"], foreground=self.colors["muted"], padding=[16, 10], borderwidth=0, font=('Segoe UI Semibold', 9))
+        style.map('TNotebook.Tab', background=[('selected', self.colors["page"]), ('active', self.colors["surface_alt"])], foreground=[('selected', self.colors["accent"]), ('active', TEXT_COLOR)])
+        style.configure('TButton', background=self.colors["surface_alt"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 9), borderwidth=1, relief='solid', padding=[10, 6])
+        style.map('TButton', background=[('active', '#334155'), ('pressed', '#475569')], bordercolor=[('active', self.colors["accent"])], foreground=[('disabled', '#64748B')])
+        style.configure('Accent.TButton', background=self.colors["accent_hover"], foreground='#FFFFFF', padding=[14, 8])
+        style.map('Accent.TButton', background=[('active', self.colors["accent"]), ('pressed', '#0284C7')])
+        style.configure('Danger.TButton', background='#7F1D1D', foreground='#FEE2E2')
+        style.map('Danger.TButton', background=[('active', '#991B1B'), ('pressed', '#B91C1C')])
+        style.configure('TEntry', foreground=TEXT_COLOR, fieldbackground=FIELD_BG_COLOR, insertcolor=TEXT_COLOR, borderwidth=1, relief='solid', bordercolor=BORDER_COLOR, padding=6)
         style.map('TCombobox', fieldbackground=[('readonly', FIELD_BG_COLOR)], foreground=[('readonly', TEXT_COLOR)], selectbackground=[('readonly', SELECT_BG_COLOR)])
         self.root.option_add('*TCombobox*Listbox.background', FIELD_BG_COLOR); self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
         self.root.option_add('*TCombobox*Listbox.selectBackground', SELECT_BG_COLOR); self.root.option_add('*TCombobox*Listbox.selectForeground', TEXT_COLOR)
-        style.configure('TCheckbutton', font=('Calibri', 10)); style.configure('Title.TLabel', font=('Calibri', 16, 'bold'))
-        style.configure('Status.TLabel', font=('Calibri', 11, 'bold')); style.configure('TProgressbar', thickness=20, background=SELECT_BG_COLOR, troughcolor=FIELD_BG_COLOR)
+        style.configure('TCheckbutton', font=('Segoe UI', 10)); style.configure('Title.TLabel', background=self.colors["surface"], font=('Segoe UI Semibold', 18))
+        style.configure('Subtitle.TLabel', background=self.colors["surface"], foreground=self.colors["muted"], font=('Segoe UI', 9))
+        style.configure('Status.TLabel', font=('Segoe UI Semibold', 11)); style.configure('TProgressbar', thickness=12, background=self.colors["accent"], troughcolor=FIELD_BG_COLOR)
         style.configure('Invalid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=ERROR_BORDER, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
         style.configure('Valid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=BORDER_COLOR, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
 
     def create_interface(self):
-        self.root.grid_columnconfigure(0, weight=1); self.root.grid_rowconfigure(0, weight=1)
-        canvas = tk.Canvas(self.root, bg='#2B2B2B', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", tags="frame")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig('frame', width=e.width))
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew"); scrollbar.grid(row=0, column=1, sticky="ns")
-        self.root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.root.grid_columnconfigure(0, weight=1)
+        self.root.grid_rowconfigure(1, weight=1)
 
-        main_frame = ttk.Frame(scrollable_frame); main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        self.title_label = ttk.Label(main_frame, text="Musubi Tuner - WAN 2.2 LoRA Training", style='Title.TLabel')
-        self.title_label.pack(pady=(0, 10), anchor='w')
+        header = ttk.Frame(self.root, style="Header.TFrame", padding=(18, 12))
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        brand = ttk.Frame(header, style="Header.TFrame")
+        brand.grid(row=0, column=0, rowspan=2, sticky="w")
+        self.title_label = ttk.Label(brand, text="Musubi Tuner", style='Title.TLabel')
+        self.title_label.pack(anchor='w')
+        self.subtitle_label = ttk.Label(brand, text="LoRA training studio", style="Subtitle.TLabel")
+        self.subtitle_label.pack(anchor='w')
 
-        # Training Mode selector
-        mode_frame = ttk.LabelFrame(main_frame, text="Training Mode"); mode_frame.pack(fill="x", pady=(0, 10))
-        mode_inner = ttk.Frame(mode_frame); mode_inner.pack(fill="x", padx=10, pady=8)
-        ttk.Label(mode_inner, text="Mode:").pack(side="left", padx=(0, 8))
-        self.mode_combo = ttk.Combobox(mode_inner, textvariable=self.training_mode_var,
-                                       values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
-                                       state="readonly", width=20)
-        self.mode_combo.pack(side="left"); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
+        toolbar = ttk.Frame(header, style="Header.TFrame")
+        toolbar.grid(row=0, column=1, rowspan=2, sticky="e")
+        ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
+        self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
+                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
+                                      state="readonly", width=18)
+        self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
-        self.mode_note_label = ttk.Label(mode_inner, text="", foreground="#AAAAAA")
-        self.mode_note_label.pack(side="left", padx=(15, 0))
+        self.create_settings_buttons(toolbar)
 
-        self.create_settings_buttons(main_frame)
-
-        self.notebook = ttk.Notebook(main_frame); self.notebook.pack(fill="both", expand=True, pady=(10, 0))
+        body = ttk.Frame(self.root)
+        body.grid(row=1, column=0, sticky="nsew")
+        self.notebook = ttk.Notebook(body)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(10, 8))
 
         self.create_model_paths_tab()
         self.create_training_params_tab()
@@ -160,19 +219,69 @@ class MusubiTunerGUI:
         self.create_convert_lora_tab()
         self.create_accelerate_config_tab()
 
+        footer = ttk.Frame(self.root, style="Header.TFrame", padding=(14, 5))
+        footer.grid(row=2, column=0, sticky="ew")
+        self.mode_note_label = ttk.Label(footer, text="", style="Subtitle.TLabel")
+        self.mode_note_label.pack(side="left", fill="x", expand=True)
+        self.validation_status_var = tk.StringVar(value="Checking configuration…")
+        self.validation_status_label = ttk.Label(footer, textvariable=self.validation_status_var, style="Subtitle.TLabel")
+        self.validation_status_label.pack(side="right")
+
+        self.root.bind("<Control-s>", lambda _e: self.save_settings())
+        self.root.bind("<Control-o>", lambda _e: self.load_settings())
+        self.root.bind("<Control-Return>", lambda _e: self.start_training())
+        self.root.bind_all("<MouseWheel>", self._route_tab_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._route_tab_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._route_tab_mousewheel, add="+")
+
     def create_settings_buttons(self, parent):
-        button_frame = ttk.Frame(parent); button_frame.pack(fill="x", pady=(0, 10), anchor='w')
-        ttk.Button(button_frame, text="Load Settings", command=self.load_settings).pack(side="left", padx=(0, 5))
-        ttk.Button(button_frame, text="Save Settings", command=self.save_settings).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Reset to Defaults", command=self.load_default_settings).pack(side="left", padx=5)
+        button_frame = ttk.Frame(parent, style="Header.TFrame"); button_frame.pack(side="left")
+        ttk.Button(button_frame, text="Load", command=self.load_settings).pack(side="left", padx=(0, 5))
+        ttk.Button(button_frame, text="Save", command=self.save_settings).pack(side="left", padx=(0, 5))
+        reset_btn = ttk.Button(button_frame, text="Reset", command=self._confirm_reset_settings)
+        reset_btn.pack(side="left")
+        ToolTip(reset_btn, "Restore every setting to its default value.")
+
+    def _create_scrollable_tab(self, title):
+        tab = ScrollableTab(self.notebook, background=self.colors["page"])
+        self.notebook.add(tab, text=title)
+        return tab.content
+
+    def _add_page_intro(self, parent, title, description):
+        intro = ttk.Frame(parent, style="Page.TFrame")
+        intro.pack(fill="x", padx=12, pady=(14, 5))
+        ttk.Label(intro, text=title, style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(intro, text=description, style="PageHelp.TLabel", wraplength=920, justify="left").pack(anchor="w", pady=(3, 0))
+
+    def _confirm_reset_settings(self):
+        if messagebox.askyesno("Reset settings", "Restore every field to its default value?\n\nThis does not delete saved settings files or training outputs."):
+            self.load_default_settings()
+
+    def _route_tab_mousewheel(self, event):
+        """Scroll the active page unless a nested widget handles the wheel itself."""
+        try:
+            selected = self.notebook.select()
+            page = self.root.nametowidget(selected)
+            if isinstance(page, ScrollableTab):
+                return page._on_mousewheel(event)
+        except (tk.TclError, AttributeError):
+            pass
+        return None
 
     def _add_widget(self, parent, key, label, tooltip, kind='entry', options=None, is_required=False, validate_num=False, is_path=False, is_dir=False, default_val=False, command=None):
-        frame = ttk.Frame(parent); frame.pack(fill="x", padx=5, pady=(5, 8))
-        if kind != 'checkbox': ttk.Label(frame, text=label).pack(anchor="w")
-        
+        frame = ttk.Frame(parent)
+        frame.pack(fill="x", padx=10, pady=5)
+        frame.grid_columnconfigure(1, weight=1)
+        label_widget = None
+        if kind != 'checkbox':
+            label_text = label.rstrip(":") + ("  *" if is_required else "")
+            label_widget = ttk.Label(frame, text=label_text, width=27, anchor="w")
+            label_widget.grid(row=0, column=0, sticky="w", padx=(0, 14))
+
         widget = None
         if kind == 'path_entry':
-            path_frame = ttk.Frame(frame); path_frame.pack(fill="x", pady=(2, 0))
+            path_frame = ttk.Frame(frame)
+            path_frame.grid(row=0, column=1, sticky="ew")
             widget = ttk.Entry(path_frame)
             widget.pack(side="left", fill="x", expand=True)
             filetypes = options if isinstance(options, list) else None
@@ -183,7 +292,7 @@ class MusubiTunerGUI:
         elif kind == 'combobox':
             widget = ttk.Combobox(frame, values=options, state="readonly")
             if options: widget.set(options[0])
-            widget.pack(fill="x", pady=(2, 0)); widget.bind("<MouseWheel>", lambda e: "break")
+            widget.grid(row=0, column=1, sticky="ew"); widget.bind("<MouseWheel>", lambda e: "break")
             if command: widget.bind("<<ComboboxSelected>>", command)
         elif kind == 'checkbox':
             var = tk.BooleanVar(value=default_val)
@@ -191,20 +300,28 @@ class MusubiTunerGUI:
                 if command and callable(command): command()
                 self.update_button_states()
             widget = ttk.Checkbutton(frame, text=label, variable=var, command=chained_command)
-            widget.var = var; widget.pack(anchor="w", padx=5, pady=2)
+            widget.var = var; widget.grid(row=0, column=0, columnspan=2, sticky="w")
         else:
             vcmd = (self.root.register(self.validate_number), '%P') if validate_num else None
-            widget = ttk.Entry(frame, validate="key", validatecommand=vcmd); widget.pack(fill="x", pady=(2, 0))
+            widget = ttk.Entry(frame, validate="key", validatecommand=vcmd)
+            widget.grid(row=0, column=1, sticky="ew")
 
-        if tooltip: ToolTip(widget, tooltip)
+        if tooltip:
+            ToolTip(widget, tooltip)
+            if label_widget is not None:
+                ToolTip(label_widget, tooltip)
         self.entries[key] = widget
+        if label_widget is not None:
+            self.field_labels[key] = label_widget
+            self.field_label_text[key] = label.rstrip(":")
         widget.is_required = is_required; widget.is_path = is_path
         if isinstance(widget, ttk.Entry):
             widget.bind("<FocusOut>", self.update_button_states); widget.bind("<KeyRelease>", self.update_button_states)
         return widget
-    
+
     def create_model_paths_tab(self):
-        frame = ttk.Frame(self.notebook); self.notebook.add(frame, text="Model Paths & Dataset")
+        frame = self._create_scrollable_tab("1  Models")
+        self._add_page_intro(frame, "Models & dataset", "Choose the dataset, model components, and output destination for the selected training mode. Required fields are marked with an asterisk.")
 
         dataset_frame = ttk.LabelFrame(frame, text="Dataset Configuration"); dataset_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(dataset_frame, "dataset_config", "Dataset Config (TOML):", "Path to .toml dataset configuration file.", kind='path_entry', options=[("TOML files", "*.toml")], is_required=True, is_path=True)
@@ -246,7 +363,8 @@ class MusubiTunerGUI:
 
         self.flux2_note_label = ttk.Label(self.hidden_frames['flux2_model_paths'],
                                            text="★ Base variants recommended for training — distilled models (4B/9B) are for inference only.",
-                                           foreground="#FFCC66", font=("Calibri", 9, "italic"))
+                                           foreground="#FFCC66", font=("Segoe UI", 9, "italic"),
+                                           wraplength=940, justify="left")
         self.flux2_note_label.pack(anchor="w", padx=8, pady=(0, 4))
 
         self._add_widget(self.hidden_frames['flux2_model_paths'], "flux2_dit_model", "DiT Model:", "Path to the Flux.2 DiT model (.safetensors).", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
@@ -259,7 +377,8 @@ class MusubiTunerGUI:
         self.krea2_note_label = ttk.Label(
             self.hidden_frames['krea2_model_paths'],
             text="Train on RAW DiT. Qwen-Image VAE is required. Qwen3-VL text encoder is only required for text re-caching and sample generation. Upstream starting point: bf16, rank 32, alpha 32, timestep_sampling=krea2_shift.",
-            foreground="#FFCC66", font=("Calibri", 9, "italic")
+            foreground="#FFCC66", font=("Segoe UI", 9, "italic"),
+            wraplength=940, justify="left",
         )
         self.krea2_note_label.pack(anchor="w", padx=8, pady=(8, 4))
 
@@ -280,14 +399,15 @@ class MusubiTunerGUI:
         self._add_widget(output_frame, "output_name", "Output Name:", "Base filename for output LoRA (e.g., 'my_character'). Suffixes like '_LowNoise' will be added automatically.", is_required=True)
 
     def create_training_params_tab(self):
-        frame = ttk.Frame(self.notebook); self.notebook.add(frame, text="Training Parameters")
+        frame = self._create_scrollable_tab("2  Training")
+        self._add_page_intro(frame, "Training recipe", "Set learning duration, network capacity, optimizer behavior, and the learning-rate schedule.")
         basic_frame = ttk.LabelFrame(frame, text="Basic Training Parameters"); basic_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(basic_frame, "learning_rate", "Learning Rate:", "The speed at which the model learns. Common values are 1e-4, 2e-4, 3e-4.", is_required=True, validate_num=True)
         self._add_widget(basic_frame, "max_train_epochs", "Max Train Epochs:", "The total number of times the training process will iterate over the entire dataset.", is_required=True, validate_num=True)
         self._add_widget(basic_frame, "save_every_n_epochs", "Save Every N Epochs:", "Frequency of saving checkpoints based on epochs. '1' saves after every epoch.", validate_num=True)
         self._add_widget(basic_frame, "save_every_n_steps", "Save Every N Steps:", "Frequency of saving checkpoints based on steps. Leave empty to disable.", validate_num=True)
         self._add_widget(basic_frame, "seed", "Seed:", "A number to ensure reproducible training results. Any integer will do.", validate_num=True)
-        
+
         network_container = ttk.Frame(frame); network_container.pack(fill="x", padx=10, pady=10)
         network_type_frame = ttk.LabelFrame(network_container, text="Network Type"); network_type_frame.pack(fill="x", pady=(0, 5))
         self._add_widget(network_type_frame, "network_type", "Network Type:", "LoRA: standard, efficient. LoHa: uses Hadamard product, often better quality — use lower ranks (4-32). LoKr: uses Kronecker product, more expressive.", kind='combobox', options=["LoRA", "LoHa", "LoKr"], command=self.update_button_states)
@@ -356,7 +476,7 @@ class MusubiTunerGUI:
             "Example: weight_decay=0.01, d_coef=1.0, use_stableadamw=True, use_speed=True\n\n"
             "Note: do NOT put spaces around '=' signs."
         ), kind='entry')
-        
+
         lr_frame = ttk.LabelFrame(frame, text="Learning Rate Scheduler"); lr_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(lr_frame, "lr_scheduler", "LR Scheduler:", "Algorithm to adjust learning rate during training. 'cosine' is a reliable choice.", kind='combobox', options=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "constant_with_warmup"], command=self.update_button_states)
         self.hidden_frames['lr_warmup'] = ttk.Frame(lr_frame)
@@ -367,7 +487,8 @@ class MusubiTunerGUI:
         self._add_widget(lr_frame, "lr_scheduler_min_lr_ratio", "Min LR Ratio:", "The minimum learning rate as a ratio of the initial learning rate.", validate_num=True)
 
     def create_advanced_tab(self):
-        frame = ttk.Frame(self.notebook); self.notebook.add(frame, text="Advanced Settings")
+        frame = self._create_scrollable_tab("3  Advanced")
+        self._add_page_intro(frame, "Advanced controls", "Tune memory usage, timestep sampling, attention, logging, precision, and resume behavior.")
         memory_frame = ttk.LabelFrame(frame, text="Memory & Performance"); memory_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(memory_frame, "mixed_precision", "Mixed Precision:", "Use 'fp16' or 'bf16' to reduce VRAM usage and speed up training. 'fp16' is common, 'bf16' is better on newer GPUs.", kind='combobox', options=["no", "fp16", "bf16"])
         self._add_widget(memory_frame, "gradient_checkpointing", "Gradient Checkpointing", "Drastically reduces VRAM usage by re-calculating gradients on the backward pass. Highly recommended.", kind='checkbox', default_val=True)
@@ -376,7 +497,7 @@ class MusubiTunerGUI:
         self._add_widget(memory_frame, "max_data_loader_n_workers", "Max Data Loader Workers:", "Number of CPU threads to load data. '2' is a safe default. Higher values can speed up loading but use more RAM.", validate_num=True)
         self._add_widget(memory_frame, "offload_inactive_dit", "Offload Inactive DiT Model", "When training both models in a combined run, offloads the inactive DiT model to CPU to save VRAM. Disables 'Blocks to Swap'.", kind='checkbox', command=self.update_button_states)
         self._add_widget(memory_frame, "blocks_to_swap", "Blocks to Swap:", "Number of DiT blocks to offload to CPU memory to save VRAM. Can slow down training. (e.g., 10)", validate_num=True)
-        
+
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended for Wan/Flux. 'krea2_shift' matches Krea 2's resolution-aware schedule.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"])
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
@@ -384,7 +505,7 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['timestep_boundary'], "timestep_boundary", "Timestep Boundary:", "The integer timestep where the model switches from low to high noise (e.g., 875). Only for combined runs.", validate_num=True)
         self._add_widget(flow_frame, "discrete_flow_shift", "Discrete Flow Shift:", "Shift value for 'shift' sampling. The documentation recommends 3.0.", validate_num=True)
         self._add_widget(flow_frame, "preserve_distribution_shape", "Preserve Distribution Shape", "Prevents distortion of the timestep distribution. Recommended when training only one model (e.g., only low noise).", kind='checkbox')
-        
+
         attention_frame = ttk.LabelFrame(frame, text="Attention Mechanism"); attention_frame.pack(fill="x", padx=10, pady=10)
         self.attention_var = tk.StringVar(value="xformers")
         self.entries['attention_mechanism'] = self.attention_var
@@ -413,13 +534,14 @@ class MusubiTunerGUI:
         self._add_widget(wan22_frame, "force_v2_1_time_embedding", "Force v2.1 Time Embedding", "Use Wan2.1 time embedding format for Wan2.2 (reduces VRAM usage).", kind='checkbox')
 
         self._add_widget(other_frame, "save_state", "Save State", "Save the complete training state (optimizer, etc.) to allow resuming later.", kind='checkbox', default_val=True)
-        
+
         resume_frame = ttk.LabelFrame(frame, text="Resume Training"); resume_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(resume_frame, "resume_path", "Resume from State:", "Path to a saved state folder to continue a previous training run.", kind='path_entry', is_dir=True, is_path=True)
         self._add_widget(resume_frame, "network_weights", "Network Weights:", "Load pre-trained LoRA weights to continue training from them (fine-tuning a LoRA).", kind='path_entry', options=[("Weight files", "*.safetensors")], is_path=True)
 
     def create_samples_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="Samples")
+        tab_frame = self._create_scrollable_tab("4  Samples")
+        self._add_page_intro(tab_frame, "Sample previews", "Choose when previews run, manage reusable prompts, and inspect generated samples without deleting inactive prompts.")
 
         # --- Frequency controls ---
         freq_frame = ttk.LabelFrame(tab_frame, text="Sampling Frequency"); freq_frame.pack(fill="x", padx=10, pady=10)
@@ -461,7 +583,7 @@ class MusubiTunerGUI:
                   foreground="#888888", font=("Calibri", 9, "italic")).pack(side="left", padx=(12, 0))
 
         plist_container = ttk.Frame(prompts_frame); plist_container.pack(fill="x", padx=5, pady=(0, 6))
-        plist_canvas = tk.Canvas(plist_container, bg='#2B2B2B', highlightthickness=0, height=160)
+        plist_canvas = tk.Canvas(plist_container, bg=self.colors["page"], highlightthickness=0, height=170)
         plist_sb = ttk.Scrollbar(plist_container, orient="vertical", command=plist_canvas.yview)
         self._prompt_list_inner = ttk.Frame(plist_canvas)
         self._prompt_list_inner.bind("<Configure>", lambda e: plist_canvas.configure(scrollregion=plist_canvas.bbox("all")))
@@ -480,7 +602,7 @@ class MusubiTunerGUI:
         ttk.Button(btn_row, text="Refresh", command=self._refresh_sample_list).pack(side="right")
 
         list_container = ttk.Frame(outputs_frame); list_container.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-        canvas = tk.Canvas(list_container, bg='#2B2B2B', highlightthickness=0, height=200)
+        canvas = tk.Canvas(list_container, bg=self.colors["page"], highlightthickness=0, height=220)
         scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
         self._sample_list_frame = ttk.Frame(canvas)
         self._sample_list_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -527,13 +649,17 @@ class MusubiTunerGUI:
             tag = "  |  " + "  ".join(params) if params else ""
             ttk.Label(row, text=summary + tag, anchor="w",
                       foreground="#CCCCCC" if p.get("enabled", True) else "#777777").pack(side="left", fill="x", expand=True)
-            ttk.Button(row, text="Test", width=5,
-                       command=lambda i=idx: self._test_sample_prompt(i)).pack(side="right", padx=(3, 0))
-            ttk.Button(row, text="Dup", width=4,
+            preview_btn = ttk.Button(row, text="Preview", width=7,
+                       command=lambda i=idx: self._test_sample_prompt(i))
+            preview_btn.pack(side="right", padx=(3, 0))
+            if self.training_mode_var.get() != "Krea 2":
+                preview_btn.configure(state="disabled")
+                ToolTip(preview_btn, "Standalone preview generation is currently available for Krea 2.")
+            ttk.Button(row, text="Duplicate", width=9,
                        command=lambda i=idx: self._duplicate_sample_prompt(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Edit", width=5,
                        command=lambda i=idx: self._edit_sample_prompt_dialog(i)).pack(side="right", padx=(3, 0))
-            ttk.Button(row, text="Del", width=4,
+            ttk.Button(row, text="Delete", width=7, style="Danger.TButton",
                        command=lambda i=idx: self._delete_sample_prompt(i)).pack(side="right", padx=(3, 0))
 
     def _set_all_sample_prompts_enabled(self, enabled):
@@ -700,9 +826,10 @@ class MusubiTunerGUI:
         }
         dlg = tk.Toplevel(self.root)
         dlg.title("Edit Sample Prompt" if idx is not None else "Add Sample Prompt")
-        dlg.geometry("620x520" if is_krea2 else "560x480")
-        dlg.configure(bg='#2B2B2B')
-        dlg.resizable(False, False)
+        dlg.geometry("720x650" if is_krea2 else "680x650")
+        dlg.minsize(620, 600)
+        dlg.configure(bg=self.colors["page"])
+        dlg.resizable(True, False)
         dlg.grab_set()
 
         def lbl(parent, text):
@@ -716,13 +843,17 @@ class MusubiTunerGUI:
             return e
 
         lbl(dlg, "Prompt text *")
-        e_prompt = ttk.Entry(dlg)
-        e_prompt.insert(0, existing.get("prompt", ""))
-        e_prompt.pack(fill="x", padx=10, pady=(0, 2))
+        e_prompt = tk.Text(dlg, height=5, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"],
+                           insertbackground=self.colors["text"], selectbackground=self.colors["selection"],
+                           relief=tk.FLAT, padx=8, pady=6, font=("Segoe UI", 10))
+        e_prompt.insert("1.0", existing.get("prompt", ""))
+        e_prompt.pack(fill="both", expand=True, padx=10, pady=(0, 2))
 
         lbl(dlg, "Negative prompt  (optional)")
-        e_neg = ttk.Entry(dlg)
-        e_neg.insert(0, existing.get("neg", ""))
+        e_neg = tk.Text(dlg, height=3, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"],
+                        insertbackground=self.colors["text"], selectbackground=self.colors["selection"],
+                        relief=tk.FLAT, padx=8, pady=6, font=("Segoe UI", 10))
+        e_neg.insert("1.0", existing.get("neg", ""))
         e_neg.pack(fill="x", padx=10, pady=(0, 2))
 
         row1 = ttk.Frame(dlg); row1.pack(fill="x", padx=10, pady=(8, 0))
@@ -794,11 +925,11 @@ class MusubiTunerGUI:
             ttk.Button(e_img, text="Browse", command=_browse_img).pack(side="right", padx=(5, 0))
 
         def _save():
-            prompt_text = e_prompt.get().strip()
+            prompt_text = " ".join(line.strip() for line in e_prompt.get("1.0", "end-1c").splitlines() if line.strip())
             if not prompt_text:
                 messagebox.showerror("Validation", "Prompt text cannot be empty.", parent=dlg); return
             data = {"prompt": prompt_text}
-            data["neg"]        = e_neg.get().strip()
+            data["neg"]        = " ".join(line.strip() for line in e_neg.get("1.0", "end-1c").splitlines() if line.strip())
             data["width"]      = row1.e_width.get().strip()
             data["height"]     = row1.e_height.get().strip()
             data["steps"]      = row1.e_steps.get().strip()
@@ -825,9 +956,10 @@ class MusubiTunerGUI:
             dlg.destroy()
 
         btn_row = ttk.Frame(dlg); btn_row.pack(pady=14)
-        ttk.Button(btn_row, text="Save", command=_save).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Save Prompt", style="Accent.TButton", command=_save).pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side="left", padx=6)
-        dlg.bind("<Return>", lambda e: _save())
+        dlg.bind("<Control-Return>", lambda _e: _save())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
         e_prompt.focus_set()
 
     def _build_sample_prompts_txt(self):
@@ -956,7 +1088,7 @@ class MusubiTunerGUI:
         self.sample_watcher_active = False
 
     def create_run_monitor_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="Run & Monitor")
+        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="5  Monitor")
         top_pane = ttk.Frame(tab_frame); top_pane.pack(fill='x', padx=10, pady=10)
         controls_frame = ttk.LabelFrame(top_pane, text="Controls & Caching"); controls_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
         self.run_status_var = tk.StringVar(value="⚪ New Training RUN")
@@ -967,8 +1099,8 @@ class MusubiTunerGUI:
         self._add_widget(cache_opts_frame, "recache_latents", "Re-cache Latents Before Training", "If your dataset or VAE changes, check this to force regeneration of the latent cache.", kind='checkbox')
         self._add_widget(cache_opts_frame, "recache_text", "Re-cache Text Encoders Before Training", "If your dataset or T5 model changes, check this to force regeneration of the text encoder cache.", kind='checkbox')
         train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
-        self.start_btn = ttk.Button(train_button_frame, text="Start Training", command=self.start_training); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
-        self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
+        self.start_btn = ttk.Button(train_button_frame, text="Start Training", style="Accent.TButton", command=self.start_training); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
+        self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", style="Danger.TButton", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(controls_frame, variable=self.progress_var, style='TProgressbar'); self.progress_bar.pack(pady=(5, 5), padx=10, fill='x')
         self.progress_label_var = tk.StringVar(value="Ready"); ttk.Label(controls_frame, textvariable=self.progress_label_var, anchor='center').pack(fill='x')
@@ -983,9 +1115,8 @@ class MusubiTunerGUI:
         ttk.Label(monitor_frame, textvariable=self.next_epoch_var).pack(anchor='w', padx=10, pady=(2, 0))
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
 
-        bottom_pane_host = ttk.Frame(tab_frame, height=320)
-        bottom_pane_host.pack(fill='x', expand=False, padx=10, pady=10)
-        bottom_pane_host.pack_propagate(False)
+        bottom_pane_host = ttk.Frame(tab_frame)
+        bottom_pane_host.pack(fill='both', expand=True, padx=10, pady=(0, 10))
 
         bottom_pane = ttk.PanedWindow(bottom_pane_host, orient=tk.HORIZONTAL)
         bottom_pane.pack(fill='both', expand=True)
@@ -996,16 +1127,27 @@ class MusubiTunerGUI:
             self.setup_graph_style()
         else: ttk.Label(graph_frame, text="Matplotlib not found.\nInstall with 'pip install matplotlib'", wraplength=200, justify='center').pack(expand=True)
         console_frame = ttk.LabelFrame(bottom_pane, text="Console Output"); bottom_pane.add(console_frame, weight=1)
-        self.output_text = tk.Text(console_frame, wrap=tk.WORD, height=14, bg='#3C3F41', fg='#D3D3D3', insertbackground='#D3D3D3', font=('Consolas', 9), relief=tk.FLAT, bd=0)
+        console_toolbar = ttk.Frame(console_frame)
+        console_toolbar.pack(fill="x", padx=5, pady=(4, 2))
+        ttk.Button(console_toolbar, text="Copy", command=self._copy_console_output).pack(side="right", padx=(4, 0))
+        ttk.Button(console_toolbar, text="Clear", command=lambda: self.output_text.delete("1.0", tk.END)).pack(side="right")
+        self.output_text = tk.Text(console_frame, wrap=tk.WORD, height=14, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], selectbackground=self.colors["selection"], font=('Consolas', 9), relief=tk.FLAT, bd=0, padx=8, pady=6)
         output_scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.output_text.yview)
         self.output_text.configure(yscrollcommand=output_scrollbar.set); self.output_text.pack(side="left", fill="both", expand=True); output_scrollbar.pack(side="right", fill="y")
 
+    def _copy_console_output(self):
+        text = self.output_text.get("1.0", tk.END).strip()
+        if not text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
     def create_convert_lora_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="Convert LoRA")
+        tab_frame = self._create_scrollable_tab("Convert")
         main_frame = ttk.Frame(tab_frame); main_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         info_frame = ttk.LabelFrame(main_frame, text="Format Reference"); info_frame.pack(fill='x', pady=(0, 10))
-        info_text = tk.Text(info_frame, wrap=tk.WORD, bg='#2B2B2B', fg='#AAAAAA', font=('Consolas', 9),
+        info_text = tk.Text(info_frame, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["muted"], font=('Consolas', 9),
                             relief=tk.FLAT, bd=0, height=7, state='normal', cursor='arrow')
         info_text.insert(tk.END,
             "musubi-tuner format  (ComfyUI-compatible, trained by this tool)\n"
@@ -1034,12 +1176,12 @@ class MusubiTunerGUI:
         button = ttk.Button(settings_frame, text="Start Conversion", command=self.start_conversion); button.pack(pady=10)
 
         console_frame = ttk.LabelFrame(main_frame, text="Conversion Output"); console_frame.pack(fill='both', expand=True)
-        self.convert_output_text = tk.Text(console_frame, wrap=tk.WORD, bg='#3C3F41', fg='#D3D3D3', insertbackground='#D3D3D3', font=('Consolas', 9), relief=tk.FLAT, bd=0)
+        self.convert_output_text = tk.Text(console_frame, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], font=('Consolas', 9), relief=tk.FLAT, bd=0)
         scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.convert_output_text.yview)
         self.convert_output_text.configure(yscrollcommand=scrollbar.set); self.convert_output_text.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
-        
+
     def create_accelerate_config_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="Accelerate Config")
+        tab_frame = self._create_scrollable_tab("Setup")
         main_frame = ttk.Frame(tab_frame); main_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         info_frame = ttk.LabelFrame(main_frame, text="Setup Instructions"); info_frame.pack(fill='x', pady=(0, 10))
@@ -1057,7 +1199,7 @@ Click the button below to open a new terminal where you will configure Accelerat
 
 Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answering '0' to the GPU question to explicitly select your first GPU.
 """
-        info_text = tk.Text(info_frame, wrap=tk.WORD, bg='#3C3F41', fg='#D3D3D3', font=('Calibri', 10), relief=tk.FLAT, bd=0, height=15)
+        info_text = tk.Text(info_frame, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"], font=('Segoe UI', 10), relief=tk.FLAT, bd=0, height=15)
         info_text.insert(tk.END, info_text_content); info_text.config(state="disabled")
         info_text.pack(fill='x', expand=True, padx=10, pady=10)
 
@@ -1068,18 +1210,17 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def on_training_mode_change(self, event=None):
         mode = self.training_mode_var.get()
         is_wan = (mode == "Wan 2.2")
+        self.title_label.config(text="Musubi Tuner")
+        self.subtitle_label.config(text=f"{mode} · LoRA training studio")
+        self.root.title(f"Musubi Tuner · {mode}")
 
         if is_wan:
-            self.title_label.config(text="Musubi Tuner - WAN 2.2 LoRA Training")
-            self.root.title("Musubi Tuner GUI - WAN 2.2 LoRA Training")
-            self.mode_note_label.config(text="")
+            self.mode_note_label.config(text="Dual-stage Wan training · T2V and I2V workflows")
             self.hidden_frames['flux2_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
             self.hidden_frames['wan_dit'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             self.hidden_frames['wan_models'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
         elif mode == "Krea 2":
-            self.title_label.config(text="Musubi Tuner - Krea 2 LoRA Training")
-            self.root.title("Musubi Tuner GUI - Krea 2 LoRA Training")
             self.mode_note_label.config(text="Single RAW DiT, Qwen3-VL text encoder, Qwen-Image VAE, image-only training")
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
@@ -1093,9 +1234,6 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.entries["network_alpha_low"].delete(0, tk.END)
                 self.entries["network_alpha_low"].insert(0, "32")
         else:
-            title_txt = "Musubi Tuner - Flux.2 Klein LoRA Training" if mode == "Flux.2 Klein" else "Musubi Tuner - Flux.2 Dev LoRA Training"
-            self.title_label.config(text=title_txt)
-            self.root.title(f"Musubi Tuner GUI - {mode} LoRA Training")
             self.mode_note_label.config(text="Single DiT, Qwen3/Mistral3 text encoder" if mode == "Flux.2 Klein" else "Single DiT, Mistral3 text encoder")
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
@@ -1119,14 +1257,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.update_button_states()
 
     def setup_graph_style(self):
-        self.fig.patch.set_facecolor('#2B2B2B'); self.ax.set_facecolor('#3C3F41')
-        self.ax.tick_params(axis='x', colors='white'); self.ax.tick_params(axis='y', colors='white')
-        self.ax.spines['bottom'].set_color('white'); self.ax.spines['top'].set_color('white') 
-        self.ax.spines['right'].set_color('white'); self.ax.spines['left'].set_color('white')
-        self.ax.yaxis.label.set_color('white'); self.ax.xaxis.label.set_color('white')
-        self.ax.title.set_color('white'); self.ax.set_xlabel("Steps"); self.ax.set_ylabel("Loss")
+        self.fig.patch.set_facecolor(self.colors["page"]); self.ax.set_facecolor(self.colors["field"])
+        self.ax.tick_params(axis='x', colors=self.colors["muted"]); self.ax.tick_params(axis='y', colors=self.colors["muted"])
+        for spine in self.ax.spines.values(): spine.set_color(self.colors["border"])
+        self.ax.yaxis.label.set_color(self.colors["muted"]); self.ax.xaxis.label.set_color(self.colors["muted"])
+        self.ax.title.set_color(self.colors["text"]); self.ax.set_xlabel("Steps"); self.ax.set_ylabel("Loss")
+        self.ax.grid(color=self.colors["border"], alpha=0.25, linewidth=0.6)
         self.canvas.draw()
-    
+
     def validate_number(self, value):
         if value in ("", ".", "-"): return True
         try: float(value); return True
@@ -1168,6 +1306,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
         all_valid = True
+        invalid_fields = []
         wants_samples = bool(
             self._sample_prompts_data and (
                 str(self.entries["sample_every_n_epochs"].get()).strip() or
@@ -1202,8 +1341,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         log_with = self.entries["log_with"].get(); self.entries["logging_dir"].is_required = log_with != "none"
 
-        for widget in self.entries.values():
+        for key, widget in self.entries.items():
             if not isinstance(widget, tk.Widget): continue
+            if key in self.field_labels:
+                required = bool(getattr(widget, "is_required", False))
+                self.field_labels[key].configure(text=self.field_label_text[key] + ("  *" if required else ""))
             is_visible = False
             try:
                 if widget.winfo_manager(): is_visible = True
@@ -1219,11 +1361,27 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     elif getattr(widget, 'is_path', False) and not os.path.exists(value): is_valid = False
                 style = "Valid.TEntry" if is_valid else "Invalid.TEntry"
                 widget.config(style=style)
-                if not is_valid: all_valid = False
+                if not is_valid:
+                    all_valid = False
+                    invalid_fields.append(key)
 
         if is_wan:
             if not (train_high or train_low): all_valid = False
         self.start_btn.config(state="normal" if all_valid else "disabled")
+        try:
+            if self.current_process:
+                self.validation_status_var.set("Training process active")
+                self.validation_status_label.configure(foreground=self.colors["accent"])
+            elif all_valid:
+                self.validation_status_var.set("Configuration ready · Ctrl+Enter to start")
+                self.validation_status_label.configure(foreground=self.colors["success"])
+            else:
+                count = len(invalid_fields)
+                noun = "field" if count == 1 else "fields"
+                self.validation_status_var.set(f"{count} required {noun} need attention")
+                self.validation_status_label.configure(foreground=self.colors["warning"])
+        except AttributeError:
+            pass
         try:
             can_cache_latents = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "vae_model"])
             self.entries["recache_latents"].config(state="normal" if can_cache_latents else "disabled")
@@ -1363,7 +1521,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "sample_prompts_data": [],
         }
         self.set_values(defaults)
-        
+
     def _save_settings_to_file(self, filepath):
         try:
             with open(filepath, "w") as f: json.dump(self.get_settings(), f, indent=4); return True
@@ -1414,7 +1572,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def update_vram_display(self, used, peak, total):
         self.vram_label_var.set(f"VRAM: {used:.2f} GB / {total:.2f} GB")
         self.peak_vram_label_var.set(f"Peak VRAM: {peak:.2f} GB")
-        
+
     def update_loss_graph(self, step=None, loss_value=None):
         if not MATPLOTLIB_AVAILABLE: return
         if step is not None and loss_value is not None: self.loss_data.append((step, loss_value))
@@ -1423,7 +1581,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             steps, losses = zip(*self.loss_data)
             self.ax.plot(steps, losses, color='#68bcece8')
         self.canvas.draw()
-        
+
     def update_progress_bar(self, current, total):
         percentage = (current / total) * 100 if total > 0 else 0
         self.progress_var.set(percentage)
@@ -1456,7 +1614,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.next_epoch_var.set(f"To next epoch: {remaining} steps")
         else:
             self.next_epoch_var.set("To next epoch: N/A")
-            
+
     def run_process(self, command, on_complete=None, output_widget=None):
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
@@ -1480,9 +1638,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start process: {e}")
             self.stop_all_activity(); return
-        
+
         threading.Thread(target=self.read_output, args=(on_complete, output_widget), daemon=True).start()
-    
+
     def stop_all_activity(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
         self.stop_vram_monitor(); self._stop_sample_watcher(); self.current_process = None
@@ -1513,7 +1671,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             output_widget.see(tk.END)
 
     def read_output(self, on_complete, output_widget):
-        if not self.current_process: 
+        if not self.current_process:
             if on_complete: self.root.after(0, on_complete, -1); return
         try:
             buffer = ""
@@ -1568,7 +1726,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if self.command_sequence:
             self.loss_data.clear()
             self.current_step = 0
-            self.update_loss_graph() 
+            self.update_loss_graph()
             next_command = self.command_sequence.pop(0)
             self.run_process(next_command, self._run_next_command_in_sequence, self.output_text)
         else:
@@ -1604,7 +1762,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         wants_samples = (settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first"))
         if wants_samples and self._count_enabled_sample_prompts() == 0:
             messagebox.showwarning("No Active Sample Prompts", "You set a sample frequency but have no enabled prompts in the Samples tab.\nNo samples will be generated.\n\nEnable at least one saved prompt or add a new one.")
-        
+
         self.loss_data.clear(); self.current_step = 0
         self.update_loss_graph(); self.start_vram_monitor(); self._start_sample_watcher()
         self.progress_var.set(0); self.progress_label_var.set("Starting sequence...")
@@ -1621,7 +1779,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             cache_cmds = flux2_backend.build_cache_commands(settings, python_executable)
         self.command_sequence.extend(cache_cmds)
-        
+
         training_commands = self.build_training_commands()
         if training_commands: self.command_sequence.extend(training_commands)
         if self.command_sequence: self._run_next_command_in_sequence(0)
@@ -1665,7 +1823,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         if not (lora_path and os.path.exists(lora_path) and output_dir and os.path.isdir(output_dir)):
             messagebox.showerror("Validation Error", "Please provide a valid LoRA file and a valid output directory."); return
-        
+
         # --- MODIFIED --- Auto-generate output path and fix command arguments
         base_name = Path(lora_path).stem
         output_name = f"{base_name}_converted.safetensors"
@@ -1677,7 +1835,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         target = target.get() if target else "default"
         command = [python_executable, "src/musubi_tuner/convert_lora.py",
                    "--input", lora_path, "--output", str(final_output_path), "--target", target]
-        
+
         self.run_process(command, on_complete=self.on_conversion_complete, output_widget=self.convert_output_text)
 
     def on_conversion_complete(self, return_code):
@@ -1695,7 +1853,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 accelerate_path = accelerate_path.with_suffix(".exe")
 
             if not accelerate_path.exists():
-                accelerate_path = "accelerate" 
+                accelerate_path = "accelerate"
 
             command = f'"{accelerate_path}" config'
 
@@ -1704,7 +1862,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             elif sys.platform == "darwin":
                 script = f'tell application "Terminal" to do script "{command}"'
                 subprocess.Popen(['osascript', '-e', script])
-            else: 
+            else:
                 try:
                     subprocess.Popen(['x-terminal-emulator', '-e', command])
                 except FileNotFoundError:
@@ -1717,7 +1875,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if self.current_process and messagebox.askokcancel("Quit", "A process is running. Stop it and quit?"):
             self.stop_training()
         self.stop_vram_monitor(); self.root.destroy()
-        
+
 if __name__ == "__main__":
     if not PYNVML_AVAILABLE: print("WARNING: pynvml not found. VRAM monitoring disabled. Run 'pip install pynvml'.")
     if not MATPLOTLIB_AVAILABLE: print("WARNING: matplotlib not found. Live graph disabled. Run 'pip install matplotlib'.")
