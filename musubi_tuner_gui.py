@@ -97,10 +97,10 @@ class MusubiTunerGUI:
         self.root.minsize(980, 680)
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        window_w = min(1280, max(980, screen_w - 100))
-        window_h = min(820, max(680, screen_h - 120))
-        pos_x = max(0, (screen_w - window_w) // 2)
-        pos_y = max(0, (screen_h - window_h) // 2)
+        window_w = min(1180, max(980, screen_w - 180))
+        window_h = min(760, max(680, screen_h - 180))
+        pos_x = min(40, max(0, screen_w - window_w))
+        pos_y = min(40, max(0, screen_h - window_h))
         self.root.geometry(f"{window_w}x{window_h}+{pos_x}+{pos_y}")
 
         self.entries = {}
@@ -108,6 +108,7 @@ class MusubiTunerGUI:
         self.field_label_text = {}
         self.hidden_frames = {}
         self.training_mode_var = tk.StringVar(value="Wan 2.2")
+        self.appearance_mode_var = tk.StringVar(value=self._load_saved_appearance())
         self.setup_styles()
 
         self.current_process = None
@@ -133,14 +134,37 @@ class MusubiTunerGUI:
         self._load_last_settings()
         self.update_button_states()
 
+    def _load_saved_appearance(self):
+        environment_value = os.environ.get("MUSUBI_GUI_THEME")
+        if environment_value in ("Light", "Dark"):
+            return environment_value
+        try:
+            with open("last_settings.json", "r", encoding="utf-8") as settings_file:
+                value = json.load(settings_file).get("appearance_mode", "Dark")
+                return value if value in ("Light", "Dark") else "Dark"
+        except (OSError, ValueError, TypeError):
+            return "Dark"
+
     def setup_styles(self):
-        self.colors = {
-            "bg": "#0B1120", "page": "#111827", "surface": "#172033",
-            "surface_alt": "#202B40", "field": "#0F172A", "border": "#334155",
-            "text": "#E5E7EB", "muted": "#94A3B8", "accent": "#38BDF8",
-            "accent_hover": "#0EA5E9", "success": "#22C55E", "warning": "#F59E0B",
-            "danger": "#EF4444", "selection": "#075985",
-        }
+        self.current_appearance_mode = self.appearance_mode_var.get()
+        if self.appearance_mode_var.get() == "Light":
+            self.colors = {
+                "bg": "#E8EDF5", "page": "#F6F8FC", "surface": "#FFFFFF",
+                "surface_alt": "#E9EEF6", "field": "#FFFFFF", "border": "#CBD5E1",
+                "text": "#172033", "muted": "#64748B", "accent": "#2563EB",
+                "accent_hover": "#1D4ED8", "success": "#15803D", "warning": "#B45309",
+                "danger": "#DC2626", "selection": "#BFDBFE", "disabled": "#94A3B8",
+                "danger_bg": "#FEE2E2", "danger_hover": "#FECACA",
+            }
+        else:
+            self.colors = {
+                "bg": "#182033", "page": "#202A3C", "surface": "#29364D",
+                "surface_alt": "#36445E", "field": "#172033", "border": "#475569",
+                "text": "#F1F5F9", "muted": "#B0BED0", "accent": "#60A5FA",
+                "accent_hover": "#3B82F6", "success": "#4ADE80", "warning": "#FBBF24",
+                "danger": "#F87171", "selection": "#1D4ED8", "disabled": "#718096",
+                "danger_bg": "#7F1D1D", "danger_hover": "#991B1B",
+            }
         BG_COLOR = self.colors["bg"]; TEXT_COLOR = self.colors["text"]
         FIELD_BG_COLOR = self.colors["field"]; SELECT_BG_COLOR = self.colors["selection"]
         BORDER_COLOR = self.colors["border"]; ERROR_BORDER = self.colors["danger"]
@@ -154,24 +178,30 @@ class MusubiTunerGUI:
         style.configure('TFrame', background=self.colors["page"])
         style.configure('Page.TFrame', background=self.colors["page"])
         style.configure('Surface.TFrame', background=self.colors["surface"])
-        style.configure('TLabel', background=BG_COLOR, foreground=TEXT_COLOR, font=('Segoe UI', 10))
+        style.configure('TLabel', background=self.colors["page"], foreground=TEXT_COLOR, font=('Segoe UI', 10))
         style.configure('Page.TLabel', background=self.colors["page"])
-        style.configure('Muted.TLabel', background=BG_COLOR, foreground=self.colors["muted"], font=('Segoe UI', 9))
+        style.configure('Muted.TLabel', background=self.colors["page"], foreground=self.colors["muted"], font=('Segoe UI', 9))
         style.configure('PageTitle.TLabel', background=self.colors["page"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 16))
         style.configure('PageHelp.TLabel', background=self.colors["page"], foreground=self.colors["muted"], font=('Segoe UI', 9))
         style.configure('Header.TFrame', background=self.colors["surface"])
         style.configure('Header.TLabel', background=self.colors["surface"], foreground=TEXT_COLOR)
-        style.configure('TLabelframe', background=self.colors["page"], bordercolor=BORDER_COLOR, relief='solid', borderwidth=1)
+        style.configure('TLabelframe', background=self.colors["page"], bordercolor=self.colors["page"], lightcolor=self.colors["page"], darkcolor=self.colors["page"], relief='flat', borderwidth=0)
         style.configure('TLabelframe.Label', background=self.colors["page"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 11))
-        style.configure('TNotebook', background=BG_COLOR, borderwidth=0, tabmargins=[0, 0, 0, 0])
-        style.configure('TNotebook.Tab', background=self.colors["surface"], foreground=self.colors["muted"], padding=[16, 10], borderwidth=0, font=('Segoe UI Semibold', 9))
+        style.configure('TNotebook', background=BG_COLOR, bordercolor=BG_COLOR, lightcolor=BG_COLOR, darkcolor=BG_COLOR, borderwidth=0, tabmargins=[0, 0, 0, 0])
+        style.configure('TNotebook.Tab', background=self.colors["surface"], foreground=self.colors["muted"], bordercolor=self.colors["surface"], lightcolor=self.colors["surface"], darkcolor=self.colors["surface"], padding=[16, 10], borderwidth=0, relief='flat', font=('Segoe UI Semibold', 9))
         style.map('TNotebook.Tab', background=[('selected', self.colors["page"]), ('active', self.colors["surface_alt"])], foreground=[('selected', self.colors["accent"]), ('active', TEXT_COLOR)])
-        style.configure('TButton', background=self.colors["surface_alt"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 9), borderwidth=1, relief='solid', padding=[10, 6])
-        style.map('TButton', background=[('active', '#334155'), ('pressed', '#475569')], bordercolor=[('active', self.colors["accent"])], foreground=[('disabled', '#64748B')])
+        style.layout('Modern.TNotebook', [('Notebook.client', {'sticky': 'nswe'})])
+        style.layout('Modern.TNotebook.Tab', [])
+        style.configure('Modern.TNotebook', background=self.colors["page"], borderwidth=0)
+        style.configure('Nav.TButton', background=self.colors["surface"], foreground=self.colors["muted"], borderwidth=0, relief='flat', padding=[10, 5], font=('Segoe UI Semibold', 9))
+        style.map('Nav.TButton', background=[('active', self.colors["surface_alt"])], foreground=[('active', TEXT_COLOR)])
+        style.configure('NavActive.TButton', background=self.colors["page"], foreground=self.colors["accent"], borderwidth=0, relief='flat', padding=[10, 5], font=('Segoe UI Semibold', 9))
+        style.configure('TButton', background=self.colors["surface_alt"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 9), bordercolor=self.colors["surface_alt"], lightcolor=self.colors["surface_alt"], darkcolor=self.colors["surface_alt"], borderwidth=0, relief='flat', padding=[11, 7])
+        style.map('TButton', background=[('active', self.colors["border"]), ('pressed', self.colors["border"])], foreground=[('disabled', self.colors["disabled"])])
         style.configure('Accent.TButton', background=self.colors["accent_hover"], foreground='#FFFFFF', padding=[14, 8])
         style.map('Accent.TButton', background=[('active', self.colors["accent"]), ('pressed', '#0284C7')])
-        style.configure('Danger.TButton', background='#7F1D1D', foreground='#FEE2E2')
-        style.map('Danger.TButton', background=[('active', '#991B1B'), ('pressed', '#B91C1C')])
+        style.configure('Danger.TButton', background=self.colors["danger_bg"], foreground=self.colors["danger"])
+        style.map('Danger.TButton', background=[('active', self.colors["danger_hover"]), ('pressed', self.colors["danger_hover"])])
         style.configure('TEntry', foreground=TEXT_COLOR, fieldbackground=FIELD_BG_COLOR, insertcolor=TEXT_COLOR, borderwidth=1, relief='solid', bordercolor=BORDER_COLOR, padding=6)
         style.map('TCombobox', fieldbackground=[('readonly', FIELD_BG_COLOR)], foreground=[('readonly', TEXT_COLOR)], selectbackground=[('readonly', SELECT_BG_COLOR)])
         self.root.option_add('*TCombobox*Listbox.background', FIELD_BG_COLOR); self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
@@ -190,26 +220,37 @@ class MusubiTunerGUI:
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
         brand = ttk.Frame(header, style="Header.TFrame")
-        brand.grid(row=0, column=0, rowspan=2, sticky="w")
+        brand.grid(row=0, column=0, sticky="w")
         self.title_label = ttk.Label(brand, text="Musubi Tuner", style='Title.TLabel')
         self.title_label.pack(anchor='w')
         self.subtitle_label = ttk.Label(brand, text="LoRA training studio", style="Subtitle.TLabel")
         self.subtitle_label.pack(anchor='w')
 
         toolbar = ttk.Frame(header, style="Header.TFrame")
-        toolbar.grid(row=0, column=1, rowspan=2, sticky="e")
+        toolbar.grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
                                       values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
                                       state="readonly", width=18)
         self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
+        ttk.Label(toolbar, text="Theme", style="Header.TLabel").pack(side="left", padx=(0, 7))
+        self.appearance_combo = ttk.Combobox(
+            toolbar, textvariable=self.appearance_mode_var,
+            values=["Light", "Dark"], state="readonly", width=7,
+        )
+        self.appearance_combo.pack(side="left", padx=(0, 12))
+        self.appearance_combo.bind("<MouseWheel>", lambda _e: "break")
+        self.appearance_combo.bind("<<ComboboxSelected>>", self._request_appearance_change)
         self.create_settings_buttons(toolbar)
 
         body = ttk.Frame(self.root)
         body.grid(row=1, column=0, sticky="nsew")
-        self.notebook = ttk.Notebook(body)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=(10, 8))
+        self.nav_bar = ttk.Frame(body, style="Header.TFrame", width=170, padding=(10, 12))
+        self.nav_bar.pack(side="left", fill="y", padx=(12, 0), pady=(10, 8))
+        self.nav_bar.pack_propagate(False)
+        self.notebook = ttk.Notebook(body, style="Modern.TNotebook")
+        self.notebook.pack(side="right", fill="both", expand=True, padx=12, pady=(10, 8))
 
         self.create_model_paths_tab()
         self.create_training_params_tab()
@@ -218,6 +259,7 @@ class MusubiTunerGUI:
         self.create_run_monitor_tab()
         self.create_convert_lora_tab()
         self.create_accelerate_config_tab()
+        self._build_navigation()
 
         footer = ttk.Frame(self.root, style="Header.TFrame", padding=(14, 5))
         footer.grid(row=2, column=0, sticky="ew")
@@ -230,14 +272,15 @@ class MusubiTunerGUI:
         self.root.bind("<Control-s>", lambda _e: self.save_settings())
         self.root.bind("<Control-o>", lambda _e: self.load_settings())
         self.root.bind("<Control-Return>", lambda _e: self.start_training())
-        self.root.bind_all("<MouseWheel>", self._route_tab_mousewheel, add="+")
-        self.root.bind_all("<Button-4>", self._route_tab_mousewheel, add="+")
-        self.root.bind_all("<Button-5>", self._route_tab_mousewheel, add="+")
+        self.root.bind_all("<MouseWheel>", self._route_tab_mousewheel)
+        self.root.bind_all("<Button-4>", self._route_tab_mousewheel)
+        self.root.bind_all("<Button-5>", self._route_tab_mousewheel)
 
     def create_settings_buttons(self, parent):
-        button_frame = ttk.Frame(parent, style="Header.TFrame"); button_frame.pack(side="left")
-        ttk.Button(button_frame, text="Load", command=self.load_settings).pack(side="left", padx=(0, 5))
-        ttk.Button(button_frame, text="Save", command=self.save_settings).pack(side="left", padx=(0, 5))
+        button_frame = ttk.Frame(parent, style="Header.TFrame")
+        button_frame.pack(side="left")
+        ttk.Button(button_frame, text="Load", command=self.load_settings).pack(side="left", padx=(0, 4))
+        ttk.Button(button_frame, text="Save", command=self.save_settings).pack(side="left", padx=(0, 4))
         reset_btn = ttk.Button(button_frame, text="Reset", command=self._confirm_reset_settings)
         reset_btn.pack(side="left")
         ToolTip(reset_btn, "Restore every setting to its default value.")
@@ -246,6 +289,31 @@ class MusubiTunerGUI:
         tab = ScrollableTab(self.notebook, background=self.colors["page"])
         self.notebook.add(tab, text=title)
         return tab.content
+
+    def _build_navigation(self):
+        labels = ("Models", "Training", "Advanced", "Samples", "Monitor", "Convert", "Setup")
+        self._nav_buttons = []
+        ttk.Label(self.nav_bar, text="WORKSPACE", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
+        for index, label in enumerate(labels):
+            button = ttk.Button(
+                self.nav_bar, text=label, style="Nav.TButton",
+                command=lambda page=index: self._select_page(page),
+            )
+            button.pack(fill="x", pady=(0, 3))
+            self._nav_buttons.append(button)
+        self.notebook.bind("<<NotebookTabChanged>>", self._sync_navigation)
+        self._sync_navigation()
+
+    def _select_page(self, index):
+        self.notebook.select(index)
+
+    def _sync_navigation(self, _event=None):
+        try:
+            selected = self.notebook.index(self.notebook.select())
+        except tk.TclError:
+            selected = 0
+        for index, button in enumerate(self._nav_buttons):
+            button.configure(style="NavActive.TButton" if index == selected else "Nav.TButton")
 
     def _add_page_intro(self, parent, title, description):
         intro = ttk.Frame(parent, style="Page.TFrame")
@@ -256,6 +324,37 @@ class MusubiTunerGUI:
     def _confirm_reset_settings(self):
         if messagebox.askyesno("Reset settings", "Restore every field to its default value?\n\nThis does not delete saved settings files or training outputs."):
             self.load_default_settings()
+
+    def _request_appearance_change(self, _event=None):
+        requested = self.appearance_mode_var.get()
+        if requested == self.current_appearance_mode:
+            return
+        if self.current_process:
+            self.appearance_mode_var.set(self.current_appearance_mode)
+            messagebox.showinfo("Training active", "Appearance can be changed after the current process finishes.")
+            return
+        self.root.after_idle(self._apply_appearance_mode, requested)
+
+    def _apply_appearance_mode(self, requested, settings=None):
+        if requested not in ("Light", "Dark") or requested == self.current_appearance_mode:
+            return
+        settings = dict(settings or self.get_settings())
+        settings["appearance_mode"] = requested
+        self.appearance_mode_var.set(requested)
+
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.entries = {}
+        self.field_labels = {}
+        self.field_label_text = {}
+        self.hidden_frames = {}
+        self._sample_list_frame = None
+
+        self.setup_styles()
+        self.create_interface()
+        self.set_values(settings)
+        self.update_button_states()
+        self.update_loss_graph()
 
     def _route_tab_mousewheel(self, event):
         """Scroll the active page unless a nested widget handles the wheel itself."""
@@ -363,7 +462,7 @@ class MusubiTunerGUI:
 
         self.flux2_note_label = ttk.Label(self.hidden_frames['flux2_model_paths'],
                                            text="★ Base variants recommended for training — distilled models (4B/9B) are for inference only.",
-                                           foreground="#FFCC66", font=("Segoe UI", 9, "italic"),
+                                           foreground=self.colors["warning"], font=("Segoe UI", 9, "italic"),
                                            wraplength=940, justify="left")
         self.flux2_note_label.pack(anchor="w", padx=8, pady=(0, 4))
 
@@ -377,7 +476,7 @@ class MusubiTunerGUI:
         self.krea2_note_label = ttk.Label(
             self.hidden_frames['krea2_model_paths'],
             text="Train on RAW DiT. Qwen-Image VAE is required. Qwen3-VL text encoder is only required for text re-caching and sample generation. Upstream starting point: bf16, rank 32, alpha 32, timestep_sampling=krea2_shift.",
-            foreground="#FFCC66", font=("Segoe UI", 9, "italic"),
+            foreground=self.colors["warning"], font=("Segoe UI", 9, "italic"),
             wraplength=940, justify="left",
         )
         self.krea2_note_label.pack(anchor="w", padx=8, pady=(8, 4))
@@ -580,7 +679,7 @@ class MusubiTunerGUI:
         ttk.Button(prompt_btn_row, text="Enable All", command=lambda: self._set_all_sample_prompts_enabled(True)).pack(side="left", padx=(6, 0))
         ttk.Button(prompt_btn_row, text="Disable All", command=lambda: self._set_all_sample_prompts_enabled(False)).pack(side="left", padx=(6, 0))
         ttk.Label(prompt_btn_row, text="Unchecked prompts stay saved but are skipped during sampling.",
-                  foreground="#888888", font=("Calibri", 9, "italic")).pack(side="left", padx=(12, 0))
+                  foreground=self.colors["muted"], font=("Segoe UI", 9, "italic")).pack(side="left", padx=(12, 0))
 
         plist_container = ttk.Frame(prompts_frame); plist_container.pack(fill="x", padx=5, pady=(0, 6))
         plist_canvas = tk.Canvas(plist_container, bg=self.colors["page"], highlightthickness=0, height=170)
@@ -613,7 +712,7 @@ class MusubiTunerGUI:
         self._sample_canvas = canvas
 
         ttk.Label(self._sample_list_frame, text="No samples yet. Start training to generate samples.",
-                  foreground="#777777").pack(padx=10, pady=10)
+                  foreground=self.colors["muted"]).pack(padx=10, pady=10)
 
     # ---------- Prompt list helpers ----------
 
@@ -622,7 +721,7 @@ class MusubiTunerGUI:
             w.destroy()
         if not self._sample_prompts_data:
             ttk.Label(self._prompt_list_inner, text="No prompts added yet.",
-                      foreground="#777777").pack(padx=10, pady=8)
+                      foreground=self.colors["muted"]).pack(padx=10, pady=8)
             return
         for idx, p in enumerate(self._sample_prompts_data):
             row = ttk.Frame(self._prompt_list_inner); row.pack(fill="x", padx=4, pady=2)
@@ -648,7 +747,7 @@ class MusubiTunerGUI:
             if not p.get("enabled", True): params.append("disabled")
             tag = "  |  " + "  ".join(params) if params else ""
             ttk.Label(row, text=summary + tag, anchor="w",
-                      foreground="#CCCCCC" if p.get("enabled", True) else "#777777").pack(side="left", fill="x", expand=True)
+                      foreground=self.colors["text"] if p.get("enabled", True) else self.colors["disabled"]).pack(side="left", fill="x", expand=True)
             preview_btn = ttk.Button(row, text="Preview", width=7,
                        command=lambda i=idx: self._test_sample_prompt(i))
             preview_btn.pack(side="right", padx=(3, 0))
@@ -909,8 +1008,8 @@ class MusubiTunerGUI:
             ttk.Label(
                 dlg,
                 text="Krea 2 prompt notes: leave Frames empty; use Guidance only; Mu/Y1/Y2 are optional timestep-shift controls.",
-                foreground="#888888",
-                font=("Calibri", 9, "italic"),
+                foreground=self.colors["muted"],
+                font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
         else:
@@ -1048,7 +1147,7 @@ class MusubiTunerGUI:
 
         if not files:
             ttk.Label(self._sample_list_frame, text="No samples yet. Start training to generate samples.",
-                      foreground="#777777").pack(padx=10, pady=10)
+                      foreground=self.colors["muted"]).pack(padx=10, pady=10)
             return
 
         for mtime, fpath in reversed(files):
@@ -1463,10 +1562,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             elif hasattr(widget, 'var'): settings[key] = widget.var.get()
             else: settings[key] = widget.get()
         settings["training_mode"] = self.training_mode_var.get()
+        settings["appearance_mode"] = self.appearance_mode_var.get()
         settings["sample_prompts_data"] = self._sample_prompts_data
         return settings
 
     def set_values(self, settings):
+        requested_appearance = settings.get("appearance_mode")
+        if requested_appearance in ("Light", "Dark") and requested_appearance != self.current_appearance_mode:
+            if not self.current_process:
+                self._apply_appearance_mode(requested_appearance, settings=settings)
+            return
         # Restore training mode first so widget visibility is correct
         if "training_mode" in settings:
             self.training_mode_var.set(settings["training_mode"])
@@ -1479,7 +1584,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             try: self._rebuild_prompt_list()
             except AttributeError: pass  # UI not built yet during early init
         for key, value in settings.items():
-            if key in ("training_mode", "sample_prompts_data", "sample_prompts"): continue
+            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts"): continue
             if key in self.entries:
                 widget = self.entries[key]
                 if isinstance(widget, (tk.BooleanVar, tk.StringVar)):
