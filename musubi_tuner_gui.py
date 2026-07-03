@@ -9,7 +9,7 @@ import time
 import sys
 from pathlib import Path
 
-from backends import wan as wan_backend, flux2 as flux2_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 
 # --- Dependency Check ---
@@ -138,7 +138,7 @@ class MusubiTunerGUI:
         mode_inner = ttk.Frame(mode_frame); mode_inner.pack(fill="x", padx=10, pady=8)
         ttk.Label(mode_inner, text="Mode:").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(mode_inner, textvariable=self.training_mode_var,
-                                       values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev"],
+                                       values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
                                        state="readonly", width=20)
         self.mode_combo.pack(side="left"); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
@@ -250,6 +250,23 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['flux2_model_paths'], "flux2_text_encoder", "Text Encoder (Qwen3 or Mistral3):", "Path to the Qwen3 or Mistral3 text encoder directory or safetensors file.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
         self._add_widget(self.hidden_frames['flux2_model_paths'], "fp8_text_encoder", "FP8 Text Encoder", "Load the text encoder in FP8 precision to reduce VRAM.", kind='checkbox')
 
+        # ---- Krea 2 model paths section ----
+        self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
+
+        self.krea2_note_label = ttk.Label(
+            self.hidden_frames['krea2_model_paths'],
+            text="Train on RAW DiT. Qwen-Image VAE is required. Qwen3-VL text encoder is only required for text re-caching and sample generation. Upstream starting point: bf16, rank 32, alpha 32, timestep_sampling=krea2_shift.",
+            foreground="#FFCC66", font=("Calibri", 9, "italic")
+        )
+        self.krea2_note_label.pack(anchor="w", padx=8, pady=(8, 4))
+
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_dit_model", "RAW DiT Model:", "Path to the Krea 2 RAW DiT model (.safetensors). Required for training.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_text_encoder", "Text Encoder (Qwen3-VL-4B):", "Path to the Qwen3-VL-4B-Instruct safetensors file. Required for text re-caching and sample generation during training.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_path=True)
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit", "Turbo DiT (Optional):", "Optional distilled Turbo DiT safetensors path. Used only for sample generation during training to preview Turbo inference behavior.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_path=True)
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps the optional Turbo DiT weights resident in CPU RAM for faster sampling. Only relevant when Turbo DiT is set.", kind='checkbox')
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff", "Projector Patch (Optional):", "Optional tiny Krea 2 projector diff safetensors patch. Applied to the RAW training base model and also to optional Turbo sample generation so previews stay consistent.", kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True)
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff_strength", "Patch Strength:", "Multiplier for the optional projector patch. Example: 2.5", validate_num=True)
+
         # VAE shared by both modes — store reference for pack ordering
         models_frame = ttk.LabelFrame(frame, text="VAE Model"); models_frame.pack(fill="x", padx=10, pady=10)
         self._vae_frame = models_frame
@@ -358,7 +375,7 @@ class MusubiTunerGUI:
         self._add_widget(memory_frame, "blocks_to_swap", "Blocks to Swap:", "Number of DiT blocks to offload to CPU memory to save VRAM. Can slow down training. (e.g., 10)", validate_num=True)
         
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux"])
+        self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended for Wan/Flux. 'krea2_shift' matches Krea 2's resolution-aware schedule.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"])
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
         self.hidden_frames['timestep_boundary'] = ttk.Frame(flow_frame)
         self._add_widget(self.hidden_frames['timestep_boundary'], "timestep_boundary", "Timestep Boundary:", "The integer timestep where the model switches from low to high noise (e.g., 875). Only for combined runs.", validate_num=True)
@@ -435,7 +452,9 @@ class MusubiTunerGUI:
 
         prompt_btn_row = ttk.Frame(prompts_frame); prompt_btn_row.pack(fill="x", padx=5, pady=(6, 4))
         ttk.Button(prompt_btn_row, text="+ Add Prompt", command=self._add_sample_prompt_dialog).pack(side="left")
-        ttk.Label(prompt_btn_row, text="Leave empty to disable sampling.",
+        ttk.Button(prompt_btn_row, text="Enable All", command=lambda: self._set_all_sample_prompts_enabled(True)).pack(side="left", padx=(6, 0))
+        ttk.Button(prompt_btn_row, text="Disable All", command=lambda: self._set_all_sample_prompts_enabled(False)).pack(side="left", padx=(6, 0))
+        ttk.Label(prompt_btn_row, text="Unchecked prompts stay saved but are skipped during sampling.",
                   foreground="#888888", font=("Calibri", 9, "italic")).pack(side="left", padx=(12, 0))
 
         plist_container = ttk.Frame(prompts_frame); plist_container.pack(fill="x", padx=5, pady=(0, 6))
@@ -482,26 +501,56 @@ class MusubiTunerGUI:
             return
         for idx, p in enumerate(self._sample_prompts_data):
             row = ttk.Frame(self._prompt_list_inner); row.pack(fill="x", padx=4, pady=2)
+            enabled_var = tk.BooleanVar(value=p.get("enabled", True))
+            def _toggle_enabled(i=idx, var=enabled_var):
+                self._sample_prompts_data[i]["enabled"] = bool(var.get())
+                self.update_button_states()
+            enabled_cb = ttk.Checkbutton(row, text="", variable=enabled_var, command=_toggle_enabled)
+            enabled_cb.pack(side="left", padx=(0, 6))
             # Summary label
             summary = p.get("prompt", "")[:55] + ("…" if len(p.get("prompt", "")) > 55 else "")
             params = []
             if p.get("width") or p.get("height"):
                 params.append(f"{p.get('width','?')}×{p.get('height','?')}")
-            if p.get("frames"): params.append(f"{p['frames']}f")
+            if self.training_mode_var.get() != "Krea 2" and p.get("frames"): params.append(f"{p['frames']}f")
             if p.get("steps"): params.append(f"s{p['steps']}")
             if p.get("guidance"): params.append(f"g{p['guidance']}")
+            if self.training_mode_var.get() == "Krea 2":
+                if p.get("mu"): params.append(f"mu={p['mu']}")
+                if p.get("y1"): params.append(f"y1={p['y1']}")
+                if p.get("y2"): params.append(f"y2={p['y2']}")
             if p.get("seed"): params.append(f"seed={p['seed']}")
+            if not p.get("enabled", True): params.append("disabled")
             tag = "  |  " + "  ".join(params) if params else ""
             ttk.Label(row, text=summary + tag, anchor="w",
-                      foreground="#CCCCCC").pack(side="left", fill="x", expand=True)
+                      foreground="#CCCCCC" if p.get("enabled", True) else "#777777").pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Dup", width=4,
+                       command=lambda i=idx: self._duplicate_sample_prompt(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Edit", width=5,
                        command=lambda i=idx: self._edit_sample_prompt_dialog(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Del", width=4,
                        command=lambda i=idx: self._delete_sample_prompt(i)).pack(side="right", padx=(3, 0))
 
+    def _set_all_sample_prompts_enabled(self, enabled):
+        for prompt in self._sample_prompts_data:
+            prompt["enabled"] = bool(enabled)
+        self._rebuild_prompt_list()
+        self.update_button_states()
+
+    def _count_enabled_sample_prompts(self):
+        return sum(1 for p in self._sample_prompts_data if p.get("enabled", True))
+
     def _delete_sample_prompt(self, idx):
         self._sample_prompts_data.pop(idx)
         self._rebuild_prompt_list()
+        self.update_button_states()
+
+    def _duplicate_sample_prompt(self, idx):
+        duplicated = dict(self._sample_prompts_data[idx])
+        duplicated["enabled"] = self._sample_prompts_data[idx].get("enabled", True)
+        self._sample_prompts_data.insert(idx + 1, duplicated)
+        self._rebuild_prompt_list()
+        self.update_button_states()
 
     def _add_sample_prompt_dialog(self):
         self._open_prompt_dialog(None)
@@ -512,9 +561,18 @@ class MusubiTunerGUI:
     def _open_prompt_dialog(self, idx):
         """Open a modal dialog to add/edit a sample prompt."""
         existing = self._sample_prompts_data[idx] if idx is not None else {}
+        mode = self.training_mode_var.get()
+        is_krea2 = mode == "Krea 2"
+        field_tooltips = {
+            "guidance": "Classifier-free guidance scale. For Krea 2 RAW, leaving it empty uses the default 5.5. For Turbo previews, 1.0 is usually the safer value.",
+            "mu": "Direct timestep-shift value. If you set Mu, it overrides Y1 and Y2 for this prompt.",
+            "y1": "Minimum-resolution timestep-shift endpoint. Used only when Mu is empty.",
+            "y2": "Maximum-resolution timestep-shift endpoint. Used only when Mu is empty. Krea 2 defaults to Y1=0.5 and Y2=1.15.",
+            "steps": "Number of denoising steps. Krea 2 RAW commonly uses around 28. Turbo previews commonly use around 8.",
+        }
         dlg = tk.Toplevel(self.root)
         dlg.title("Edit Sample Prompt" if idx is not None else "Add Sample Prompt")
-        dlg.geometry("560x480")
+        dlg.geometry("620x520" if is_krea2 else "560x480")
         dlg.configure(bg='#2B2B2B')
         dlg.resizable(False, False)
         dlg.grab_set()
@@ -540,43 +598,72 @@ class MusubiTunerGUI:
         e_neg.pack(fill="x", padx=10, pady=(0, 2))
 
         row1 = ttk.Frame(dlg); row1.pack(fill="x", padx=10, pady=(8, 0))
-        for text, key, default, w in [
-            ("Width", "width", "512", 6),
-            ("Height", "height", "512", 6),
-            ("Frames", "frames", "25", 5),
-            ("Steps", "steps", "20", 5),
-        ]:
+        row1_fields = [
+            ("Width", "width", "1024" if is_krea2 else "512", 6),
+            ("Height", "height", "1024" if is_krea2 else "512", 6),
+            ("Steps", "steps", "28" if is_krea2 else "20", 5),
+            ("Guidance", "guidance", "5.5" if is_krea2 else "5.0", 6),
+        ]
+        if not is_krea2:
+            row1_fields.insert(2, ("Frames", "frames", "25", 5))
+        for text, key, default, w in row1_fields:
             col = ttk.Frame(row1); col.pack(side="left", padx=(0, 12))
-            ttk.Label(col, text=text).pack(anchor="w")
+            label_widget = ttk.Label(col, text=text)
+            label_widget.pack(anchor="w")
             e = ttk.Entry(col, width=w)
             e.insert(0, str(existing.get(key, default)))
             e.pack()
+            if is_krea2 and key in field_tooltips:
+                ToolTip(label_widget, field_tooltips[key])
+                ToolTip(e, field_tooltips[key])
             row1.__dict__[f"e_{key}"] = e
 
         row2 = ttk.Frame(dlg); row2.pack(fill="x", padx=10, pady=(8, 0))
-        for text, key, default, w in [
-            ("Guidance", "guidance", "5.0", 6),
-            ("Flow Shift", "flow_shift", "", 6),
-            ("CFG Scale", "cfg_scale", "", 6),
-            ("Seed", "seed", "", 8),
-        ]:
+        if is_krea2:
+            row2_fields = [
+                ("Mu", "mu", existing.get("mu", existing.get("flow_shift", "")), 6),
+                ("Y1", "y1", existing.get("y1", ""), 6),
+                ("Y2", "y2", existing.get("y2", ""), 6),
+                ("Seed", "seed", existing.get("seed", ""), 8),
+            ]
+        else:
+            row2_fields = [
+                ("Flow Shift", "flow_shift", existing.get("flow_shift", ""), 6),
+                ("CFG Scale", "cfg_scale", existing.get("cfg_scale", ""), 6),
+                ("Seed", "seed", existing.get("seed", ""), 8),
+            ]
+        for text, key, default, w in row2_fields:
             col = ttk.Frame(row2); col.pack(side="left", padx=(0, 12))
-            ttk.Label(col, text=text).pack(anchor="w")
+            label_widget = ttk.Label(col, text=text)
+            label_widget.pack(anchor="w")
             e = ttk.Entry(col, width=w)
-            val = existing.get(key, default)
+            val = default
             if val: e.insert(0, str(val))
             e.pack()
+            if is_krea2 and key in field_tooltips:
+                ToolTip(label_widget, field_tooltips[key])
+                ToolTip(e, field_tooltips[key])
             row2.__dict__[f"e_{key}"] = e
 
-        lbl(dlg, "Image path  (I2V only — optional)")
-        e_img = ttk.Frame(dlg); e_img.pack(fill="x", padx=10, pady=(0, 2))
-        e_img_entry = ttk.Entry(e_img)
-        e_img_entry.insert(0, existing.get("image_path", ""))
-        e_img_entry.pack(side="left", fill="x", expand=True)
-        def _browse_img():
-            p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp")])
-            if p: e_img_entry.delete(0, tk.END); e_img_entry.insert(0, p)
-        ttk.Button(e_img, text="Browse", command=_browse_img).pack(side="right", padx=(5, 0))
+        e_img_entry = None
+        if is_krea2:
+            ttk.Label(
+                dlg,
+                text="Krea 2 prompt notes: leave Frames empty; use Guidance only; Mu/Y1/Y2 are optional timestep-shift controls.",
+                foreground="#888888",
+                font=("Calibri", 9, "italic"),
+                wraplength=580,
+            ).pack(anchor="w", padx=10, pady=(12, 0))
+        else:
+            lbl(dlg, "Image path  (I2V only — optional)")
+            e_img = ttk.Frame(dlg); e_img.pack(fill="x", padx=10, pady=(0, 2))
+            e_img_entry = ttk.Entry(e_img)
+            e_img_entry.insert(0, existing.get("image_path", ""))
+            e_img_entry.pack(side="left", fill="x", expand=True)
+            def _browse_img():
+                p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp")])
+                if p: e_img_entry.delete(0, tk.END); e_img_entry.insert(0, p)
+            ttk.Button(e_img, text="Browse", command=_browse_img).pack(side="right", padx=(5, 0))
 
         def _save():
             prompt_text = e_prompt.get().strip()
@@ -586,20 +673,27 @@ class MusubiTunerGUI:
             data["neg"]        = e_neg.get().strip()
             data["width"]      = row1.e_width.get().strip()
             data["height"]     = row1.e_height.get().strip()
-            data["frames"]     = row1.e_frames.get().strip()
             data["steps"]      = row1.e_steps.get().strip()
-            data["guidance"]   = row2.e_guidance.get().strip()
-            data["flow_shift"] = row2.e_flow_shift.get().strip()
-            data["cfg_scale"]  = row2.e_cfg_scale.get().strip()
+            data["guidance"]   = row1.e_guidance.get().strip()
+            if not is_krea2:
+                data["frames"]     = row1.e_frames.get().strip()
+                data["flow_shift"] = row2.e_flow_shift.get().strip()
+                data["cfg_scale"]  = row2.e_cfg_scale.get().strip()
+            else:
+                data["mu"]         = row2.e_mu.get().strip()
+                data["y1"]         = row2.e_y1.get().strip()
+                data["y2"]         = row2.e_y2.get().strip()
             data["seed"]       = row2.e_seed.get().strip()
-            data["image_path"] = e_img_entry.get().strip()
+            data["image_path"] = e_img_entry.get().strip() if e_img_entry is not None else ""
+            data["enabled"]    = existing.get("enabled", True)
             # Remove empty optional keys
-            data = {k: v for k, v in data.items() if v != ""}
+            data = {k: v for k, v in data.items() if v != "" or k == "enabled"}
             if idx is not None:
                 self._sample_prompts_data[idx] = data
             else:
                 self._sample_prompts_data.append(data)
             self._rebuild_prompt_list()
+            self.update_button_states()
             dlg.destroy()
 
         btn_row = ttk.Frame(dlg); btn_row.pack(pady=14)
@@ -612,20 +706,31 @@ class MusubiTunerGUI:
         """Serialise self._sample_prompts_data to a .txt file next to the output dir, return path or ''."""
         if not self._sample_prompts_data:
             return ""
+        mode = self.training_mode_var.get()
+        is_krea2 = mode == "Krea 2"
         lines = []
         for p in self._sample_prompts_data:
+            if not p.get("enabled", True):
+                continue
             line = p.get("prompt", "")
             if p.get("width"):      line += f" --w {p['width']}"
             if p.get("height"):     line += f" --h {p['height']}"
-            if p.get("frames"):     line += f" --f {p['frames']}"
             if p.get("steps"):      line += f" --s {p['steps']}"
             if p.get("guidance"):   line += f" --g {p['guidance']}"
-            if p.get("flow_shift"): line += f" --fs {p['flow_shift']}"
-            if p.get("cfg_scale"):  line += f" --l {p['cfg_scale']}"
+            if is_krea2:
+                if p.get("mu"):     line += f" --mu {p['mu']}"
+                if p.get("y1"):     line += f" --y1 {p['y1']}"
+                if p.get("y2"):     line += f" --y2 {p['y2']}"
+            else:
+                if p.get("frames"):     line += f" --f {p['frames']}"
+                if p.get("flow_shift"): line += f" --fs {p['flow_shift']}"
+                if p.get("cfg_scale"):  line += f" --l {p['cfg_scale']}"
             if p.get("seed"):       line += f" --d {p['seed']}"
             if p.get("neg"):        line += f" --n {p['neg']}"
-            if p.get("image_path"): line += f" --i {p['image_path']}"
+            if not is_krea2 and p.get("image_path"): line += f" --i {p['image_path']}"
             lines.append(line)
+        if not lines:
+            return ""
         # Save next to the dataset config (always outside the repo, always exists)
         output_name = self.entries["output_name"].get().strip() or "training"
         dataset_config = self.entries["dataset_config"].get().strip()
@@ -704,7 +809,7 @@ class MusubiTunerGUI:
             ttk.Button(row, text="Open", width=6, command=_open).pack(side="right", padx=(5, 0))
 
     def _start_sample_watcher(self):
-        if not self._sample_prompts_data:
+        if self._count_enabled_sample_prompts() == 0:
             return
         self._last_sample_files = []
         self.sample_watcher_active = True
@@ -829,8 +934,24 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.root.title("Musubi Tuner GUI - WAN 2.2 LoRA Training")
             self.mode_note_label.config(text="")
             self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['krea2_model_paths'].pack_forget()
             self.hidden_frames['wan_dit'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             self.hidden_frames['wan_models'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+        elif mode == "Krea 2":
+            self.title_label.config(text="Musubi Tuner - Krea 2 LoRA Training")
+            self.root.title("Musubi Tuner GUI - Krea 2 LoRA Training")
+            self.mode_note_label.config(text="Single RAW DiT, Qwen3-VL text encoder, Qwen-Image VAE, image-only training")
+            self.hidden_frames['wan_dit'].pack_forget()
+            self.hidden_frames['wan_models'].pack_forget()
+            self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['krea2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+            if self.entries["timestep_sampling"].get() in ("", "shift"):
+                self.entries["timestep_sampling"].set("krea2_shift")
+            if self.entries["network_dim_low"].get().strip() == "":
+                self.entries["network_dim_low"].insert(0, "32")
+            if self.entries["network_alpha_low"].get().strip() in ("", "16"):
+                self.entries["network_alpha_low"].delete(0, tk.END)
+                self.entries["network_alpha_low"].insert(0, "32")
         else:
             title_txt = "Musubi Tuner - Flux.2 Klein LoRA Training" if mode == "Flux.2 Klein" else "Musubi Tuner - Flux.2 Dev LoRA Training"
             self.title_label.config(text=title_txt)
@@ -838,6 +959,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.mode_note_label.config(text="Single DiT, Qwen3/Mistral3 text encoder" if mode == "Flux.2 Klein" else "Single DiT, Mistral3 text encoder")
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
+            self.hidden_frames['krea2_model_paths'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             # Update version choices
             ver_combo = self.entries["flux2_model_version"]
@@ -850,6 +972,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 if ver_combo.get() == "Dev":
                     ver_combo.set("Klein Base 4B ★")
 
+        try:
+            self._rebuild_prompt_list()
+        except AttributeError:
+            pass
         self.update_button_states()
 
     def setup_graph_style(self):
@@ -899,7 +1025,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         mode = self.training_mode_var.get()
         is_wan = (mode == "Wan 2.2")
+        is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
+        is_krea2 = (mode == "Krea 2")
         all_valid = True
+        wants_samples = bool(
+            self._sample_prompts_data and (
+                str(self.entries["sample_every_n_epochs"].get()).strip() or
+                str(self.entries["sample_every_n_steps"].get()).strip() or
+                self.entries["sample_at_first"].var.get()
+            )
+        )
 
         if is_wan:
             train_high = self.entries["train_high_noise"].var.get(); train_low = self.entries["train_low_noise"].var.get()
@@ -909,10 +1044,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["t5_model"].is_required = True
             self.entries["flux2_dit_model"].is_required = False
             self.entries["flux2_text_encoder"].is_required = False
+            self.entries["krea2_dit_model"].is_required = False
+            self.entries["krea2_text_encoder"].is_required = False
         else:
-            # Flux.2: single DiT + text encoder required; Wan fields not required
-            self.entries["flux2_dit_model"].is_required = True
-            self.entries["flux2_text_encoder"].is_required = True
+            # Single-model modes: set their own required fields and clear the rest
+            self.entries["flux2_dit_model"].is_required = is_flux2
+            self.entries["flux2_text_encoder"].is_required = is_flux2
+            self.entries["krea2_dit_model"].is_required = is_krea2
+            self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples)
             self.entries["t5_model"].is_required = False
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
@@ -950,6 +1089,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["recache_latents"].config(state="normal" if can_cache_latents else "disabled")
             if is_wan:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "t5_model"])
+            elif is_krea2:
+                can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "krea2_text_encoder"])
             else:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "flux2_text_encoder"])
             self.entries["recache_text"].config(state="normal" if can_cache_text else "disabled")
@@ -958,6 +1099,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def _update_dynamic_widgets(self):
         mode = self.training_mode_var.get()
         is_wan = (mode == "Wan 2.2")
+        is_krea2 = (mode == "Krea 2")
 
         show_low = self.entries["train_low_noise"].var.get() if is_wan else False
         show_high = self.entries["train_high_noise"].var.get() if is_wan else False
@@ -998,7 +1140,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         offload_widget = self.entries["offload_inactive_dit"]
         blocks_to_swap_widget = self.entries["blocks_to_swap"]
-        is_offloading = offload_widget.var.get()
+        offload_widget.config(state="normal" if is_wan else "disabled")
+        is_offloading = is_wan and offload_widget.var.get()
         blocks_to_swap_widget.config(state="disabled" if is_offloading else "normal")
         if is_offloading and blocks_to_swap_widget.cget('state') == 'normal':
             blocks_to_swap_widget.delete(0, tk.END)
@@ -1032,6 +1175,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.on_training_mode_change()
         if "sample_prompts_data" in settings:
             self._sample_prompts_data = settings["sample_prompts_data"] or []
+            for prompt in self._sample_prompts_data:
+                if "enabled" not in prompt:
+                    prompt["enabled"] = True
             try: self._rebuild_prompt_list()
             except AttributeError: pass  # UI not built yet during early init
         for key, value in settings.items():
@@ -1056,6 +1202,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "min_timestep_low": "0", "max_timestep_low": "875", "min_timestep_high": "875", "max_timestep_high": "1000",
             "vae_model": "", "clip_model": "", "t5_model": "",
             "flux2_model_version": "Klein Base 4B ★", "flux2_dit_model": "", "flux2_text_encoder": "", "fp8_text_encoder": False,
+            "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
+            "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
             "output_dir": "", "output_name": "my-lora",
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
             "network_type": "LoRA", "lokr_factor": "", "network_dim_low": "32", "network_alpha_low": "16", "network_dim_high": "", "network_alpha_high": "",
@@ -1250,26 +1398,37 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def start_training(self):
         self.update_button_states(); settings = self.get_settings()
         if not self._check_logging_dependencies(settings.get("log_with")): return
+        mode = settings.get("training_mode", "Wan 2.2")
         if self.start_btn['state'] == 'disabled':
             messagebox.showerror("Validation Error", "Please fill all required fields before training."); return
+        if mode == "Krea 2":
+            if settings.get("fp8_base") and not settings.get("fp8_scaled"):
+                messagebox.showerror("Validation Error", "Krea 2 requires FP8 Scaled when FP8 Base is enabled.")
+                return
+            if settings.get("krea2_turbo_dit_cache") and not settings.get("krea2_turbo_dit"):
+                messagebox.showerror("Validation Error", "Turbo DiT cache requires a Turbo DiT model path in Krea 2 mode.")
+                return
+            if settings.get("krea2_turbo_dit") and (settings.get("blocks_to_swap") or "").strip() not in ("", "0"):
+                messagebox.showerror("Validation Error", "Krea 2 Turbo DiT sampling is not compatible with Blocks to Swap. Clear one of them.")
+                return
         # Warn if sample frequency is set but no prompts were added
         wants_samples = (settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first"))
-        if wants_samples and not self._sample_prompts_data:
-            messagebox.showwarning("No Sample Prompts", "You set a sample frequency but have no prompts in the Samples tab.\nNo samples will be generated.\n\nGo to the Samples tab and click '+ Add Prompt' to add at least one prompt.")
+        if wants_samples and self._count_enabled_sample_prompts() == 0:
+            messagebox.showwarning("No Active Sample Prompts", "You set a sample frequency but have no enabled prompts in the Samples tab.\nNo samples will be generated.\n\nEnable at least one saved prompt or add a new one.")
         
         self.loss_data.clear(); self.current_step = 0
         self.update_loss_graph(); self.start_vram_monitor(); self._start_sample_watcher()
         self.progress_var.set(0); self.progress_label_var.set("Starting sequence...")
         self.output_text.delete("1.0", tk.END); self.command_sequence = []
         python_executable = sys.executable or "python"
-        
-        mode = settings.get("training_mode", "Wan 2.2")
         is_wan = (mode == "Wan 2.2")
 
         if is_wan:
             cache_cmds = wan_backend.build_cache_commands(
                 settings, python_executable, temp_config_fn=self._create_temp_cache_config
             )
+        elif mode == "Krea 2":
+            cache_cmds = krea2_backend.build_cache_commands(settings, python_executable)
         else:
             cache_cmds = flux2_backend.build_cache_commands(settings, python_executable)
         self.command_sequence.extend(cache_cmds)
@@ -1293,6 +1452,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         mode = settings.get("training_mode", "Wan 2.2")
         if mode == "Wan 2.2":
             return wan_backend.build_commands(settings)
+        elif mode == "Krea 2":
+            return krea2_backend.build_commands(settings)
         else:
             return flux2_backend.build_commands(settings)
 
