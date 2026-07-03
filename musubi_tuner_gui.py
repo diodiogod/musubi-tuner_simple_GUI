@@ -78,6 +78,9 @@ class MusubiTunerGUI:
         self.command_sequence = []
         self.last_line_was_progress = False
         self.current_step = 0
+        self.current_total_steps = 0
+        self.current_epoch_num = 0
+        self.current_epoch_total = 0
         self.sample_watcher_active = False
         self._sample_watcher_thread = None
         self._last_sample_files = []
@@ -524,6 +527,8 @@ class MusubiTunerGUI:
             tag = "  |  " + "  ".join(params) if params else ""
             ttk.Label(row, text=summary + tag, anchor="w",
                       foreground="#CCCCCC" if p.get("enabled", True) else "#777777").pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Test", width=5,
+                       command=lambda i=idx: self._test_sample_prompt(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Dup", width=4,
                        command=lambda i=idx: self._duplicate_sample_prompt(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Edit", width=5,
@@ -551,6 +556,129 @@ class MusubiTunerGUI:
         self._sample_prompts_data.insert(idx + 1, duplicated)
         self._rebuild_prompt_list()
         self.update_button_states()
+
+    def _test_sample_prompt(self, idx):
+        if self.current_process:
+            messagebox.showwarning("Process Running", "Stop the current process before launching a test sample.")
+            return
+
+        settings = self.get_settings()
+        mode = settings.get("training_mode", "Wan 2.2")
+        if mode != "Krea 2":
+            messagebox.showinfo("Not Available", "Sample test generation is currently implemented for Krea 2 only.")
+            return
+
+        prompt_data = self._sample_prompts_data[idx]
+        try:
+            command = self._build_krea2_test_sample_command(settings, prompt_data)
+        except ValueError as e:
+            messagebox.showerror("Krea 2 Test Sample", str(e))
+            return
+
+        self.output_text.delete("1.0", tk.END)
+        self.run_status_var.set("🧪 Krea 2 Test Sample")
+        self.progress_label_var.set("Running test generation...")
+        self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text)
+
+    def _build_krea2_test_sample_command(self, settings, prompt_data):
+        required = {
+            "DiT model": settings.get("krea2_dit_model"),
+            "VAE model": settings.get("vae_model"),
+            "Text encoder": settings.get("krea2_text_encoder"),
+        }
+        missing = [name for name, path in required.items() if not path or not os.path.exists(path)]
+        if missing:
+            raise ValueError("Missing required Krea 2 paths for test sampling:\n- " + "\n- ".join(missing))
+
+        python_executable = sys.executable or "python"
+        dit_path = settings.get("krea2_turbo_dit") if settings.get("krea2_turbo_dit") else settings.get("krea2_dit_model")
+        if not dit_path or not os.path.exists(dit_path):
+            raise ValueError("The selected Krea 2 inference DiT path does not exist.")
+
+        output_root = Path(settings.get("output_dir", "")).expanduser()
+        output_name = settings.get("output_name", "").strip() or "krea2_test"
+        save_path = output_root / output_name / "sample_test"
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        attn_map = {
+            "sdpa": "torch",
+            "flash_attn": "flash",
+            "sage_attn": "sageattn",
+            "xformers": "xformers",
+        }
+        attn_mode = attn_map.get(settings.get("attention_mechanism"), "torch")
+
+        command = [
+            python_executable,
+            "src/musubi_tuner/krea2_generate_image.py",
+            prompt_data.get("prompt", ""),
+            "--dit", dit_path,
+            "--vae", settings["vae_model"],
+            "--text_encoder", settings["krea2_text_encoder"],
+            "--save_path", str(save_path),
+            "--attn_mode", attn_mode,
+        ]
+
+        if settings.get("fp8_scaled"):
+            command.append("--fp8_scaled")
+
+        blocks_to_swap = str(settings.get("blocks_to_swap") or "").strip()
+        if blocks_to_swap and blocks_to_swap != "0":
+            command.extend(["--blocks_to_swap", blocks_to_swap])
+
+        if settings.get("krea2_projector_diff"):
+            command.extend(["--projector_diff", settings["krea2_projector_diff"]])
+            strength = str(settings.get("krea2_projector_diff_strength") or "").strip()
+            if strength:
+                command.extend(["--projector_diff_strength", strength])
+
+        network_weights = str(settings.get("network_weights") or "").strip()
+        if network_weights and os.path.exists(network_weights):
+            command.extend(["--lora_weight", network_weights])
+
+        negative_prompt = prompt_data.get("neg", "").strip()
+        if negative_prompt:
+            command.extend(["--negative_prompt", negative_prompt])
+
+        width = str(prompt_data.get("width", "")).strip()
+        if width:
+            command.extend(["--width", width])
+
+        height = str(prompt_data.get("height", "")).strip()
+        if height:
+            command.extend(["--height", height])
+
+        steps = str(prompt_data.get("steps", "")).strip()
+        if steps:
+            command.extend(["--steps", steps])
+
+        guidance = str(prompt_data.get("guidance", "")).strip()
+        if guidance:
+            command.extend(["--guidance_scale", guidance])
+
+        seed = str(prompt_data.get("seed", "")).strip()
+        if seed:
+            command.extend(["--seed", seed])
+
+        mu = str(prompt_data.get("mu", "")).strip()
+        y1 = str(prompt_data.get("y1", "")).strip()
+        y2 = str(prompt_data.get("y2", "")).strip()
+        if mu:
+            command.extend(["--mu", mu])
+        if y1:
+            command.extend(["--y1", y1])
+        if y2:
+            command.extend(["--y2", y2])
+
+        return command
+
+    def _on_test_sample_complete(self, return_code):
+        if return_code == 0:
+            self.output_text.insert(tk.END, "\n--- Test sample completed successfully. ---\n")
+            self._refresh_sample_list()
+        else:
+            self.output_text.insert(tk.END, f"\n--- Test sample failed with code {return_code}. ---\n")
+        self.stop_all_activity()
 
     def _add_sample_prompt_dialog(self):
         self._open_prompt_dialog(None)
@@ -847,16 +975,28 @@ class MusubiTunerGUI:
         monitor_frame = ttk.LabelFrame(top_pane, text="Live Monitoring"); monitor_frame.pack(side='left', fill='both', expand=True)
         self.vram_label_var = tk.StringVar(value="VRAM: N/A"); ttk.Label(monitor_frame, textvariable=self.vram_label_var).pack(anchor='w', padx=10, pady=5)
         self.peak_vram_label_var = tk.StringVar(value="Peak VRAM: N/A"); ttk.Label(monitor_frame, textvariable=self.peak_vram_label_var).pack(anchor='w', padx=10)
+        self.epoch_counter_var = tk.StringVar(value="Epoch: N/A")
+        ttk.Label(monitor_frame, textvariable=self.epoch_counter_var).pack(anchor='w', padx=10, pady=(6, 0))
+        self.step_counter_var = tk.StringVar(value="Step: N/A")
+        ttk.Label(monitor_frame, textvariable=self.step_counter_var).pack(anchor='w', padx=10, pady=(2, 0))
+        self.next_epoch_var = tk.StringVar(value="To next epoch: N/A")
+        ttk.Label(monitor_frame, textvariable=self.next_epoch_var).pack(anchor='w', padx=10, pady=(2, 0))
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
-        bottom_pane = ttk.PanedWindow(tab_frame, orient=tk.HORIZONTAL); bottom_pane.pack(fill='both', expand=True, padx=10, pady=10)
+
+        bottom_pane_host = ttk.Frame(tab_frame, height=320)
+        bottom_pane_host.pack(fill='x', expand=False, padx=10, pady=10)
+        bottom_pane_host.pack_propagate(False)
+
+        bottom_pane = ttk.PanedWindow(bottom_pane_host, orient=tk.HORIZONTAL)
+        bottom_pane.pack(fill='both', expand=True)
         graph_frame = ttk.LabelFrame(bottom_pane, text="Live Loss"); bottom_pane.add(graph_frame, weight=1)
         if MATPLOTLIB_AVAILABLE:
-            self.fig = Figure(figsize=(5, 4), dpi=100); self.ax = self.fig.add_subplot(111)
+            self.fig = Figure(figsize=(5, 2.8), dpi=100); self.ax = self.fig.add_subplot(111)
             self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame); self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
             self.setup_graph_style()
         else: ttk.Label(graph_frame, text="Matplotlib not found.\nInstall with 'pip install matplotlib'", wraplength=200, justify='center').pack(expand=True)
         console_frame = ttk.LabelFrame(bottom_pane, text="Console Output"); bottom_pane.add(console_frame, weight=1)
-        self.output_text = tk.Text(console_frame, wrap=tk.WORD, bg='#3C3F41', fg='#D3D3D3', insertbackground='#D3D3D3', font=('Consolas', 9), relief=tk.FLAT, bd=0)
+        self.output_text = tk.Text(console_frame, wrap=tk.WORD, height=14, bg='#3C3F41', fg='#D3D3D3', insertbackground='#D3D3D3', font=('Consolas', 9), relief=tk.FLAT, bd=0)
         output_scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.output_text.yview)
         self.output_text.configure(yscrollcommand=output_scrollbar.set); self.output_text.pack(side="left", fill="both", expand=True); output_scrollbar.pack(side="right", fill="y")
 
@@ -1288,6 +1428,34 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         percentage = (current / total) * 100 if total > 0 else 0
         self.progress_var.set(percentage)
         self.progress_label_var.set(f"Epoch {current} of {total}" if total > 0 else "Epochs complete")
+
+    def update_training_counters(self, current_step=None, total_steps=None, current_epoch=None, total_epochs=None):
+        if current_step is not None:
+            self.current_step = current_step
+        if total_steps is not None:
+            self.current_total_steps = total_steps
+        if current_epoch is not None:
+            self.current_epoch_num = current_epoch
+        if total_epochs is not None:
+            self.current_epoch_total = total_epochs
+
+        if self.current_epoch_num > 0 and self.current_epoch_total > 0:
+            self.epoch_counter_var.set(f"Epoch: {self.current_epoch_num} / {self.current_epoch_total}")
+        else:
+            self.epoch_counter_var.set("Epoch: N/A")
+
+        if self.current_step > 0 and self.current_total_steps > 0:
+            self.step_counter_var.set(f"Step: {self.current_step} / {self.current_total_steps}")
+        else:
+            self.step_counter_var.set("Step: N/A")
+
+        if self.current_step > 0 and self.current_total_steps > 0 and self.current_epoch_num > 0 and self.current_epoch_total > 0:
+            steps_per_epoch = max(1, (self.current_total_steps + self.current_epoch_total - 1) // self.current_epoch_total)
+            next_epoch_step = min(self.current_total_steps, self.current_epoch_num * steps_per_epoch)
+            remaining = max(0, next_epoch_step - self.current_step)
+            self.next_epoch_var.set(f"To next epoch: {remaining} steps")
+        else:
+            self.next_epoch_var.set("To next epoch: N/A")
             
     def run_process(self, command, on_complete=None, output_widget=None):
         if output_widget is None: output_widget = self.output_text
@@ -1318,6 +1486,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def stop_all_activity(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
         self.stop_vram_monitor(); self._stop_sample_watcher(); self.current_process = None
+        self.current_step = 0
+        self.current_total_steps = 0
+        self.current_epoch_num = 0
+        self.current_epoch_total = 0
+        self.update_training_counters()
         self.update_button_states()
 
     def process_console_output(self, line, output_widget):
@@ -1353,15 +1526,31 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     self.root.after(0, self.process_console_output, buffer, output_widget)
                     if output_widget == self.output_text:
                         step_match = re.search(r"(\d+)/\d+ \[", buffer)
-                        if step_match:
-                            self.current_step = int(step_match.group(1))
+                        step_total_match = re.search(r"(\d+)/(\d+) \[", buffer)
+                        if step_total_match:
+                            self.root.after(
+                                0,
+                                self.update_training_counters,
+                                int(step_total_match.group(1)),
+                                int(step_total_match.group(2)),
+                                None,
+                                None,
+                            )
 
                         loss_match = re.search(r"loss=([\d\.]+)", buffer)
                         if loss_match and self.current_step > 0:
                             self.root.after(0, self.update_loss_graph, self.current_step, float(loss_match.group(1)))
 
-                        epoch_match = re.search(r"epoch\s*=\s*(\d+)\s*/\s*(\d+)", buffer, re.IGNORECASE)
+                        epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", buffer, re.IGNORECASE)
                         if epoch_match:
+                            self.root.after(
+                                0,
+                                self.update_training_counters,
+                                None,
+                                None,
+                                int(epoch_match.group(1)),
+                                int(epoch_match.group(2)),
+                            )
                             self.root.after(0, self.update_progress_bar, int(epoch_match.group(1)), int(epoch_match.group(2)))
                     buffer = ""
             if buffer: self.root.after(0, self.process_console_output, buffer, output_widget)
