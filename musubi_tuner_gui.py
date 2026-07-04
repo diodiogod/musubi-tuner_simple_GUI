@@ -7,6 +7,7 @@ import json
 import os
 import re
 import signal
+import struct
 import time
 import sys
 from pathlib import Path
@@ -154,6 +155,7 @@ class MusubiTunerGUI:
         self._sample_thumbnail_refs = {}
         self._sample_preview_images = {}
         self._sample_gallery_columns = 3
+        self._lora_shape_cache = {}
         self._job_history_path = "job_history_local.json"
         self._job_history = []
         self._jobs_tree = None
@@ -616,6 +618,54 @@ class MusubiTunerGUI:
         self.hidden_frames['high_noise_lora_params'] = ttk.LabelFrame(network_container, text="High Noise Network Parameters")
         self._add_widget(self.hidden_frames['high_noise_lora_params'], "network_dim_high", "Network Dimension (Rank):", "Leave blank to use the same as the Low Noise model. If different, a separate training run will be executed.", is_required=False, validate_num=True)
         self._add_widget(self.hidden_frames['high_noise_lora_params'], "network_alpha_high", "Network Alpha:", "Leave blank to use the same as the Low Noise model.", is_required=False, validate_num=True)
+
+        size_frame = ttk.LabelFrame(frame, text="Estimated Adapter Size")
+        size_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.lora_size_estimate_var = tk.StringVar(value="Select a DiT model and enter a rank to estimate the final LoRA size.")
+        size_label = ttk.Label(
+            size_frame,
+            textvariable=self.lora_size_estimate_var,
+            style="PageHelp.TLabel",
+            wraplength=900,
+            justify="left",
+        )
+        size_label.pack(fill="x", padx=10, pady=8)
+        ToolTip(
+            size_label,
+            "Estimates the final LoRA .safetensors file by reading model tensor shapes without loading model weights. Rank and network type change the size; network alpha only changes weight scaling and has no effect on file size. Optimizer and training-state files are not included.",
+        )
+
+        notes_frame = ttk.LabelFrame(frame, text="Training Notes")
+        notes_frame.pack(fill="x", padx=10, pady=(0, 10))
+        notes_help = ttk.Label(
+            notes_frame,
+            text="Saved with this GUI session, shown in Jobs, and embedded in LoRA metadata.",
+            style="PageHelp.TLabel",
+        )
+        notes_help.pack(anchor="w", padx=10, pady=(8, 3))
+        self.training_comment_text = tk.Text(
+            notes_frame,
+            height=4,
+            wrap=tk.WORD,
+            bg=self.colors["field"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            selectbackground=self.colors["selection"],
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=6,
+            font=("Segoe UI", 10),
+        )
+        self.training_comment_text.pack(fill="x", padx=10, pady=(0, 10))
+        self.entries["training_comment"] = self.training_comment_text
+        notes_tooltip = (
+            "Write reminders about the dataset, intended strength, trigger words, experiments, or results. "
+            "The complete text is saved in settings and local job history and is embedded in each output "
+            "safetensors file as ss_training_comment. It does not affect training."
+        )
+        ToolTip(notes_help, notes_tooltip)
+        ToolTip(self.training_comment_text, notes_tooltip)
 
         optimizer_frame = ttk.LabelFrame(frame, text="Optimizer Settings"); optimizer_frame.pack(fill="x", padx=10, pady=10)
         # Optimizer Type: preset dropdown + optional custom path entry
@@ -2418,6 +2468,9 @@ class MusubiTunerGUI:
         settings = settings or self.get_settings()
         self._stop_requested = False
         self._last_loss_value = None
+        training_comment = str(settings.get("training_comment") or "").strip()
+        if training_comment:
+            note = f"{note}\n\n{training_comment}".strip()
         self._active_job = {
             "kind": kind,
             "title": title,
@@ -2658,6 +2711,154 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         try: float(value); return True
         except ValueError: return False
 
+    @staticmethod
+    def _factor_dimension(dimension, factor=-1):
+        if factor > 0 and dimension % factor == 0:
+            first, second = factor, dimension // factor
+            return (first, second) if first <= second else (second, first)
+        limit = dimension if factor < 0 else factor
+        first, second = 1, dimension
+        best_length = first + second
+        while first < second:
+            candidate = first + 1
+            while dimension % candidate != 0:
+                candidate += 1
+            other = dimension // candidate
+            if candidate + other > best_length or candidate > limit:
+                break
+            first, second = candidate, other
+        return (first, second) if first <= second else (second, first)
+
+    def _target_linear_shapes(self, model_path, mode):
+        path = Path(model_path).expanduser()
+        if path.suffix.lower() != ".safetensors" or not path.is_file():
+            raise ValueError("select an existing .safetensors DiT model")
+        stat = path.stat()
+        cache_key = (str(path), mode, stat.st_size, stat.st_mtime_ns)
+        cached = self._lora_shape_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        with path.open("rb") as model_file:
+            header_size_raw = model_file.read(8)
+            if len(header_size_raw) != 8:
+                raise ValueError("the model does not have a valid safetensors header")
+            header_size = struct.unpack("<Q", header_size_raw)[0]
+            if header_size > 64 * 1024**2:
+                raise ValueError("the safetensors header is unexpectedly large")
+            header = json.loads(model_file.read(header_size))
+
+        shapes = []
+        for key, tensor in header.items():
+            if key == "__metadata__" or not key.endswith(".weight"):
+                continue
+            shape = tensor.get("shape", [])
+            if len(shape) != 2:
+                continue
+            if mode == "Wan 2.2":
+                targeted = re.search(r"(?:^|\.)blocks\.\d+\.", key) is not None
+            elif mode in ("Flux.2 Klein", "Flux.2 Dev"):
+                targeted = "double_blocks." in key or "single_blocks." in key
+            else:
+                targeted = True  # Krea 2 targets every Linear in its DiT.
+            if targeted:
+                shapes.append((int(shape[0]), int(shape[1])))
+
+        if not shapes:
+            raise ValueError("no target Linear layers were found in this model")
+        result = tuple(shapes)
+        self._lora_shape_cache = {cache_key: result}
+        return result
+
+    def _estimate_adapter_bytes(self, model_path, mode, rank, network_type, lokr_factor):
+        shapes = self._target_linear_shapes(model_path, mode)
+        parameter_count = 0
+        tensor_count = 0
+        for out_dim, in_dim in shapes:
+            if network_type == "LoHa":
+                parameter_count += 2 * rank * (out_dim + in_dim) + 1
+                tensor_count += 5
+            elif network_type == "LoKr":
+                in_small, in_large = self._factor_dimension(in_dim, lokr_factor)
+                out_small, out_large = self._factor_dimension(out_dim, lokr_factor)
+                parameter_count += out_small * in_small + 1
+                if rank < max(out_large, in_large) / 2:
+                    parameter_count += rank * (out_large + in_large)
+                    tensor_count += 4
+                else:
+                    parameter_count += out_large * in_large
+                    tensor_count += 3
+            else:
+                parameter_count += rank * (out_dim + in_dim) + 1
+                tensor_count += 3
+
+        # Network weights are saved as FP32 by default. Safetensors headers and
+        # training metadata add a small per-tensor overhead.
+        estimated_bytes = parameter_count * 4 + tensor_count * 120 + 8 * 1024
+        return estimated_bytes, len(shapes)
+
+    @staticmethod
+    def _format_estimated_size(byte_count):
+        if byte_count >= 1024**3:
+            return f"{byte_count / 1024**3:.2f} GiB"
+        return f"{byte_count / 1024**2:.1f} MiB"
+
+    def _update_lora_size_estimate(self):
+        if not hasattr(self, "lora_size_estimate_var"):
+            return
+        try:
+            mode = self.training_mode_var.get()
+            network_type = self.entries["network_type"].get()
+            factor_text = self.entries["lokr_factor"].get().strip()
+            lokr_factor = int(factor_text) if factor_text else -1
+
+            estimates = []
+            if mode == "Wan 2.2":
+                train_low = self.entries["train_low_noise"].var.get()
+                train_high = self.entries["train_high_noise"].var.get()
+                high_rank_text = self.entries["network_dim_high"].get().strip()
+                separate = train_low and train_high and bool(
+                    high_rank_text or self.entries["network_alpha_high"].get().strip()
+                )
+                if train_low:
+                    estimates.append((
+                        "Low-noise" if separate else "Final",
+                        self.entries["dit_low_noise"].get().strip(),
+                        self.entries["network_dim_low"].get().strip(),
+                    ))
+                if train_high and (separate or not train_low):
+                    estimates.append((
+                        "High-noise" if separate else "Final",
+                        self.entries["dit_high_noise"].get().strip(),
+                        high_rank_text or self.entries["network_dim_low"].get().strip(),
+                    ))
+            elif mode == "Krea 2":
+                estimates.append(("Final", self.entries["krea2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
+            else:
+                estimates.append(("Final", self.entries["flux2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
+
+            rendered = []
+            layer_counts = []
+            for label, model_path, rank_text in estimates:
+                rank = int(rank_text)
+                if rank < 1:
+                    raise ValueError("rank must be at least 1")
+                estimated_bytes, layer_count = self._estimate_adapter_bytes(
+                    model_path, mode, rank, network_type, lokr_factor
+                )
+                rendered.append(f"{label}: ≈ {self._format_estimated_size(estimated_bytes)}")
+                layer_counts.append(layer_count)
+
+            if not rendered:
+                raise ValueError("enable at least one model")
+            layers_text = f"{layer_counts[0]} targeted Linear layers" if len(set(layer_counts)) == 1 else "architecture target layers"
+            self.lora_size_estimate_var.set(
+                f"{' · '.join(rendered)} ({network_type}, FP32 save, {layers_text}). "
+                "Network alpha changes scaling, not file size."
+            )
+        except (ValueError, OSError, json.JSONDecodeError, struct.error) as exc:
+            self.lora_size_estimate_var.set(f"Estimated final LoRA size unavailable: {exc}. Network alpha does not affect size.")
+
     def _create_temp_cache_config(self, original_config_path):
         """Create a temporary dataset config for caching that excludes image_directory"""
         import tempfile
@@ -2686,6 +2887,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         try:
             self._update_dynamic_widgets()
             self._update_run_mode_controls()
+            self._update_lora_size_estimate()
             if self.entries["resume_path"].get(): self.run_status_var.set("🟢 Resuming Training RUN")
             else: self.run_status_var.set("⚪ New Training RUN")
         except (KeyError, AttributeError): pass
@@ -2855,6 +3057,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         for key, widget in self.entries.items():
             if isinstance(widget, (tk.BooleanVar, tk.StringVar)): settings[key] = widget.get()
             elif hasattr(widget, 'var'): settings[key] = widget.var.get()
+            elif isinstance(widget, tk.Text): settings[key] = widget.get("1.0", "end-1c")
             else: settings[key] = widget.get()
         settings["training_mode"] = self.training_mode_var.get()
         settings["appearance_mode"] = self.appearance_mode_var.get()
@@ -2897,6 +3100,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 elif isinstance(widget, ttk.Entry):
                     widget.delete(0, tk.END)
                     widget.insert(0, str(value) if value is not None else "")
+                elif isinstance(widget, tk.Text):
+                    widget.delete("1.0", tk.END)
+                    widget.insert("1.0", str(value) if value is not None else "")
         try: self._update_staged_summary()
         except AttributeError: pass
         self.update_button_states()
@@ -2911,6 +3117,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
             "output_dir": "", "output_name": "my-lora",
+            "training_comment": "",
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
             "network_type": "LoRA", "lokr_factor": "", "network_dim_low": "32", "network_alpha_low": "16", "network_dim_high": "", "network_alpha_high": "",
             "optimizer_type": "adamw8bit", "max_grad_norm": "1.0", "optimizer_args": "", "lr_scheduler": "cosine",

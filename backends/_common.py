@@ -105,6 +105,7 @@ def build_common_train_args(cmd, settings):
     add_arg(cmd, "--save_state", settings.get("save_state"))
     add_arg(cmd, "--resume", settings.get("resume_path"), is_path=True)
     add_arg(cmd, "--network_weights", settings.get("network_weights"), is_path=True)
+    add_arg(cmd, "--training_comment", settings.get("training_comment"))
 
     log = settings.get("log_with")
     if log and log != "none":
