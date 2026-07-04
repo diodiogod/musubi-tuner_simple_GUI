@@ -6,6 +6,7 @@ import threading
 import json
 import os
 import re
+import signal
 import time
 import sys
 from pathlib import Path
@@ -243,6 +244,22 @@ class MusubiTunerGUI:
         style.configure('TCheckbutton', font=('Segoe UI', 10)); style.configure('Title.TLabel', background=self.colors["surface"], font=('Segoe UI Semibold', 18))
         style.configure('Subtitle.TLabel', background=self.colors["surface"], foreground=self.colors["muted"], font=('Segoe UI', 9))
         style.configure('Status.TLabel', font=('Segoe UI Semibold', 11)); style.configure('TProgressbar', thickness=12, background=self.colors["accent"], troughcolor=FIELD_BG_COLOR)
+        style.configure(
+            "Console.Vertical.TScrollbar",
+            background=self.colors["surface_alt"],
+            troughcolor=FIELD_BG_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor=self.colors["surface_alt"],
+            darkcolor=self.colors["surface_alt"],
+            arrowcolor=TEXT_COLOR,
+            relief="flat",
+            borderwidth=1,
+            arrowsize=15,
+        )
+        style.map(
+            "Console.Vertical.TScrollbar",
+            background=[("active", self.colors["accent"]), ("pressed", self.colors["accent_hover"])],
+        )
         style.configure('Invalid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=ERROR_BORDER, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
         style.configure('Valid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=BORDER_COLOR, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
         style.configure(
@@ -338,7 +355,7 @@ class MusubiTunerGUI:
 
         self.root.bind("<Control-s>", lambda _e: self.save_settings())
         self.root.bind("<Control-o>", lambda _e: self.load_settings())
-        self.root.bind("<Control-Return>", lambda _e: self.start_training())
+        self.root.bind("<Control-Return>", lambda _e: self.start_selected_run())
         self.root.bind_all("<MouseWheel>", self._route_tab_mousewheel)
         self.root.bind_all("<Button-4>", self._route_tab_mousewheel)
         self.root.bind_all("<Button-5>", self._route_tab_mousewheel)
@@ -1532,15 +1549,32 @@ class MusubiTunerGUI:
         cache_opts_frame.pack(pady=5, padx=10, fill='x')
         self._add_widget(cache_opts_frame, "recache_latents", "Re-cache Latents Before Training", "If your dataset or VAE changes, check this to force regeneration of the latent cache.", kind='checkbox')
         self._add_widget(cache_opts_frame, "recache_text", "Re-cache Text Encoders Before Training", "If your dataset or T5 model changes, check this to force regeneration of the text encoder cache.", kind='checkbox')
-        train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
-        self.start_btn = ttk.Button(train_button_frame, text="Start Training", style="Accent.TButton", command=self.start_training); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
-        self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", style="Danger.TButton", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
-        staged_frame = ttk.Frame(controls_frame); staged_frame.pack(fill="x", padx=10, pady=(0, 8))
+
+        staged_frame = ttk.LabelFrame(controls_frame, text="Run Mode")
+        staged_frame.pack(fill="x", padx=10, pady=(4, 8))
+        self._add_widget(
+            staged_frame,
+            "use_staged_training",
+            "Use Staged Progression",
+            "When enabled, the Run button executes each configured stage in order and resumes the complete training state between stages. When disabled, the Run button performs one normal training run using the main form settings.",
+            kind="checkbox",
+            command=self._update_run_mode_controls,
+        )
+        staged_plan_frame = ttk.Frame(staged_frame)
+        staged_plan_frame.pack(fill="x", padx=10, pady=(0, 8))
         self.staged_summary_var = tk.StringVar(value="No staged run configured")
-        ttk.Label(staged_frame, textvariable=self.staged_summary_var, style="PageHelp.TLabel").pack(side="left", fill="x", expand=True)
-        ttk.Button(staged_frame, text="Staged Run…", command=self._open_staged_training_dialog).pack(side="right", padx=(8, 0))
-        self.staged_start_btn = ttk.Button(staged_frame, text="Run Stages", style="Accent.TButton", command=self.start_staged_training)
-        self.staged_start_btn.pack(side="right")
+        ttk.Label(staged_plan_frame, textvariable=self.staged_summary_var, style="PageHelp.TLabel").pack(side="left", fill="x", expand=True)
+        self.staged_config_btn = ttk.Button(staged_plan_frame, text="Configure Stages…", command=self._open_staged_training_dialog)
+        self.staged_config_btn.pack(side="right", padx=(8, 0))
+        ToolTip(
+            self.staged_config_btn,
+            "Opens the stage plan editor. Each stage selects its own dataset TOML and training limit; configuring a plan does not run it until Staged Progression is enabled and Run is pressed.",
+        )
+
+        train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
+        self.start_btn = ttk.Button(train_button_frame, text="Run Training", style="Accent.TButton", command=self.start_selected_run); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
+        ToolTip(self.start_btn, "Starts either one normal training run or the configured staged progression, according to the Run Mode selection above.")
+        self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", style="Danger.TButton", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(controls_frame, variable=self.progress_var, style='TProgressbar'); self.progress_bar.pack(pady=(5, 5), padx=10, fill='x')
         self.progress_label_var = tk.StringVar(value="Ready"); ttk.Label(controls_frame, textvariable=self.progress_label_var, anchor='center').pack(fill='x')
@@ -1571,9 +1605,39 @@ class MusubiTunerGUI:
         console_toolbar.pack(fill="x", padx=5, pady=(4, 2))
         ttk.Button(console_toolbar, text="Copy", command=self._copy_console_output).pack(side="right", padx=(4, 0))
         ttk.Button(console_toolbar, text="Clear", command=lambda: self.output_text.delete("1.0", tk.END)).pack(side="right")
-        self.output_text = tk.Text(console_frame, wrap=tk.WORD, height=14, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], selectbackground=self.colors["selection"], font=('Consolas', 9), relief=tk.FLAT, bd=0, padx=8, pady=6)
-        output_scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.output_text.yview)
-        self.output_text.configure(yscrollcommand=output_scrollbar.set); self.output_text.pack(side="left", fill="both", expand=True); output_scrollbar.pack(side="right", fill="y")
+        console_output_frame = ttk.Frame(console_frame)
+        console_output_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        console_output_frame.grid_rowconfigure(0, weight=1)
+        console_output_frame.grid_columnconfigure(0, weight=1)
+        console_output_frame.grid_columnconfigure(1, minsize=18)
+        self.output_text = tk.Text(console_output_frame, wrap=tk.WORD, height=14, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], selectbackground=self.colors["selection"], font=('Consolas', 9), relief=tk.FLAT, bd=0, padx=8, pady=6)
+        output_scrollbar = ttk.Scrollbar(
+            console_output_frame,
+            orient="vertical",
+            command=self.output_text.yview,
+            style="Console.Vertical.TScrollbar",
+        )
+        self.output_text.configure(yscrollcommand=output_scrollbar.set)
+        self.output_text.grid(row=0, column=0, sticky="nsew")
+        output_scrollbar.grid(row=0, column=1, sticky="ns", padx=(3, 0))
+
+    def _update_run_mode_controls(self):
+        try:
+            staged = self.entries["use_staged_training"].var.get()
+            self.start_btn.configure(text="Run Staged Training" if staged else "Run Training")
+            control_state = "disabled" if self.current_process else "normal"
+            self.entries["use_staged_training"].configure(state=control_state)
+            self.staged_config_btn.configure(state=control_state)
+        except (AttributeError, KeyError):
+            pass
+
+    def start_selected_run(self):
+        if self.current_process:
+            return
+        if self.entries["use_staged_training"].var.get():
+            self.start_staged_training()
+        else:
+            self.start_training()
 
     def _open_staged_training_dialog(self):
         dialog = tk.Toplevel(self.root)
@@ -2621,6 +2685,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def update_button_states(self, event=None):
         try:
             self._update_dynamic_widgets()
+            self._update_run_mode_controls()
             if self.entries["resume_path"].get(): self.run_status_var.set("🟢 Resuming Training RUN")
             else: self.run_status_var.set("⚪ New Training RUN")
         except (KeyError, AttributeError): pass
@@ -2691,11 +2756,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         if is_wan:
             if not (train_high or train_low): all_valid = False
-        self.start_btn.config(state="normal" if all_valid else "disabled")
-        try:
-            self.staged_start_btn.config(state="normal" if all_valid and not self.current_process else "disabled")
-        except AttributeError:
-            pass
+        self.start_btn.config(state="normal" if all_valid and not self.current_process else "disabled")
         try:
             if self.current_process:
                 self.validation_status_var.set("Training process active")
@@ -2869,7 +2930,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "training_mode": "Wan 2.2",
             "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
             "sample_prompts_data": [],
-            "staged_training_config": [], "staged_recache_latents": True,
+            "use_staged_training": False, "staged_training_config": [], "staged_recache_latents": True,
         }
         self.set_values(defaults)
 
@@ -3077,11 +3138,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     pass
                 self.vram_label_var.set("VRAM: Detecting process GPU...")
 
-            self.current_process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=project_root,
-                bufsize=0,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0, env=env
-            )
+            process_options = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "cwd": project_root,
+                "bufsize": 0,
+                "env": env,
+            }
+            if sys.platform == "win32":
+                process_options["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                process_options["start_new_session"] = True
+
+            self.current_process = subprocess.Popen(command, **process_options)
             # Popen's text mode applies universal-newline conversion, changing the
             # carriage returns used by tqdm into newlines. Preserve them so the
             # console can update one progress line in place.
@@ -3091,6 +3160,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 errors='replace',
                 newline='',
             )
+            self._update_run_mode_controls()
         except FileNotFoundError as e:
             messagebox.showerror("Error", f"Could not find '{e.filename}'. Is it in your system's PATH or venv?")
             if job_context and job_context.get("attach_to_active"):
@@ -3319,6 +3389,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 return
         if not self._check_logging_dependencies(base_settings.get("log_with")):
             return
+        if not self._check_compile_dependencies(base_settings):
+            return
         self.loss_data.clear()
         self.current_step = 0
         self.update_loss_graph()
@@ -3414,10 +3486,30 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             except Exception: messagebox.showerror("Missing Dependency", "Please run: pip install tensorboard"); return False
         return True
 
+    def _check_compile_dependencies(self, settings):
+        if not settings.get("compile") or settings.get("compile_backend", "inductor") != "inductor":
+            return True
+        try:
+            from torch.utils._triton import has_triton
+
+            if has_triton():
+                return True
+        except Exception:
+            pass
+        messagebox.showerror(
+            "Torch Compile unavailable",
+            "The Inductor backend cannot find a working Triton installation.\n\n"
+            "Effect: training would fail when the first DiT block is compiled.\n\n"
+            "Disable “Enable Torch Compile” to train normally, or install a Windows-compatible "
+            "Triton build in this virtual environment before enabling it.",
+        )
+        return False
+
     def start_training(self):
         self._staged_run = None
         self.update_button_states(); settings = self.get_settings()
         if not self._check_logging_dependencies(settings.get("log_with")): return
+        if not self._check_compile_dependencies(settings): return
         mode = settings.get("training_mode", "Wan 2.2")
         if self.start_btn['state'] == 'disabled':
             messagebox.showerror("Validation Error", "Please fill all required fields before training."); return
@@ -3476,11 +3568,47 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._staged_run = None
             self.run_status_var.set("🛑 Stopping Run")
             self.progress_label_var.set("Stopping current process...")
+            self.stop_btn.config(state="disabled")
+            process = self.current_process
+            threading.Thread(target=self._terminate_process_tree, args=(process,), daemon=True).start()
+
+    def _terminate_process_tree(self, process):
+        try:
+            if sys.platform == "win32":
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    check=False,
+                )
+                if result.returncode != 0 and process.poll() is None:
+                    raise RuntimeError(result.stdout.strip() or f"taskkill exited with code {result.returncode}")
+                return
+
+            process_group = os.getpgid(process.pid)
+            os.killpg(process_group, signal.SIGTERM)
             try:
-                self.current_process.terminate()
-            except Exception:
-                self._finalize_active_job("stopped", -1)
-                self.stop_all_activity()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process_group, signal.SIGKILL)
+        except Exception as exc:
+            if process.poll() is not None:
+                return
+            try:
+                if PSUTIL_AVAILABLE:
+                    parent = psutil.Process(process.pid)
+                    descendants = parent.children(recursive=True)
+                    for child in descendants:
+                        child.kill()
+                    parent.kill()
+                elif process.poll() is None:
+                    process.kill()
+            except Exception as fallback_exc:
+                message = f"Could not stop the training process tree:\n{exc}\n\nFallback also failed:\n{fallback_exc}"
+                self.root.after(0, messagebox.showerror, "Stop Training Failed", message)
+                self.root.after(0, self.stop_btn.config, {"state": "normal"})
 
     def build_training_commands(self):
         settings = self.get_settings()
