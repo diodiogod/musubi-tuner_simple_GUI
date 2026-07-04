@@ -1,0 +1,237 @@
+# Musubi Tuner Simple GUI - Project Index
+
+*Comprehensive file index for the Windows-focused multi-mode GUI wrapper around musubi-tuner*
+
+## Architecture Overview
+
+**Two-layer architecture** - the repo is split between a local desktop GUI layer and the upstream musubi-tuner training/runtime layer:
+
+1. **Desktop GUI** (`musubi_tuner_gui.py`) - Tkinter application, mode-aware forms, monitor, samples, job history, conversion tools
+2. **GUI Backend Adapters** (`backends/`) - translate GUI settings into cache/train command lines per supported mode
+3. **Root Wrapper Scripts** (`*_train_network.py`, `*_cache_*.py`, `*_generate_*.py`) - thin entrypoints that call the packaged `src/` modules
+4. **Packaged Training Core** (`src/musubi_tuner/training/`) - shared parser, trainer, logging, checkpointing, sampling hooks
+5. **Model-Family Implementations** (`src/musubi_tuner/<family>/`, `src/musubi_tuner/*_train*.py`) - architecture-specific training, caching, and inference flows
+6. **Shared Utilities** (`src/musubi_tuner/utils/`, `dataset/`, `modules/`, `networks/`) - dataset loading, LoRA handling, save logic, model utilities
+7. **Docs + Assets** (`docs/`) - upstream musubi-tuner docs plus GUI screenshots and user-facing references
+
+**Key architectural rules:**
+
+- GUI behavior should prefer living in `musubi_tuner_gui.py` and `backends/` rather than patching upstream-style `src/` training logic unless the backend itself genuinely needs a behavior change
+- `backends/` is the command-construction layer; it decides which wrappers/scripts run for each mode
+- Root-level wrapper scripts mirror packaged modules so users can launch workflows from the repo root without remembering `src/` module paths
+- The GUI keeps musubi-tuner’s underlying CLI workflow intact and mainly adds state management, UX, monitoring, and automation around it
+- Mode-specific required fields and visible sections are driven from the selected training mode inside the GUI, not from separate apps
+- Staged training, sample prompts, local job history, and post-run convenience behaviors are GUI-side orchestration features
+
+## Supported GUI Modes
+
+4 primary GUI modes currently ship in the app:
+
+| Mode | GUI Backend | Main Training Wrapper | Primary Docs |
+|------|-------------|-----------------------|--------------|
+| Wan 2.2 | `backends/wan.py` | `wan_train_network.py` | `docs/wan.md` |
+| Flux.2 Klein | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
+| Flux.2 Dev | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
+| Krea 2 | `backends/krea2.py` | `krea2_train_network.py` | `docs/krea2.md` |
+
+**Mode-specific GUI behavior includes:**
+
+- Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
+- Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection
+- Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults
+
+## Documentation Files
+
+**README.md** - Main GUI docs, installation, supported modes, workflow overview
+**CLAUDE.md** - Repo-specific dev instructions inherited from the user’s workflow
+**PROJECT_INDEX.md** - This project map
+
+### User / Reference Docs (`docs/`)
+
+- `wan.md` - Wan training and inference reference
+- `flux_2.md` - Flux.2 reference
+- `krea2.md` - Krea 2 reference
+- `dataset_config.md` - Dataset config reference
+- `sampling_during_training.md` - Sampling behavior reference
+- `advanced_config.md` - Advanced training flags and behaviors
+- `loha_lokr.md` - LoHa / LoKr notes
+- `musubi-tuner-gui.png` - Main GUI screenshot
+
+### Other Model Docs in `docs/`
+
+The repo also carries upstream musubi-tuner docs for additional architectures and utilities not all exposed directly in this GUI, including:
+
+- `framepack.md`, `framepack_1f.md`
+- `hunyuan_video.md`, `hunyuan_video_1_5.md`
+- `ideogram4.md`
+- `kandinsky5.md`
+- `qwen_image.md`
+- `zimage.md`
+- `tools.md`, `torch_compile.md`, `block_swap.md`
+
+## Core Files
+
+**`musubi_tuner_gui.py`** - Main Tkinter application; the center of GUI behavior
+**`README.md`** - Main project docs
+**`LAUNCH_GUI.bat`** - Windows launcher
+**`pyproject.toml`** - Package metadata and Python dependencies
+**`Base_SETTINGS.json`** - Example/default persisted settings snapshot
+
+## GUI Implementation
+
+### Main Desktop App
+
+- `musubi_tuner_gui.py` - everything GUI-side: tab layout, validation, process launch, output parsing, monitoring, sample gallery, job history, staged training, conversion, setup helpers
+
+### GUI Backend Adapters (`backends/`)
+
+- `_common.py` - shared command-building helpers and argument assembly
+- `wan.py` - Wan command construction
+- `flux2.py` - Flux.2 command construction
+- `krea2.py` - Krea 2 command construction
+
+**Backend responsibility split:**
+
+- GUI gathers/validates settings
+- backend modules convert those settings into concrete cache/train/generate commands
+- root wrapper scripts execute packaged `src/` modules
+
+## Root Wrapper Scripts
+
+These exist at repo root mainly as user-facing launch points that import the packaged implementations under `src/musubi_tuner/`.
+
+### Training Wrappers
+
+- `wan_train_network.py`
+- `flux_2_train_network.py`
+- `krea2_train_network.py`
+- `hv_train_network.py`
+- `hv_1_5_train_network.py`
+- `qwen_image_train_network.py`
+- `zimage_train_network.py`
+- `fpack_train_network.py`
+- `kandinsky5_train_network.py`
+
+### Cache Wrappers
+
+- `cache_latents.py`, `cache_text_encoder_outputs.py`
+- `wan_cache_latents.py`, `wan_cache_text_encoder_outputs.py`
+- `flux_2_cache_latents.py`, `flux_2_cache_text_encoder_outputs.py`
+- `krea2_cache_latents.py`, `krea2_cache_text_encoder_outputs.py`
+- additional family-specific cache wrappers for Hunyuan, Qwen Image, Z-Image, Kandinsky, FramePack, etc.
+
+### Generation / Utility Wrappers
+
+- `wan_generate_video.py`
+- `flux_2_generate_image.py`
+- `krea2_generate_image.py`
+- `qwen_image_generate_image.py`
+- `zimage_generate_image.py`
+- `convert_lora.py`
+- `merge_lora.py`
+- `qwen_extract_lora.py`
+- `lora_post_hoc_ema.py`
+
+## Packaged Training Core (`src/musubi_tuner/`)
+
+### Shared Training System
+
+- `training/trainer_base.py` - central shared training loop and checkpoint/sample orchestration
+- `training/parser_common.py` - shared CLI argument definitions
+- `training/accelerator_setup.py` - Accelerate setup helpers
+- `training/sampling_prompts.py` - prompt-driven sample support
+- `training/timesteps.py` - timestep logic
+
+### Shared Utilities
+
+- `utils/train_utils.py` - checkpoint/state naming, save/remove policies
+- `utils/huggingface_utils.py` - HF uploads/download helpers
+- `utils/model_utils.py` - dtype and model-save helpers
+- `utils/lora_utils.py` - LoRA merge/load utilities
+- `utils/safetensors_utils.py` - safetensors helpers, split-file loading
+- `utils/sai_model_spec.py` - metadata embedding/spec helpers
+- `utils/device_utils.py` - device synchronization helpers
+- `utils/image_utils.py` - shared image helpers
+
+### Dataset System
+
+- `dataset/config_utils.py` - dataset config parsing/validation
+- `dataset/image_video_dataset.py` - core dataset loader
+- `dataset/cache_io.py` - cache read/write logic
+- `dataset/bucket.py` - bucket handling
+- `dataset/media_utils.py` - media helpers
+- `dataset/datasources.py` - dataset source abstraction
+- `dataset/architectures.py` - architecture tagging/selection
+
+### Network / LoRA System
+
+- `networks/lora.py` - base LoRA implementation
+- `networks/loha.py`, `networks/lokr.py` - alternate network types
+- `networks/lora_wan.py`, `lora_flux_2.py`, `lora_krea2.py`, `lora_qwen_image.py`, `lora_zimage.py`, etc. - family-specific network glue
+- `networks/convert_*_to_comfy.py` - conversion helpers
+
+## Model Families in `src/musubi_tuner/`
+
+Each family generally follows the same pattern:
+
+1. root/module-level cache wrapper(s)
+2. training wrapper(s)
+3. generation wrapper(s)
+4. a dedicated package or helpers for model-specific runtime details
+
+### Major families present in this repo
+
+- `wan/` - Wan modules, configs, tokenizers, model loading
+- `flux/`, `flux_2/` - Flux family implementations
+- `krea2/` - Krea 2 encoder, MMDiT, sampling, utilities
+- `qwen_image/` - Qwen Image model code
+- `zimage/` - Z-Image model code
+- `kandinsky5/` - Kandinsky 5 implementation
+- `ideogram4/` - Ideogram 4 implementation
+- `hidream_o1/` - HiDream-O1 implementation
+- `hunyuan_model/`, `hunyuan_video_1_5/` - Hunyuan video model code
+- `frame_pack/` - FramePack workflows/utilities
+
+## Additional GUI Package (`src/musubi_tuner/gui/`)
+
+This is a separate packaged GUI implementation path from upstream musubi-tuner and is distinct from this repo’s main desktop file:
+
+- `gui.py` - packaged GUI implementation
+- `config_manager.py` - GUI config persistence
+- `i18n_data.py` - localization data
+- `gui.md`, `gui.ja.md` - GUI docs
+- `gui_implementation_plan.md` - implementation notes/planning
+
+For this fork, `musubi_tuner_gui.py` is the practical entrypoint users work with.
+
+## Utility Systems
+
+### Conversion / Merge Tools
+
+- `convert_lora.py` / `src/musubi_tuner/convert_lora.py`
+- `merge_lora.py` / `src/musubi_tuner/merge_lora.py`
+- `qwen_extract_lora.py`
+- `lora_post_hoc_ema.py`
+- `tools/merge_krea2_filterbypass.py`
+
+### Sample / Caption Helpers
+
+- `caption_images_by_qwen_vl.py`
+- sample generation wrappers for each model family
+
+## Typical GUI Workflow
+
+1. User selects a training mode in `musubi_tuner_gui.py`
+2. GUI validates mode-specific required fields and settings
+3. A backend adapter in `backends/` converts settings into command sequences
+4. Root wrapper scripts launch packaged `src/musubi_tuner/...` modules
+5. GUI monitors stdout, tracks loss/epochs/steps/VRAM, and watches sample outputs
+6. Job history, staged training, continuation behavior, and optional local post-run renames remain GUI-side
+
+## Current Repo Focus
+
+This fork is focused on:
+
+- making musubi-tuner easier to use from a single Windows desktop app
+- supporting several model families from one interface
+- improving staged training, sample management, continuation workflows, monitoring, and local productivity features without drifting too far from upstream backend behavior

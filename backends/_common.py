@@ -7,8 +7,10 @@ def normalize_path(p):
 
 
 def add_arg(cmd, key, value, is_path=False):
+    if value is None:
+        return
     clean = str(value).strip()
-    if clean in (None, "", "False"):
+    if clean in ("", "False"):
         return
     if clean in (True, "True"):
         cmd.append(key)
@@ -88,6 +90,7 @@ def build_common_train_args(cmd, settings):
         add_arg(cmd, "--lr_scheduler_power", settings.get("lr_scheduler_power"))
         add_arg(cmd, "--lr_scheduler_min_lr_ratio", settings.get("lr_scheduler_min_lr_ratio"))
 
+    add_arg(cmd, "--max_train_steps", settings.get("max_train_steps"))
     add_arg(cmd, "--max_train_epochs", settings.get("max_train_epochs"))
     add_arg(cmd, "--save_every_n_epochs", settings.get("save_every_n_epochs"))
     add_arg(cmd, "--save_every_n_steps", settings.get("save_every_n_steps"))

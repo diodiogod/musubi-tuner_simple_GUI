@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import subprocess
+import io
 import threading
 import json
 import os
@@ -29,6 +30,12 @@ try:
     PYNVML_AVAILABLE = True
 except Exception:
     PYNVML_AVAILABLE = False
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except Exception:
+    PSUTIL_AVAILABLE = False
 
 try:
     from PIL import Image, ImageTk
@@ -122,6 +129,9 @@ class MusubiTunerGUI:
         self.current_process = None
         self.monitoring_active = False
         self.vram_thread = None
+        self._vram_gpu_index = None
+        self._vram_previous_gpu_index = None
+        self._vram_baseline = []
         self.loss_data = []
         self.peak_vram = 0
         self.command_sequence = []
@@ -129,6 +139,7 @@ class MusubiTunerGUI:
         self._staged_training_config = []
         self._staged_recache_latents = True
         self.last_line_was_progress = False
+        self.last_progress_milestone = 0
         self.current_step = 0
         self.current_total_steps = 0
         self.current_epoch_num = 0
@@ -722,6 +733,14 @@ class MusubiTunerGUI:
         self._add_widget(wan22_frame, "force_v2_1_time_embedding", "Force v2.1 Time Embedding", "Use Wan2.1 time embedding format for Wan2.2 (reduces VRAM usage).", kind='checkbox')
 
         self._add_widget(other_frame, "save_state", "Save State", "Save the complete training state (optimizer, etc.) to allow resuming later.", kind='checkbox', default_val=True)
+        self._add_widget(
+            other_frame,
+            "rename_final_artifacts_to_epoch",
+            "Rename Final Save to Epoch Number",
+            "After training finishes, rename the final local LoRA file and final state folder from the upstream default names to the last epoch format, for example '-000002'. GUI-only; upstream trainer code stays unchanged.",
+            kind='checkbox',
+            default_val=True,
+        )
 
         resume_frame = ttk.LabelFrame(frame, text="Resume Training"); resume_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(resume_frame, "resume_path", "Resume from State:", "Path to a saved state folder to continue a previous training run.", kind='path_entry', is_dir=True, is_path=True)
@@ -1513,34 +1532,54 @@ class MusubiTunerGUI:
         dialog.title("Staged Resolution Training")
         dialog.transient(self.root)
         dialog.grab_set()
-        dialog.resizable(True, False)
-        dialog.minsize(760, 300)
+        dialog.resizable(True, True)
+        dialog.minsize(900, 360)
 
         host = ttk.Frame(dialog, padding=16)
         host.pack(fill="both", expand=True)
-        ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        host.grid_columnconfigure(0, weight=1)
+        ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             host,
-            text="Each enabled stage trains for its own epoch count. Later stages resume the complete state saved by the previous stage.",
+            text="Labels name the stage and its output; resolution comes from the dataset TOML. Each stage uses either epochs or a step cap.",
             style="PageHelp.TLabel",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 14))
-        ttk.Label(host, text="Use").grid(row=2, column=0, sticky="w")
-        ttk.Label(host, text="Stage").grid(row=2, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(host, text="Dataset TOML").grid(row=2, column=2, sticky="w", padx=(8, 0))
-        ttk.Label(host, text="Epochs").grid(row=2, column=3, sticky="w", padx=(8, 0))
-        host.grid_columnconfigure(2, weight=1)
+        ).grid(row=1, column=0, sticky="w", pady=(3, 14))
 
-        existing = {str(item.get("label")): item for item in self._staged_training_config}
+        table = ttk.Frame(host)
+        table.grid(row=2, column=0, sticky="nsew")
+        table.grid_columnconfigure(2, weight=1)
+        ttk.Label(table, text="Use").grid(row=0, column=0, sticky="w")
+        ttk.Label(table, text="Stage Label").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Dataset TOML").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Epochs").grid(row=0, column=3, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Max Steps").grid(row=0, column=4, sticky="w", padx=(8, 0))
+
         rows = []
+        next_row_index = [1]
         current_dataset = self.entries["dataset_config"].get().strip()
-        for row_index, label in enumerate(("256", "512", "1024"), start=3):
-            saved = existing.get(label, {})
+        initial_stages = self._staged_training_config or [
+            {
+                "label": label,
+                "enabled": True,
+                "dataset_config": current_dataset if label == "256" else "",
+                "epochs": self.entries["max_train_epochs"].get() or "1",
+                "steps": "",
+            }
+            for label in ("256", "512", "1024")
+        ]
+
+        def add_stage_row(saved=None):
+            saved = saved or {}
+            row_index = next_row_index[0]
+            next_row_index[0] += 1
             enabled = tk.BooleanVar(value=saved.get("enabled", True))
-            path_var = tk.StringVar(value=saved.get("dataset_config", current_dataset if label == "256" else ""))
+            label_var = tk.StringVar(value=str(saved.get("label", f"stage-{row_index}")))
+            path_var = tk.StringVar(value=saved.get("dataset_config", ""))
             epochs_var = tk.StringVar(value=str(saved.get("epochs", self.entries["max_train_epochs"].get() or "1")))
-            ttk.Checkbutton(host, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
-            ttk.Label(host, text=f"{label}px", width=8).grid(row=row_index, column=1, sticky="w", padx=(8, 0), pady=4)
-            path_host = ttk.Frame(host)
+            steps_var = tk.StringVar(value=str(saved.get("steps", "")))
+            ttk.Checkbutton(table, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
+            ttk.Entry(table, textvariable=label_var, width=14).grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=4)
+            path_host = ttk.Frame(table)
             path_host.grid(row=row_index, column=2, sticky="ew", padx=(8, 0), pady=4)
             path_entry = ttk.Entry(path_host, textvariable=path_var)
             path_entry.pack(side="left", fill="x", expand=True)
@@ -1551,35 +1590,105 @@ class MusubiTunerGUI:
                     var.set(selected)
 
             ttk.Button(path_host, text="Browse", command=browse).pack(side="right", padx=(5, 0))
-            ttk.Entry(host, textvariable=epochs_var, width=8).grid(row=row_index, column=3, sticky="ew", padx=(8, 0), pady=4)
-            rows.append((label, enabled, path_var, epochs_var))
+            epochs_entry = ttk.Entry(table, textvariable=epochs_var, width=8)
+            epochs_entry.grid(row=row_index, column=3, sticky="ew", padx=(8, 0), pady=4)
+            ttk.Entry(table, textvariable=steps_var, width=10).grid(row=row_index, column=4, sticky="ew", padx=(8, 0), pady=4)
+
+            def sync_limit_fields(*_args, steps=steps_var, epochs_widget=epochs_entry):
+                epochs_widget.configure(state="disabled" if steps.get().strip() else "normal")
+
+            steps_var.trace_add("write", sync_limit_fields)
+            sync_limit_fields()
+
+            row = {
+                "enabled": enabled,
+                "label": label_var,
+                "path": path_var,
+                "epochs": epochs_var,
+                "steps": steps_var,
+                "widgets": [],
+            }
+
+            def remove_stage(target=row):
+                if target not in rows:
+                    return
+                for widget in target["widgets"]:
+                    widget.destroy()
+                rows.remove(target)
+
+            remove_button = ttk.Button(table, text="Remove", command=remove_stage)
+            remove_button.grid(row=row_index, column=5, sticky="ew", padx=(8, 0), pady=4)
+            row["widgets"] = [
+                table.grid_slaves(row=row_index, column=column)[0]
+                for column in range(6)
+            ]
+            rows.append(row)
+
+        for stage in initial_stages:
+            add_stage_row(stage)
+
+        ttk.Button(host, text="+ Add Stage", command=add_stage_row).grid(row=3, column=0, sticky="w", pady=(10, 0))
 
         recache_var = tk.BooleanVar(value=getattr(self, "_staged_recache_latents", True))
         ttk.Checkbutton(
             host,
             text="Re-cache latents before every stage (recommended when resolution changes)",
             variable=recache_var,
-        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(12, 0))
+        ).grid(row=4, column=0, sticky="w", pady=(12, 0))
 
         actions = ttk.Frame(host)
-        actions.grid(row=7, column=0, columnspan=4, sticky="e", pady=(18, 0))
+        actions.grid(row=5, column=0, sticky="e", pady=(18, 0))
 
         def save_and_close():
             configured = []
-            for label, enabled, path_var, epochs_var in rows:
+            seen_labels = set()
+            invalid_label_chars = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+            for row in rows:
+                label = row["label"].get().strip()
+                label_key = self._stage_label_text({"label": label}).casefold()
+                if not label or invalid_label_chars.search(label) or label.endswith((".", " ")):
+                    messagebox.showerror(
+                        "Staged Run",
+                        "Every stage needs a filename-safe label without < > : \" / \\ | ? * or a trailing dot/space.",
+                        parent=dialog,
+                    )
+                    return
+                if label_key in seen_labels:
+                    messagebox.showerror("Staged Run", f"Stage labels must be unique: {label}", parent=dialog)
+                    return
+                seen_labels.add(label_key)
+
+                enabled = row["enabled"]
+                path_var = row["path"]
+                steps_text = row["steps"].get().strip()
+                epochs_text = "" if steps_text else row["epochs"].get().strip()
                 if not enabled.get():
-                    configured.append({"label": label, "enabled": False, "dataset_config": path_var.get().strip(), "epochs": epochs_var.get().strip()})
+                    configured.append({
+                        "label": label,
+                        "enabled": False,
+                        "dataset_config": path_var.get().strip(),
+                        "epochs": epochs_text,
+                        "steps": steps_text,
+                    })
                     continue
                 path = path_var.get().strip()
                 try:
-                    epochs = int(epochs_var.get())
+                    limit = int(steps_text or epochs_text)
                 except ValueError:
-                    messagebox.showerror("Staged Run", f"{label}px epochs must be a whole number.", parent=dialog)
+                    field_name = "steps" if steps_text else "epochs"
+                    messagebox.showerror("Staged Run", f"{label} {field_name} must be a whole number.", parent=dialog)
                     return
-                if epochs < 1 or not os.path.isfile(path):
-                    messagebox.showerror("Staged Run", f"{label}px needs an existing TOML file and at least 1 epoch.", parent=dialog)
+                if limit < 1 or not os.path.isfile(path):
+                    limit_name = "step" if steps_text else "epoch"
+                    messagebox.showerror("Staged Run", f"{label} needs an existing TOML file and at least 1 {limit_name}.", parent=dialog)
                     return
-                configured.append({"label": label, "enabled": True, "dataset_config": path, "epochs": str(epochs)})
+                configured.append({
+                    "label": label,
+                    "enabled": True,
+                    "dataset_config": path,
+                    "epochs": "" if steps_text else str(limit),
+                    "steps": str(limit) if steps_text else "",
+                })
             if not any(item["enabled"] for item in configured):
                 messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
                 return
@@ -1597,7 +1706,19 @@ class MusubiTunerGUI:
         if not enabled:
             self.staged_summary_var.set("No staged run configured")
             return
-        self.staged_summary_var.set(" → ".join(f"{item['label']}px × {item['epochs']}" for item in enabled))
+        self.staged_summary_var.set(" → ".join(f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}" for item in enabled))
+
+    @staticmethod
+    def _staged_limit_text(stage):
+        steps = str(stage.get("steps", "")).strip()
+        if steps:
+            return f"{steps} steps"
+        return f"{stage.get('epochs', '')} epochs"
+
+    @staticmethod
+    def _stage_label_text(stage):
+        label = str(stage.get("label", "")).strip()
+        return f"{label}px" if label.isdigit() else label
 
     def _copy_console_output(self):
         text = self.output_text.get("1.0", tk.END).strip()
@@ -2203,7 +2324,63 @@ class MusubiTunerGUI:
             "total_steps": 0,
             "current_epoch": 0,
             "total_epochs": 0,
+            "settings_snapshot": dict(settings),
         }
+
+    @staticmethod
+    def _effective_run_name(settings):
+        run_name = settings["output_name"]
+        if settings.get("training_mode") == "Wan 2.2":
+            train_low = bool(settings.get("train_low_noise"))
+            train_high = bool(settings.get("train_high_noise"))
+            combined = train_low and train_high and not (
+                str(settings.get("network_dim_high") or "").strip()
+                or str(settings.get("network_alpha_high") or "").strip()
+            )
+            if not combined:
+                run_name += "_HighNoise" if train_high else "_LowNoise"
+        return run_name
+
+    def _rename_final_training_artifacts(self, settings):
+        if not settings.get("rename_final_artifacts_to_epoch", True):
+            return
+        output_dir = str(settings.get("output_dir") or "").strip()
+        output_name = str(settings.get("output_name") or "").strip()
+        epoch_text = str(settings.get("max_train_epochs") or "").strip()
+        if not output_dir or not output_name or not epoch_text.isdigit():
+            return
+
+        run_name = self._effective_run_name(settings)
+        run_dir = Path(output_dir) / run_name
+        if not run_dir.is_dir():
+            return
+
+        epoch_suffix = f"{int(epoch_text):06d}"
+        rename_pairs = [
+            (run_dir / f"{run_name}.safetensors", run_dir / f"{run_name}-{epoch_suffix}.safetensors"),
+            (run_dir / f"{run_name}-state", run_dir / f"{run_name}-{epoch_suffix}-state"),
+        ]
+
+        for source_path, target_path in rename_pairs:
+            if not source_path.exists():
+                continue
+            if target_path.exists():
+                self.output_text.insert(
+                    tk.END,
+                    f"\n--- Skipped rename because target already exists: {target_path.name} ---\n",
+                )
+                continue
+            try:
+                source_path.rename(target_path)
+                self.output_text.insert(
+                    tk.END,
+                    f"\n--- Renamed final artifact: {source_path.name} -> {target_path.name} ---\n",
+                )
+            except Exception as e:
+                self.output_text.insert(
+                    tk.END,
+                    f"\n--- Failed to rename {source_path.name}: {e} ---\n",
+                )
 
     def _record_job_command(self, command):
         if not self._active_job:
@@ -2628,6 +2805,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "max_data_loader_n_workers": "2", "blocks_to_swap": "10", "timestep_sampling": "shift",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
             "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
+            "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "resume_path": "", "network_weights": "",
             "log_with": "none", "logging_dir": "", "log_prefix": "",
@@ -2666,7 +2844,17 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def start_vram_monitor(self):
         if not PYNVML_AVAILABLE: self.vram_label_var.set("VRAM: pynvml not installed"); return
         try:
-            pynvml.nvmlInit(); self.monitoring_active = True; self.peak_vram = 0
+            pynvml.nvmlInit()
+            self._vram_gpu_index = None
+            self._vram_previous_gpu_index = None
+            self._vram_baseline = [
+                pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
+                for index in range(pynvml.nvmlDeviceGetCount())
+            ]
+            self.monitoring_active = True
+            self.peak_vram = 0
+            self.vram_label_var.set("VRAM: Waiting for training GPU...")
+            self.peak_vram_label_var.set("Peak VRAM: N/A")
             self.vram_thread = threading.Thread(target=self.vram_monitor_loop, daemon=True); self.vram_thread.start()
         except pynvml.NVMLError: self.vram_label_var.set(f"VRAM: NVML Error")
 
@@ -2676,20 +2864,91 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             try: pynvml.nvmlShutdown()
             except pynvml.NVMLError: pass
 
+    def _training_process_ids(self):
+        process = self.current_process
+        if not process or process.poll() is not None:
+            return set()
+
+        process_ids = {process.pid}
+        if PSUTIL_AVAILABLE:
+            try:
+                process_ids.update(child.pid for child in psutil.Process(process.pid).children(recursive=True))
+            except (psutil.Error, OSError):
+                pass
+        return process_ids
+
+    @staticmethod
+    def _gpu_process_ids(handle):
+        process_ids = set()
+        queries = (
+            getattr(pynvml, "nvmlDeviceGetComputeRunningProcesses", None),
+            getattr(pynvml, "nvmlDeviceGetGraphicsRunningProcesses", None),
+        )
+        for query in queries:
+            if query is None:
+                continue
+            try:
+                process_ids.update(process.pid for process in query(handle))
+            except pynvml.NVMLError:
+                pass
+        return process_ids
+
+    def _detect_training_gpu(self, handles, memory_info):
+        training_process_ids = self._training_process_ids()
+        if training_process_ids:
+            for index, handle in enumerate(handles):
+                if training_process_ids & self._gpu_process_ids(handle):
+                    return index
+
+            # NVML process accounting is unavailable on some Windows driver
+            # modes. In that case, select the GPU whose usage grew after this
+            # training run started instead of assuming physical GPU 0.
+            deltas = [
+                info.used - self._vram_baseline[index]
+                for index, info in enumerate(memory_info)
+            ]
+            if deltas:
+                index = max(range(len(deltas)), key=deltas.__getitem__)
+                if deltas[index] >= 64 * 1024**2:
+                    return index
+        return None
+
     def vram_monitor_loop(self):
         try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            handles = [
+                pynvml.nvmlDeviceGetHandleByIndex(index)
+                for index in range(pynvml.nvmlDeviceGetCount())
+            ]
             while self.monitoring_active:
-                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                used_gb = info.used / (1024**3)
-                if used_gb > self.peak_vram: self.peak_vram = used_gb
-                self.root.after(0, self.update_vram_display, used_gb, self.peak_vram, info.total / (1024**3))
-                time.sleep(1)
-        except pynvml.NVMLError: self.root.after(0, lambda: self.vram_label_var.set("VRAM: Monitoring Error"))
+                memory_info = [pynvml.nvmlDeviceGetMemoryInfo(handle) for handle in handles]
+                if self._vram_gpu_index is None:
+                    detected_index = self._detect_training_gpu(handles, memory_info)
+                    if detected_index is not None:
+                        if self._vram_previous_gpu_index is not None and detected_index != self._vram_previous_gpu_index:
+                            self.peak_vram = 0
+                        self._vram_gpu_index = detected_index
+                        self._vram_previous_gpu_index = None
 
-    def update_vram_display(self, used, peak, total):
-        self.vram_label_var.set(f"VRAM: {used:.2f} GB / {total:.2f} GB")
-        self.peak_vram_label_var.set(f"Peak VRAM: {peak:.2f} GB")
+                if self._vram_gpu_index is not None:
+                    info = memory_info[self._vram_gpu_index]
+                    used_gb = info.used / (1024**3)
+                    if used_gb > self.peak_vram: self.peak_vram = used_gb
+                    self.root.after(
+                        0,
+                        self.update_vram_display,
+                        used_gb,
+                        self.peak_vram,
+                        info.total / (1024**3),
+                        self._vram_gpu_index,
+                    )
+                time.sleep(1)
+        except pynvml.NVMLError:
+            if self.monitoring_active:
+                self.root.after(0, lambda: self.vram_label_var.set("VRAM: Monitoring Error"))
+
+    def update_vram_display(self, used, peak, total, gpu_index):
+        self.vram_label_var.set(f"GPU {gpu_index} VRAM: {used:.2f} GB / {total:.2f} GB")
+        self.peak_vram_label_var.set(f"GPU {gpu_index} Peak VRAM: {peak:.2f} GB")
 
     def update_loss_graph(self, step=None, loss_value=None):
         if not MATPLOTLIB_AVAILABLE: return
@@ -2737,6 +2996,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
         self.last_line_was_progress = False
+        self.last_progress_milestone = 0
         command_display = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
         if job_context and job_context.get("attach_to_active"):
@@ -2747,10 +3007,34 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             project_root = os.getcwd(); src_path = os.path.join(project_root, 'src')
             env['PYTHONPATH'] = f"{src_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
 
+            if self.monitoring_active and PYNVML_AVAILABLE:
+                # Cache and Accelerate training commands may use different GPUs.
+                # Re-detect for every subprocess and preserve the peak only when
+                # the physical GPU stays the same.
+                self._vram_previous_gpu_index = self._vram_gpu_index
+                self._vram_gpu_index = None
+                try:
+                    self._vram_baseline = [
+                        pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
+                        for index in range(pynvml.nvmlDeviceGetCount())
+                    ]
+                except pynvml.NVMLError:
+                    pass
+                self.vram_label_var.set("VRAM: Detecting process GPU...")
+
             self.current_process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=project_root,
-                encoding='utf-8', errors='replace', bufsize=1,
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=project_root,
+                bufsize=0,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0, env=env
+            )
+            # Popen's text mode applies universal-newline conversion, changing the
+            # carriage returns used by tqdm into newlines. Preserve them so the
+            # console can update one progress line in place.
+            self.current_process.stdout = io.TextIOWrapper(
+                self.current_process.stdout,
+                encoding='utf-8',
+                errors='replace',
+                newline='',
             )
         except FileNotFoundError as e:
             messagebox.showerror("Error", f"Could not find '{e.filename}'. Is it in your system's PATH or venv?")
@@ -2786,7 +3070,22 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if is_progress_line:
             if self.last_line_was_progress: output_widget.delete("end-2l", "end-1l")
             output_widget.insert(tk.END, clean_line + '\n')
-            self.last_line_was_progress = True
+            # Milestone records are useful for the main training bar, but not for
+            # every short setup/cache tqdm bar emitted by the same process.
+            percent_match = (
+                re.search(r"(?<!\d)(\d{1,3})%", clean_line)
+                if clean_line.lower().startswith("steps:")
+                else None
+            )
+            percent = int(percent_match.group(1)) if percent_match else None
+            milestone = (percent // 10) * 10 if percent is not None else None
+            if milestone is not None and 10 <= milestone < 100 and milestone > self.last_progress_milestone:
+                # Keep one permanent console record per 10% completed. The next
+                # carriage-return update starts a new replaceable line below it.
+                self.last_progress_milestone = milestone
+                self.last_line_was_progress = False
+            else:
+                self.last_line_was_progress = True
         else:
             output_widget.insert(tk.END, line)
             self.last_line_was_progress = False
@@ -2805,11 +3104,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 if not char and self.current_process.poll() is not None: break
                 if not char: continue
                 buffer += char
-                if char in ('\n', '\r'):
-                    self.root.after(0, self.process_console_output, buffer, output_widget)
+                chunk = None
+                if char == '\n':
+                    # Keep CRLF together so normal Windows log lines are not
+                    # mistaken for tqdm's standalone carriage-return updates.
+                    chunk, buffer = buffer, ""
+                elif len(buffer) >= 2 and buffer[-2] == '\r':
+                    chunk, buffer = buffer[:-1], buffer[-1]
+
+                if chunk is not None:
+                    self.root.after(0, self.process_console_output, chunk, output_widget)
                     if output_widget == self.output_text:
-                        step_match = re.search(r"(\d+)/\d+ \[", buffer)
-                        step_total_match = re.search(r"(\d+)/(\d+) \[", buffer)
+                        step_match = re.search(r"(\d+)/\d+ \[", chunk)
+                        step_total_match = re.search(r"(\d+)/(\d+) \[", chunk)
                         if step_total_match:
                             self.root.after(
                                 0,
@@ -2820,13 +3127,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 None,
                             )
 
-                        loss_match = re.search(r"(?:avr_loss|loss)=([\d\.]+)", buffer)
+                        loss_match = re.search(r"(?:avr_loss|loss)=([\d\.]+)", chunk)
                         if loss_match and self.current_step > 0:
                             loss_value = float(loss_match.group(1))
                             self._last_loss_value = loss_value
                             self.root.after(0, self.update_loss_graph, self.current_step, loss_value)
 
-                        epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", buffer, re.IGNORECASE)
+                        epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", chunk, re.IGNORECASE)
                         if epoch_match:
                             self.root.after(
                                 0,
@@ -2837,7 +3144,6 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 int(epoch_match.group(2)),
                             )
                             self.root.after(0, self.update_progress_bar, int(epoch_match.group(1)), int(epoch_match.group(2)))
-                    buffer = ""
             if buffer: self.root.after(0, self.process_console_output, buffer, output_widget)
         except Exception as e:
             self.root.after(0, output_widget.insert, tk.END, f"\n[Read error] {e}\n")
@@ -2859,8 +3165,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             next_command = self.command_sequence.pop(0)
             self.run_process(next_command, self._run_next_command_in_sequence, self.output_text, job_context={"attach_to_active": True})
         elif self._staged_run:
+            previous = self._staged_run.get("previous_settings")
+            if previous:
+                self._rename_final_training_artifacts(previous)
             self._advance_staged_training()
         else:
+            if self._active_job and self._active_job.get("kind") == "training":
+                self._rename_final_training_artifacts(self._active_job.get("settings_snapshot", {}))
             self._finalize_active_job("completed", 0)
             self.output_text.insert(tk.END, f"\n--- All steps completed successfully. ---\n")
             self.stop_all_activity()
@@ -2883,17 +3194,30 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     @staticmethod
     def _final_state_path(settings):
-        run_name = settings["output_name"]
-        if settings.get("training_mode") == "Wan 2.2":
-            train_low = bool(settings.get("train_low_noise"))
-            train_high = bool(settings.get("train_high_noise"))
-            combined = train_low and train_high and not (
-                str(settings.get("network_dim_high") or "").strip()
-                or str(settings.get("network_alpha_high") or "").strip()
-            )
-            if not combined:
-                run_name += "_HighNoise" if train_high else "_LowNoise"
+        run_name = MusubiTunerGUI._effective_run_name(settings)
+        if not settings.get("rename_final_artifacts_to_epoch", True):
+            return Path(settings["output_dir"]) / run_name / f"{run_name}-state"
+        epoch_text = str(settings.get("max_train_epochs", "")).strip()
+        if epoch_text.isdigit():
+            return Path(settings["output_dir"]) / run_name / f"{run_name}-{int(epoch_text):06d}-state"
         return Path(settings["output_dir"]) / run_name / f"{run_name}-state"
+
+    @staticmethod
+    def _candidate_final_state_paths(settings):
+        run_name = MusubiTunerGUI._effective_run_name(settings)
+        base_dir = Path(settings["output_dir"]) / run_name
+        epoch_text = str(settings.get("max_train_epochs", "")).strip()
+        numbered = None
+        if epoch_text.isdigit():
+            numbered = base_dir / f"{run_name}-{int(epoch_text):06d}-state"
+        legacy = base_dir / f"{run_name}-state"
+
+        preferred = MusubiTunerGUI._final_state_path(settings)
+        candidates = [preferred]
+        for extra in (numbered, legacy):
+            if extra is not None and extra not in candidates:
+                candidates.append(extra)
+        return candidates
 
     def start_staged_training(self):
         if self.current_process:
@@ -2903,12 +3227,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if not stages:
             self._open_staged_training_dialog()
             return
+
+        def valid_stage(item):
+            steps = str(item.get("steps", "")).strip()
+            epochs = str(item.get("epochs", "")).strip()
+            limit = steps or epochs
+            return os.path.isfile(item.get("dataset_config", "")) and limit.isdigit() and int(limit) >= 1
+
         invalid_stage = next(
-            (item for item in stages if not os.path.isfile(item.get("dataset_config", "")) or not str(item.get("epochs", "")).isdigit() or int(item["epochs"]) < 1),
+            (item for item in stages if not valid_stage(item)),
             None,
         )
         if invalid_stage:
-            messagebox.showerror("Staged Run", f"The {invalid_stage.get('label', '?')}px stage has an invalid TOML path or epoch count.")
+            messagebox.showerror("Staged Run", f"The {self._stage_label_text(invalid_stage)} stage has an invalid TOML path or training limit.")
             return
         first_dataset = stages[0]["dataset_config"]
         self.entries["dataset_config"].delete(0, tk.END)
@@ -2953,7 +3284,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "staged_training",
             "Staged resolution training",
             settings=base_settings,
-            note=" → ".join(f"{item['label']}px × {item['epochs']}" for item in stages),
+            note=" → ".join(f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}" for item in stages),
         )
         self._advance_staged_training()
 
@@ -2964,9 +3295,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         previous = run.get("previous_settings")
         next_index = run["next_index"]
         if previous is not None and next_index < len(run["stages"]):
-            state_path = self._final_state_path(previous)
-            if not state_path.is_dir():
-                self.output_text.insert(tk.END, f"\n--- Expected continuation state was not created: {state_path} ---\n")
+            state_candidates = self._candidate_final_state_paths(previous)
+            state_path = next((path for path in state_candidates if path.is_dir()), None)
+            if state_path is None:
+                self.output_text.insert(
+                    tk.END,
+                    "\n--- Expected continuation state was not created. Checked: "
+                    + ", ".join(path.name for path in state_candidates)
+                    + " ---\n",
+                )
                 self._finalize_active_job("failed", -1)
                 self._staged_run = None
                 self.stop_all_activity()
@@ -2982,23 +3319,31 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         stage = run["stages"][next_index]
         settings = dict(run["base_settings"])
         settings["dataset_config"] = stage["dataset_config"]
-        settings["max_train_epochs"] = str(stage["epochs"])
-        settings["output_name"] = f"{run['base_output_name']}-{stage['label']}px"
+        stage_steps = str(stage.get("steps", "")).strip()
+        if stage_steps:
+            settings["max_train_steps"] = stage_steps
+            settings["max_train_epochs"] = ""
+        else:
+            settings["max_train_steps"] = ""
+            settings["max_train_epochs"] = str(stage["epochs"])
+        stage_label = self._stage_label_text(stage)
+        settings["output_name"] = f"{run['base_output_name']}-{stage_label}"
         settings["save_state"] = True
         settings["recache_latents"] = bool(self._staged_recache_latents)
         settings["recache_text"] = bool(settings.get("recache_text")) if next_index == 0 else False
-        settings["resume_path"] = str(self._final_state_path(previous)) if previous is not None else settings.get("resume_path", "")
+        settings["resume_path"] = str(state_path) if previous is not None else settings.get("resume_path", "")
         settings["network_weights"] = "" if settings["resume_path"] else settings.get("network_weights", "")
         settings["sample_prompts"] = self._build_sample_prompts_txt()
 
         run["previous_settings"] = settings
         run["next_index"] = next_index + 1
         self.set_values(settings)
-        self.run_status_var.set(f"🟢 Stage {next_index + 1}/{len(run['stages'])}: {stage['label']}px")
-        self.progress_label_var.set(f"Stage {next_index + 1}/{len(run['stages'])} · {stage['label']}px · {stage['epochs']} epochs")
+        self.run_status_var.set(f"🟢 Stage {next_index + 1}/{len(run['stages'])}: {stage_label}")
+        stage_limit = self._staged_limit_text(stage)
+        self.progress_label_var.set(f"Stage {next_index + 1}/{len(run['stages'])} · {stage_label} · {stage_limit}")
         self.output_text.insert(
             tk.END,
-            f"\n=== Stage {next_index + 1}/{len(run['stages'])}: {stage['label']}px for {stage['epochs']} epochs ===\n"
+            f"\n=== Stage {next_index + 1}/{len(run['stages'])}: {stage_label} for {stage_limit} ===\n"
             f"Dataset: {stage['dataset_config']}\n"
             f"Resume: {settings['resume_path'] or 'new training state'}\n",
         )
