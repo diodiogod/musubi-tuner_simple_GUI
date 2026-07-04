@@ -24,7 +24,12 @@ ECHO --- Starting Musubi Tuner GUI ---
 ECHO Please wait for the application to load...
 ECHO.
 python "%BATCH_DIR%musubi_tuner_gui.py"
+SET "EXIT_CODE=%ERRORLEVEL%"
 
-ECHO.
-ECHO --- GUI has been closed. ---
-PAUSE
+IF NOT "%EXIT_CODE%"=="0" (
+    ECHO.
+    ECHO --- GUI exited with error code %EXIT_CODE%. ---
+    PAUSE
+)
+
+EXIT /B %EXIT_CODE%

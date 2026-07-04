@@ -6,6 +6,8 @@ uv.lock
 main.exp
 main.lib
 main.obj
+last_settings.json
+job_history_local.json
 CLAUDE.md
 GEMINI.md
 .claude/

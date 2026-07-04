@@ -8,6 +8,8 @@ import re
 import time
 import sys
 from pathlib import Path
+from datetime import datetime
+from collections import defaultdict
 
 from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend
 from backends.flux2 import FLUX2_VERSION_MAP
@@ -27,6 +29,12 @@ try:
     PYNVML_AVAILABLE = True
 except Exception:
     PYNVML_AVAILABLE = False
+
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
 
 # --- Helper Class for Tooltips ---
 class ToolTip:
@@ -128,10 +136,22 @@ class MusubiTunerGUI:
         self._sample_list_frame = None
         self._sample_prompts_data = []  # list of dicts
         self._temp_prompts_file = None  # path to auto-written temp .txt
+        self._sample_thumbnail_refs = {}
+        self._sample_preview_images = {}
+        self._sample_gallery_columns = 3
+        self._job_history_path = "job_history_local.json"
+        self._job_history = []
+        self._jobs_tree = None
+        self._jobs_details_text = None
+        self._jobs_summary_var = tk.StringVar(value="No jobs recorded yet.")
+        self._active_job = None
+        self._stop_requested = False
+        self._last_loss_value = None
 
         self.create_interface()
         self.load_default_settings()
         self._load_last_settings()
+        self._load_job_history()
         self.update_button_states()
 
     def _load_saved_appearance(self):
@@ -211,6 +231,38 @@ class MusubiTunerGUI:
         style.configure('Status.TLabel', font=('Segoe UI Semibold', 11)); style.configure('TProgressbar', thickness=12, background=self.colors["accent"], troughcolor=FIELD_BG_COLOR)
         style.configure('Invalid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=ERROR_BORDER, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
         style.configure('Valid.TEntry', fieldbackground=FIELD_BG_COLOR, bordercolor=BORDER_COLOR, foreground=TEXT_COLOR, relief='solid', borderwidth=1)
+        style.configure(
+            'Treeview',
+            background=FIELD_BG_COLOR,
+            fieldbackground=FIELD_BG_COLOR,
+            foreground=TEXT_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            rowheight=28,
+            relief='flat',
+        )
+        style.map(
+            'Treeview',
+            background=[('selected', self.colors["selection"])],
+            foreground=[('selected', TEXT_COLOR)],
+        )
+        style.configure(
+            'Treeview.Heading',
+            background=self.colors["surface"],
+            foreground=TEXT_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor=BORDER_COLOR,
+            darkcolor=BORDER_COLOR,
+            font=('Segoe UI Semibold', 9),
+            relief='flat',
+            padding=(8, 6),
+        )
+        style.map(
+            'Treeview.Heading',
+            background=[('active', self.colors["surface_alt"])],
+            foreground=[('active', TEXT_COLOR)],
+        )
 
     def create_interface(self):
         self.root.grid_columnconfigure(0, weight=1)
@@ -257,6 +309,7 @@ class MusubiTunerGUI:
         self.create_advanced_tab()
         self.create_samples_tab()
         self.create_run_monitor_tab()
+        self.create_jobs_tab()
         self.create_convert_lora_tab()
         self.create_accelerate_config_tab()
         self._build_navigation()
@@ -291,7 +344,7 @@ class MusubiTunerGUI:
         return tab.content
 
     def _build_navigation(self):
-        labels = ("Models", "Training", "Advanced", "Samples", "Monitor", "Convert", "Setup")
+        labels = ("Models", "Training", "Advanced", "Samples", "Monitor", "Jobs", "Convert", "Setup")
         self._nav_buttons = []
         ttk.Label(self.nav_bar, text="WORKSPACE", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
         for index, label in enumerate(labels):
@@ -349,6 +402,10 @@ class MusubiTunerGUI:
         self.field_label_text = {}
         self.hidden_frames = {}
         self._sample_list_frame = None
+        self._sample_thumbnail_refs = {}
+        self._sample_preview_images = {}
+        self._jobs_tree = None
+        self._jobs_details_text = None
 
         self.setup_styles()
         self.create_interface()
@@ -803,7 +860,9 @@ class MusubiTunerGUI:
         self.output_text.delete("1.0", tk.END)
         self.run_status_var.set("🧪 Krea 2 Test Sample")
         self.progress_label_var.set("Running test generation...")
-        self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text)
+        prompt_summary = prompt_data.get("prompt", "")[:120]
+        self._begin_job("sample_test", "Krea 2 test sample", settings=settings, note=prompt_summary)
+        self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
 
     def _build_krea2_test_sample_command(self, settings, prompt_data):
         required = {
@@ -898,6 +957,7 @@ class MusubiTunerGUI:
         return command
 
     def _on_test_sample_complete(self, return_code):
+        self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)
         if return_code == 0:
             self.output_text.insert(tk.END, "\n--- Test sample completed successfully. ---\n")
             self._refresh_sample_list()
@@ -1113,12 +1173,7 @@ class MusubiTunerGUI:
         output_dir = self.entries["output_dir"].get()
         if not output_dir or not os.path.isdir(output_dir):
             messagebox.showinfo("Output Folder", "Output directory is not set or does not exist."); return
-        if sys.platform == "win32":
-            os.startfile(output_dir)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", output_dir])
-        else:
-            subprocess.Popen(["xdg-open", output_dir])
+        self._open_path(output_dir)
 
     def _get_sample_files(self):
         output_dir = self.entries["output_dir"].get()
@@ -1141,6 +1196,7 @@ class MusubiTunerGUI:
         if files == self._last_sample_files:
             return
         self._last_sample_files = files
+        self._sample_thumbnail_refs = {}
 
         for w in self._sample_list_frame.winfo_children():
             w.destroy()
@@ -1150,22 +1206,121 @@ class MusubiTunerGUI:
                       foreground=self.colors["muted"]).pack(padx=10, pady=10)
             return
 
-        for mtime, fpath in reversed(files):
-            row = ttk.Frame(self._sample_list_frame); row.pack(fill="x", padx=5, pady=1)
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
-            ttk.Label(row, text=ts, width=17, anchor="w").pack(side="left")
-            short = Path(fpath).name
-            if len(short) > 50:
-                short = short[:22] + "..." + short[-22:]
-            ttk.Label(row, text=short, anchor="w").pack(side="left", fill="x", expand=True)
-            def _open(p=fpath):
-                if sys.platform == "win32":
-                    os.startfile(p)
-                elif sys.platform == "darwin":
-                    subprocess.Popen(["open", p])
-                else:
-                    subprocess.Popen(["xdg-open", p])
-            ttk.Button(row, text="Open", width=6, command=_open).pack(side="right", padx=(5, 0))
+        columns = self._sample_gallery_columns
+        for col in range(columns):
+            self._sample_list_frame.grid_columnconfigure(col, weight=1, uniform="samplegrid")
+
+        for idx, (mtime, fpath) in enumerate(reversed(files)):
+            card = ttk.Frame(self._sample_list_frame, style="Surface.TFrame", padding=8)
+            row = idx // columns
+            col = idx % columns
+            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+            self._build_sample_card(card, mtime, fpath)
+
+    def _build_sample_card(self, parent, mtime, fpath):
+        ext = Path(fpath).suffix.lower()
+        is_image = ext in (".png", ".jpg", ".jpeg", ".webp")
+        thumb_frame = tk.Frame(parent, bg=self.colors["surface_alt"], highlightthickness=0, bd=0, width=180, height=140)
+        thumb_frame.pack(fill="x")
+        thumb_frame.pack_propagate(False)
+
+        if is_image and PIL_AVAILABLE:
+            thumbnail = self._load_thumbnail_image(fpath)
+            if thumbnail is not None:
+                thumb_label = tk.Label(
+                    thumb_frame,
+                    image=thumbnail,
+                    bg=self.colors["surface_alt"],
+                    cursor="hand2",
+                    relief=tk.FLAT,
+                    bd=0,
+                )
+                thumb_label.image = thumbnail
+                thumb_label.pack(expand=True)
+                thumb_label.bind("<Button-1>", lambda _e, p=fpath: self._open_sample_preview(p))
+            else:
+                self._build_sample_placeholder(thumb_frame, "Preview unavailable")
+        elif is_image:
+            self._build_sample_placeholder(thumb_frame, "PIL not installed")
+        else:
+            self._build_sample_placeholder(thumb_frame, ext.upper().lstrip(".") or "FILE")
+
+        name = Path(fpath).name
+        short_name = name if len(name) <= 38 else name[:18] + "..." + name[-16:]
+        ttk.Label(parent, text=short_name, anchor="w").pack(fill="x", pady=(8, 0))
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+        ttk.Label(parent, text=ts, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+
+        actions = ttk.Frame(parent)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="Preview" if is_image else "Open",
+            command=lambda p=fpath, image=is_image: self._open_sample_preview(p) if image else self._open_path(p),
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(actions, text="Folder", command=lambda p=fpath: self._open_path(os.path.dirname(p))).pack(side="left", padx=(6, 0))
+
+    def _build_sample_placeholder(self, parent, text):
+        label = tk.Label(
+            parent,
+            text=text,
+            bg=self.colors["surface_alt"],
+            fg=self.colors["muted"],
+            font=("Segoe UI Semibold", 11),
+        )
+        label.pack(expand=True)
+
+    def _load_thumbnail_image(self, fpath):
+        if not PIL_AVAILABLE:
+            return None
+        try:
+            with Image.open(fpath) as image:
+                preview = image.copy()
+            preview.thumbnail((180, 140))
+            photo = ImageTk.PhotoImage(preview)
+            self._sample_thumbnail_refs[fpath] = photo
+            return photo
+        except Exception:
+            return None
+
+    def _open_sample_preview(self, fpath):
+        ext = Path(fpath).suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".webp") or not PIL_AVAILABLE:
+            self._open_path(fpath)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(Path(fpath).name)
+        dialog.geometry("960x760")
+        dialog.minsize(420, 320)
+        dialog.configure(bg=self.colors["page"])
+
+        toolbar = ttk.Frame(dialog)
+        toolbar.pack(fill="x", padx=10, pady=(10, 6))
+        ttk.Button(toolbar, text="Open Externally", command=lambda: self._open_path(fpath)).pack(side="right")
+        info = ttk.Label(toolbar, text=fpath, style="PageHelp.TLabel", wraplength=760, justify="left")
+        info.pack(side="left", fill="x", expand=True)
+
+        viewport = tk.Canvas(dialog, bg=self.colors["field"], highlightthickness=0, bd=0)
+        viewport.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        def render_preview(_event=None):
+            try:
+                with Image.open(fpath) as source:
+                    preview = source.copy()
+                max_w = max(120, viewport.winfo_width() - 20)
+                max_h = max(120, viewport.winfo_height() - 20)
+                preview.thumbnail((max_w, max_h))
+                photo = ImageTk.PhotoImage(preview)
+                self._sample_preview_images[fpath] = photo
+                viewport.delete("all")
+                viewport.create_image(viewport.winfo_width() // 2, viewport.winfo_height() // 2, image=photo, anchor="center")
+            except Exception as exc:
+                viewport.delete("all")
+                viewport.create_text(20, 20, anchor="nw", text=f"Could not load preview:\n{exc}", fill=self.colors["muted"])
+
+        viewport.bind("<Configure>", render_preview)
+        render_preview()
 
     def _start_sample_watcher(self):
         if self._count_enabled_sample_prompts() == 0:
@@ -1240,6 +1395,641 @@ class MusubiTunerGUI:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
+
+    def create_jobs_tab(self):
+        tab_frame = ttk.Frame(self.notebook)
+        self.notebook.add(tab_frame, text="6  Jobs")
+        tab_frame.grid_columnconfigure(0, weight=1)
+        tab_frame.grid_rowconfigure(2, weight=1)
+
+        intro = ttk.Frame(tab_frame, style="Page.TFrame")
+        intro.grid(row=0, column=0, sticky="ew", padx=12, pady=(14, 5))
+        ttk.Label(intro, text="Recent jobs", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            intro,
+            text="Track completed, failed, and stopped runs locally. Historical imports read saved settings, model folders, and log files when available.",
+            style="PageHelp.TLabel",
+            wraplength=920,
+            justify="left",
+        ).pack(anchor="w", pady=(3, 0))
+
+        summary_row = ttk.Frame(tab_frame)
+        summary_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        ttk.Label(summary_row, textvariable=self._jobs_summary_var, style="PageHelp.TLabel").pack(side="left", fill="x", expand=True)
+        ttk.Button(summary_row, text="Refresh", command=self._refresh_job_history_view).pack(side="right", padx=(6, 0))
+        ttk.Button(summary_row, text="Import Found Jobs", command=self._import_historical_jobs).pack(side="right", padx=(6, 0))
+        ttk.Button(summary_row, text="Clear History", style="Danger.TButton", command=self._clear_job_history).pack(side="right")
+
+        split = ttk.PanedWindow(tab_frame, orient=tk.HORIZONTAL)
+        split.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        list_frame = ttk.LabelFrame(split, text="Recorded Jobs")
+        split.add(list_frame, weight=3)
+        columns = ("status", "mode", "started", "progress", "title")
+        self._jobs_tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=16,
+        )
+        headings = {
+            "status": "Status",
+            "mode": "Mode",
+            "started": "Started",
+            "progress": "Progress",
+            "title": "Title",
+        }
+        widths = {"status": 96, "mode": 92, "started": 132, "progress": 128, "title": 340}
+        anchors = {"status": "center", "mode": "center", "started": "center", "progress": "center", "title": "w"}
+        for key in columns:
+            self._jobs_tree.heading(key, text=headings[key])
+            self._jobs_tree.column(key, width=widths[key], minwidth=70, anchor=anchors[key], stretch=(key == "title"))
+        list_scroll_y = ttk.Scrollbar(list_frame, orient="vertical", command=self._jobs_tree.yview)
+        list_scroll_x = ttk.Scrollbar(list_frame, orient="horizontal", command=self._jobs_tree.xview)
+        self._jobs_tree.configure(yscrollcommand=list_scroll_y.set, xscrollcommand=list_scroll_x.set)
+        self._jobs_tree.pack(side="top", fill="both", expand=True, padx=6, pady=(6, 0))
+        list_scroll_y.pack(side="right", fill="y", pady=(6, 6), padx=(0, 6))
+        list_scroll_x.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
+        self._jobs_tree.bind("<<TreeviewSelect>>", lambda _e: self._show_selected_job_details())
+        self._jobs_tree.bind("<Double-1>", lambda _e: self._open_selected_job_output())
+
+        details_frame = ttk.LabelFrame(split, text="Job Details")
+        split.add(details_frame, weight=4)
+        details_toolbar = ttk.Frame(details_frame)
+        details_toolbar.pack(fill="x", padx=6, pady=(6, 0))
+        ttk.Button(details_toolbar, text="Open Output", command=self._open_selected_job_output).pack(side="left")
+        ttk.Button(details_toolbar, text="Open Logs", command=self._open_selected_job_logs).pack(side="left", padx=(6, 0))
+        ttk.Button(details_toolbar, text="Copy Command", command=self._copy_selected_job_command).pack(side="left", padx=(6, 0))
+        self._jobs_details_text = tk.Text(
+            details_frame,
+            wrap=tk.WORD,
+            bg=self.colors["field"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            selectbackground=self.colors["selection"],
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=6,
+            state="disabled",
+        )
+        details_scroll = ttk.Scrollbar(details_frame, orient="vertical", command=self._jobs_details_text.yview)
+        self._jobs_details_text.configure(yscrollcommand=details_scroll.set)
+        self._jobs_details_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        details_scroll.pack(side="right", fill="y", pady=6, padx=(0, 6))
+        self._refresh_job_history_view()
+
+    def _load_job_history(self):
+        try:
+            with open(self._job_history_path, "r", encoding="utf-8") as history_file:
+                data = json.load(history_file)
+            self._job_history = data if isinstance(data, list) else []
+        except (OSError, ValueError, TypeError):
+            self._job_history = []
+        self._refresh_job_history_view()
+
+    def _save_job_history(self):
+        try:
+            with open(self._job_history_path, "w", encoding="utf-8") as history_file:
+                json.dump(self._job_history[:200], history_file, indent=2)
+        except OSError:
+            pass
+
+    def _refresh_job_history_view(self):
+        if self._jobs_tree is None:
+            return
+        for item in self._jobs_tree.get_children():
+            self._jobs_tree.delete(item)
+        completed = failed = stopped = 0
+        for job in self._job_history:
+            status = job.get("status", "unknown")
+            if status == "completed":
+                completed += 1
+            elif status == "failed":
+                failed += 1
+            elif status == "stopped":
+                stopped += 1
+        total = len(self._job_history)
+        self._jobs_summary_var.set(
+            f"{total} jobs saved locally  |  completed {completed}  |  failed {failed}  |  stopped {stopped}"
+            if total else "No jobs recorded yet."
+        )
+        for index, job in enumerate(self._job_history):
+            started = job.get("started_at", "")
+            timestamp = started.replace("T", " ")[:16] if started else ""
+            step_now = job.get("current_step") or 0
+            step_total = job.get("total_steps") or 0
+            epoch_now = job.get("current_epoch") or 0
+            epoch_total = job.get("total_epochs") or 0
+            if step_total:
+                progress = f"{step_now}/{step_total}"
+            elif epoch_total:
+                progress = f"e{epoch_now}/{epoch_total}"
+            else:
+                progress = "-"
+            self._jobs_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    job.get("status", "unknown"),
+                    job.get("mode", ""),
+                    timestamp,
+                    progress,
+                    job.get("title", "Job"),
+                ),
+            )
+        if self._job_history:
+            first = self._jobs_tree.get_children()[0]
+            self._jobs_tree.selection_set(first)
+            self._jobs_tree.focus(first)
+            self._show_selected_job_details()
+        else:
+            self._set_job_details_text("No recorded jobs yet.")
+
+    def _selected_job(self):
+        if self._jobs_tree is None:
+            return None
+        selection = self._jobs_tree.selection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if index >= len(self._job_history):
+            return None
+        return self._job_history[index]
+
+    def _set_job_details_text(self, text):
+        if self._jobs_details_text is None:
+            return
+        self._jobs_details_text.config(state="normal")
+        self._jobs_details_text.delete("1.0", tk.END)
+        self._jobs_details_text.insert("1.0", text)
+        self._jobs_details_text.config(state="disabled")
+
+    def _show_selected_job_details(self):
+        job = self._selected_job()
+        if not job:
+            self._set_job_details_text("No recorded jobs yet.")
+            return
+        lines = [
+            f"Title: {job.get('title', '')}",
+            f"Kind: {job.get('kind', '')}",
+            f"Status: {job.get('status', '')}",
+            f"Mode: {job.get('mode', '')}",
+            f"Started: {job.get('started_at', '')}",
+            f"Finished: {job.get('finished_at', '')}",
+            f"Duration: {job.get('duration_seconds', 0):.1f}s" if job.get("duration_seconds") is not None else "Duration: N/A",
+            f"Output Name: {job.get('output_name', '')}",
+            f"Output Dir: {job.get('output_dir', '')}",
+            f"Resume: {job.get('resume_path', '')}",
+            f"Logging Dir: {job.get('logging_dir', '')}",
+            f"Peak VRAM: {job.get('peak_vram_gb', 'N/A')}",
+            f"Last Loss: {job.get('last_loss', 'N/A')}",
+            f"Step: {job.get('current_step', 'N/A')} / {job.get('total_steps', 'N/A')}",
+            f"Epoch: {job.get('current_epoch', 'N/A')} / {job.get('total_epochs', 'N/A')}",
+            "",
+            "Prompt / note:",
+            job.get("note", "") or "(none)",
+            "",
+            "Commands:",
+        ]
+        commands = job.get("commands") or []
+        if commands:
+            lines.extend(commands)
+        else:
+            lines.append("(none)")
+        self._set_job_details_text("\n".join(lines))
+
+    def _open_path(self, path):
+        if not path:
+            return
+        if os.path.isfile(path):
+            target = path
+        elif os.path.isdir(path):
+            target = path
+        else:
+            return
+        if sys.platform == "win32":
+            os.startfile(target)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
+
+    def _open_selected_job_output(self):
+        job = self._selected_job()
+        if not job:
+            return
+        output_dir = job.get("output_dir", "")
+        output_name = job.get("output_name", "")
+        preferred = os.path.join(output_dir, output_name) if output_dir and output_name else output_dir
+        if os.path.exists(preferred):
+            self._open_path(preferred)
+        elif output_dir and os.path.exists(output_dir):
+            self._open_path(output_dir)
+
+    def _open_selected_job_logs(self):
+        job = self._selected_job()
+        if not job:
+            return
+        logging_dir = job.get("logging_dir", "")
+        if logging_dir and os.path.exists(logging_dir):
+            self._open_path(logging_dir)
+
+    def _copy_selected_job_command(self):
+        job = self._selected_job()
+        if not job:
+            return
+        commands = job.get("commands") or []
+        if not commands:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n\n".join(commands))
+
+    def _clear_job_history(self):
+        if not self._job_history:
+            return
+        if not messagebox.askyesno("Clear job history", "Delete all locally saved job history entries?"):
+            return
+        self._job_history = []
+        self._save_job_history()
+        self._refresh_job_history_view()
+
+    def _infer_mode_from_path(self, value):
+        lowered = str(value or "").lower()
+        if "krea" in lowered:
+            return "Krea 2"
+        if "flux" in lowered or "klein" in lowered:
+            return "Flux.2"
+        if "wan" in lowered:
+            return "Wan 2.2"
+        return "Unknown"
+
+    def _history_key(self, job):
+        return (
+            job.get("kind", ""),
+            job.get("output_dir", ""),
+            job.get("output_name", ""),
+            job.get("started_at", ""),
+            job.get("title", ""),
+        )
+
+    def _extract_metrics_from_output_log(self, text):
+        step_now = step_total = epoch_now = epoch_total = 0
+        loss_value = None
+
+        step_matches = re.findall(r"^steps:\s+\d+%\|.*?\|\s*(\d+)/(\d+)\s+\[", text, re.MULTILINE)
+        if step_matches:
+            step_now, step_total = map(int, step_matches[-1])
+
+        epoch_matches = re.findall(r"epoch\s+(\d+)/(\d+)", text, re.IGNORECASE)
+        if epoch_matches:
+            epoch_now, epoch_total = map(int, epoch_matches[-1])
+
+        loss_matches = re.findall(r"avr_loss=([\d.]+)", text)
+        if loss_matches:
+            try:
+                loss_value = float(loss_matches[-1])
+            except ValueError:
+                loss_value = None
+
+        return step_now, step_total, epoch_now, epoch_total, loss_value
+
+    def _extract_command_context_from_wandb_config(self, text):
+        context = {
+            "commands": [],
+            "output_dir": "",
+            "output_name": "",
+            "resume_path": "",
+            "started_at": "",
+        }
+
+        started_match = re.search(r"startedAt:\s*\"([^\"]+)\"", text)
+        if started_match:
+            context["started_at"] = started_match.group(1).replace("Z", "")
+
+        key_map = {"--output_dir": "output_dir", "--output_name": "output_name", "--resume": "resume_path"}
+        current_key = None
+        command_parts = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("- "):
+                value = line[2:].strip().strip('"')
+                command_parts.append(value)
+                if value in key_map:
+                    current_key = key_map[value]
+                elif current_key:
+                    context[current_key] = value
+                    current_key = None
+            elif current_key:
+                current_key = None
+        if command_parts:
+            context["commands"] = [" ".join(f'"{part}"' if " " in part else part for part in command_parts)]
+        return context
+
+    def _normalise_imported_job(self, job):
+        normalised = {
+            "kind": job.get("kind", "training"),
+            "title": job.get("title", "Imported job"),
+            "mode": job.get("mode", "Unknown"),
+            "status": job.get("status", "completed"),
+            "started_at": job.get("started_at", ""),
+            "finished_at": job.get("finished_at", ""),
+            "duration_seconds": job.get("duration_seconds"),
+            "return_code": job.get("return_code"),
+            "output_dir": job.get("output_dir", ""),
+            "output_name": job.get("output_name", ""),
+            "resume_path": job.get("resume_path", ""),
+            "logging_dir": job.get("logging_dir", ""),
+            "note": job.get("note", ""),
+            "commands": job.get("commands", []),
+            "peak_vram_gb": job.get("peak_vram_gb"),
+            "last_loss": job.get("last_loss"),
+            "current_step": job.get("current_step", 0),
+            "total_steps": job.get("total_steps", 0),
+            "current_epoch": job.get("current_epoch", 0),
+            "total_epochs": job.get("total_epochs", 0),
+        }
+        return normalised
+
+    def _import_historical_jobs(self):
+        settings = self.get_settings()
+        roots = []
+        output_dir = settings.get("output_dir", "")
+        logging_dir = settings.get("logging_dir", "")
+        if output_dir:
+            roots.append(Path(output_dir).expanduser())
+            parent = Path(output_dir).expanduser().parent
+            if parent not in roots:
+                roots.append(parent)
+        if logging_dir:
+            roots.append(Path(logging_dir).expanduser())
+        roots = [root for root in roots if root.exists()]
+        if not roots:
+            messagebox.showinfo("Import Jobs", "Set a valid output or logging directory first.")
+            return
+
+        imported = []
+        imported.extend(self._scan_settings_json_jobs(roots))
+        imported.extend(self._scan_model_directory_jobs(roots))
+        imported.extend(self._scan_log_directory_jobs(roots))
+
+        existing = {self._history_key(job): index for index, job in enumerate(self._job_history)}
+        added = 0
+        updated = 0
+        for job in imported:
+            normalised = self._normalise_imported_job(job)
+            key = self._history_key(normalised)
+            if key in existing:
+                current = self._job_history[existing[key]]
+                current.update({k: v for k, v in normalised.items() if v not in ("", [], None, 0) or k in ("status", "mode", "title")})
+                updated += 1
+            else:
+                self._job_history.append(normalised)
+                existing[key] = len(self._job_history) - 1
+                added += 1
+
+        self._job_history.sort(key=lambda job: job.get("started_at", ""), reverse=True)
+        self._job_history = self._job_history[:200]
+        self._save_job_history()
+        self._refresh_job_history_view()
+        messagebox.showinfo("Import Jobs", f"Imported {added} historical job(s), updated {updated}.")
+
+    def _scan_settings_json_jobs(self, roots):
+        jobs = []
+        for root in roots:
+            for json_path in root.glob("*.json"):
+                try:
+                    with open(json_path, "r", encoding="utf-8") as handle:
+                        data = json.load(handle)
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if "output_dir" not in data or "output_name" not in data:
+                    continue
+                started = datetime.fromtimestamp(json_path.stat().st_mtime).isoformat(timespec="seconds")
+                jobs.append(
+                    {
+                        "kind": "training",
+                        "title": data.get("output_name") or json_path.stem,
+                        "mode": self._infer_mode_from_path(
+                            data.get("LoRA_type") or data.get("training_mode") or data.get("pretrained_model_name_or_path") or json_path.name
+                        ),
+                        "status": "completed",
+                        "started_at": started,
+                        "finished_at": started,
+                        "output_dir": data.get("output_dir", ""),
+                        "output_name": data.get("output_name", ""),
+                        "logging_dir": data.get("logging_dir", ""),
+                        "resume_path": data.get("resume", ""),
+                        "note": f"Imported from settings file {json_path.name}",
+                        "commands": [],
+                        "current_epoch": data.get("epoch", 0) or data.get("max_train_epochs", 0) or 0,
+                        "total_epochs": data.get("max_train_epochs", 0) or 0,
+                    }
+                )
+        return jobs
+
+    def _scan_model_directory_jobs(self, roots):
+        jobs = []
+        seen_dirs = set()
+        for root in roots:
+            search_root = root if root.is_dir() else root.parent
+            for state_dir in search_root.rglob("*-state"):
+                if not state_dir.is_dir():
+                    continue
+                run_dir = state_dir.parent
+                if run_dir in seen_dirs:
+                    continue
+                seen_dirs.add(run_dir)
+                mode = self._infer_mode_from_path(run_dir.as_posix())
+                states = sorted(p for p in run_dir.glob("*-state") if p.is_dir())
+                sample_dir = run_dir / "sample"
+                sample_test_dir = run_dir / "sample_test"
+                started_ts = min((p.stat().st_mtime for p in states), default=run_dir.stat().st_mtime)
+                finished_ts = max(
+                    [p.stat().st_mtime for p in states] +
+                    ([sample_dir.stat().st_mtime] if sample_dir.exists() else []) +
+                    ([sample_test_dir.stat().st_mtime] if sample_test_dir.exists() else [])
+                )
+                jobs.append(
+                    {
+                        "kind": "training",
+                        "title": run_dir.name,
+                        "mode": mode,
+                        "status": "completed",
+                        "started_at": datetime.fromtimestamp(started_ts).isoformat(timespec="seconds"),
+                        "finished_at": datetime.fromtimestamp(finished_ts).isoformat(timespec="seconds"),
+                        "output_dir": str(run_dir.parent),
+                        "output_name": run_dir.name,
+                        "logging_dir": "",
+                        "resume_path": "",
+                        "note": "Imported from model/state folders",
+                        "commands": [],
+                        "current_epoch": len(states),
+                        "total_epochs": len(states),
+                    }
+                )
+                if sample_test_dir.exists():
+                    for sample_file in sorted(sample_test_dir.glob("*")):
+                        if sample_file.is_file():
+                            ts = datetime.fromtimestamp(sample_file.stat().st_mtime).isoformat(timespec="seconds")
+                            jobs.append(
+                                {
+                                    "kind": "sample_test",
+                                    "title": f"{run_dir.name} sample test",
+                                    "mode": mode,
+                                    "status": "completed",
+                                    "started_at": ts,
+                                    "finished_at": ts,
+                                    "output_dir": str(run_dir.parent),
+                                    "output_name": run_dir.name,
+                                    "logging_dir": "",
+                                    "resume_path": "",
+                                    "note": sample_file.name,
+                                    "commands": [],
+                                }
+                            )
+        return jobs
+
+    def _scan_log_directory_jobs(self, roots):
+        jobs = []
+        for root in roots:
+            if root.name != "log":
+                candidates = [p for p in root.rglob("log") if p.is_dir()]
+            else:
+                candidates = [root]
+            for log_root in candidates:
+                for run_dir in sorted(p for p in log_root.iterdir() if p.is_dir()):
+                    mode = self._infer_mode_from_path(run_dir.name)
+                    started = datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat(timespec="seconds")
+                    note = "Imported from log folder"
+                    last_loss = None
+                    current_step = total_steps = current_epoch = total_epochs = 0
+                    output_dir = ""
+                    output_name = run_dir.name
+                    resume_path = ""
+                    commands = []
+                    summary_json = next(run_dir.rglob("wandb-summary.json"), None)
+                    if summary_json:
+                        try:
+                            with open(summary_json, "r", encoding="utf-8") as handle:
+                                summary = json.load(handle)
+                            last_loss = summary.get("loss") or summary.get("avr_loss") or summary.get("loss/current") or summary.get("loss/average")
+                            current_step = summary.get("global_step") or summary.get("train/global_step") or summary.get("_step") or 0
+                            current_epoch = summary.get("epoch") or 0
+                        except Exception:
+                            pass
+                    output_log = next(run_dir.rglob("output.log"), None)
+                    if output_log:
+                        try:
+                            text = output_log.read_text(encoding="utf-8", errors="replace")
+                            parsed_step, parsed_total, parsed_epoch, parsed_epoch_total, parsed_loss = self._extract_metrics_from_output_log(text)
+                            current_step = current_step or parsed_step
+                            total_steps = total_steps or parsed_total
+                            current_epoch = current_epoch or parsed_epoch
+                            total_epochs = total_epochs or parsed_epoch_total
+                            last_loss = last_loss if last_loss is not None else parsed_loss
+                        except Exception:
+                            pass
+                    config_yaml = next(run_dir.rglob("config.yaml"), None)
+                    if config_yaml:
+                        try:
+                            context = self._extract_command_context_from_wandb_config(
+                                config_yaml.read_text(encoding="utf-8", errors="replace")
+                            )
+                            commands = context["commands"]
+                            output_dir = context["output_dir"] or output_dir
+                            output_name = context["output_name"] or output_name
+                            resume_path = context["resume_path"] or resume_path
+                            started = context["started_at"] or started
+                        except Exception:
+                            pass
+                    jobs.append(
+                        {
+                            "kind": "training",
+                            "title": output_name,
+                            "mode": mode,
+                            "status": "completed",
+                            "started_at": started,
+                            "finished_at": started,
+                            "output_dir": output_dir,
+                            "output_name": output_name,
+                            "logging_dir": str(run_dir),
+                            "resume_path": resume_path,
+                            "note": note,
+                            "commands": commands,
+                            "last_loss": last_loss,
+                            "current_step": current_step,
+                            "total_steps": total_steps,
+                            "current_epoch": current_epoch,
+                            "total_epochs": total_epochs,
+                        }
+                    )
+        return jobs
+
+    def _begin_job(self, kind, title, settings=None, note=""):
+        settings = settings or self.get_settings()
+        self._stop_requested = False
+        self._last_loss_value = None
+        self._active_job = {
+            "kind": kind,
+            "title": title,
+            "mode": settings.get("training_mode", self.training_mode_var.get()),
+            "status": "running",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "output_dir": settings.get("output_dir", ""),
+            "output_name": settings.get("output_name", ""),
+            "resume_path": settings.get("resume_path", ""),
+            "logging_dir": settings.get("logging_dir", ""),
+            "note": note,
+            "commands": [],
+            "peak_vram_gb": None,
+            "last_loss": None,
+            "current_step": 0,
+            "total_steps": 0,
+            "current_epoch": 0,
+            "total_epochs": 0,
+        }
+
+    def _record_job_command(self, command):
+        if not self._active_job:
+            return
+        command_display = " ".join(f'"{part}"' if " " in part else part for part in command)
+        self._active_job.setdefault("commands", []).append(command_display)
+
+    def _finalize_active_job(self, status, return_code=None):
+        if not self._active_job or self._active_job.get("status") != "running":
+            return
+        finished_at = datetime.now()
+        started_raw = self._active_job.get("started_at")
+        try:
+            started_at = datetime.fromisoformat(started_raw)
+            duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
+        except Exception:
+            duration_seconds = None
+        self._active_job.update(
+            {
+                "status": status,
+                "finished_at": finished_at.isoformat(timespec="seconds"),
+                "duration_seconds": duration_seconds,
+                "return_code": return_code,
+                "peak_vram_gb": round(self.peak_vram, 2) if self.peak_vram else 0.0,
+                "last_loss": self._last_loss_value,
+                "current_step": self.current_step,
+                "total_steps": self.current_total_steps,
+                "current_epoch": self.current_epoch_num,
+                "total_epochs": self.current_epoch_total,
+            }
+        )
+        self._job_history.insert(0, self._active_job)
+        self._job_history = self._job_history[:200]
+        self._active_job = None
+        self._save_job_history()
+        self._refresh_job_history_view()
 
     def create_convert_lora_tab(self):
         tab_frame = self._create_scrollable_tab("Convert")
@@ -1720,12 +2510,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             self.next_epoch_var.set("To next epoch: N/A")
 
-    def run_process(self, command, on_complete=None, output_widget=None):
+    def run_process(self, command, on_complete=None, output_widget=None, job_context=None):
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
         self.last_line_was_progress = False
         command_display = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
+        if job_context and job_context.get("attach_to_active"):
+            self._record_job_command(command)
 
         try:
             env = os.environ.copy(); env['PYTHONUNBUFFERED'] = '1'; env['PYTHONUTF8'] = '1'
@@ -1739,9 +2531,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             )
         except FileNotFoundError as e:
             messagebox.showerror("Error", f"Could not find '{e.filename}'. Is it in your system's PATH or venv?")
+            if job_context and job_context.get("attach_to_active"):
+                self._finalize_active_job("failed", -1)
             self.stop_all_activity(); return
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start process: {e}")
+            if job_context and job_context.get("attach_to_active"):
+                self._finalize_active_job("failed", -1)
             self.stop_all_activity(); return
 
         threading.Thread(target=self.read_output, args=(on_complete, output_widget), daemon=True).start()
@@ -1753,6 +2549,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.current_total_steps = 0
         self.current_epoch_num = 0
         self.current_epoch_total = 0
+        self._stop_requested = False
         self.update_training_counters()
         self.update_button_states()
 
@@ -1800,9 +2597,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 None,
                             )
 
-                        loss_match = re.search(r"loss=([\d\.]+)", buffer)
+                        loss_match = re.search(r"(?:avr_loss|loss)=([\d\.]+)", buffer)
                         if loss_match and self.current_step > 0:
-                            self.root.after(0, self.update_loss_graph, self.current_step, float(loss_match.group(1)))
+                            loss_value = float(loss_match.group(1))
+                            self._last_loss_value = loss_value
+                            self.root.after(0, self.update_loss_graph, self.current_step, loss_value)
 
                         epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", buffer, re.IGNORECASE)
                         if epoch_match:
@@ -1826,6 +2625,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def _run_next_command_in_sequence(self, return_code):
         if return_code != 0:
+            self._finalize_active_job("stopped" if self._stop_requested else "failed", return_code)
             self.output_text.insert(tk.END, f"\n--- Previous step failed with code {return_code}. Halting sequence. ---\n")
             self.stop_all_activity(); return
         if self.command_sequence:
@@ -1833,8 +2633,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.current_step = 0
             self.update_loss_graph()
             next_command = self.command_sequence.pop(0)
-            self.run_process(next_command, self._run_next_command_in_sequence, self.output_text)
+            self.run_process(next_command, self._run_next_command_in_sequence, self.output_text, job_context={"attach_to_active": True})
         else:
+            self._finalize_active_job("completed", 0)
             self.output_text.insert(tk.END, f"\n--- All steps completed successfully. ---\n")
             self.stop_all_activity()
 
@@ -1872,6 +2673,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.update_loss_graph(); self.start_vram_monitor(); self._start_sample_watcher()
         self.progress_var.set(0); self.progress_label_var.set("Starting sequence...")
         self.output_text.delete("1.0", tk.END); self.command_sequence = []
+        self._begin_job(
+            "training",
+            "Resumed training" if self.entries["resume_path"].get().strip() else "Training run",
+            settings=settings,
+            note=f"Output: {settings.get('output_name', '')}",
+        )
         python_executable = sys.executable or "python"
         is_wan = (mode == "Wan 2.2")
 
@@ -1887,16 +2694,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         training_commands = self.build_training_commands()
         if training_commands: self.command_sequence.extend(training_commands)
-        if self.command_sequence: self._run_next_command_in_sequence(0)
-        else: messagebox.showwarning("Warning", "No training or caching steps were selected."); self.stop_all_activity()
+        if self.command_sequence:
+            self._run_next_command_in_sequence(0)
+        else:
+            self._finalize_active_job("failed", -1)
+            messagebox.showwarning("Warning", "No training or caching steps were selected.")
+            self.stop_all_activity()
 
     def stop_training(self):
         if self.current_process:
             self.output_text.insert(tk.END, "\n⚠️ Terminating process and sequence...\n")
-            self.command_sequence = [];
-            try: self.current_process.terminate()
-            except Exception: pass
-            self.stop_all_activity()
+            self._stop_requested = True
+            self.command_sequence = []
+            self.run_status_var.set("🛑 Stopping Run")
+            self.progress_label_var.set("Stopping current process...")
+            try:
+                self.current_process.terminate()
+            except Exception:
+                self._finalize_active_job("stopped", -1)
+                self.stop_all_activity()
 
     def build_training_commands(self):
         settings = self.get_settings()
@@ -1941,9 +2757,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         command = [python_executable, "src/musubi_tuner/convert_lora.py",
                    "--input", lora_path, "--output", str(final_output_path), "--target", target]
 
-        self.run_process(command, on_complete=self.on_conversion_complete, output_widget=self.convert_output_text)
+        conversion_settings = dict(self.get_settings())
+        conversion_settings["output_dir"] = output_dir
+        conversion_settings["output_name"] = output_name
+        self._begin_job("conversion", "Convert LoRA", settings=conversion_settings, note=base_name)
+        self.run_process(command, on_complete=self.on_conversion_complete, output_widget=self.convert_output_text, job_context={"attach_to_active": True})
 
     def on_conversion_complete(self, return_code):
+        self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)
         if return_code == 0:
             self.convert_output_text.insert(tk.END, "\n--- Conversion completed successfully. ---")
         else:
