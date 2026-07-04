@@ -696,6 +696,54 @@ class MusubiTunerGUI:
         self._add_widget(memory_frame, "max_data_loader_n_workers", "Max Data Loader Workers:", "Number of CPU threads to load data. '2' is a safe default. Higher values can speed up loading but use more RAM.", validate_num=True)
         self._add_widget(memory_frame, "offload_inactive_dit", "Offload Inactive DiT Model", "When training both models in a combined run, offloads the inactive DiT model to CPU to save VRAM. Disables 'Blocks to Swap'.", kind='checkbox', command=self.update_button_states)
         self._add_widget(memory_frame, "blocks_to_swap", "Blocks to Swap:", "Number of DiT blocks to offload to CPU memory to save VRAM. Can slow down training. (e.g., 10)", validate_num=True)
+        self._add_widget(
+            memory_frame,
+            "compile",
+            "Enable Torch Compile",
+            "Compiles the repeatedly used DiT blocks into optimized GPU kernels. This can speed up longer training runs after a slower first-step compilation. It requires a working Triton installation and can use additional RAM and VRAM. With Blocks to Swap, swapped linear layers are excluded from compilation, so the speed benefit may be smaller.",
+            kind="checkbox",
+            command=self.update_button_states,
+        )
+        self.hidden_frames["compile_options"] = ttk.Frame(memory_frame)
+        self._add_widget(
+            self.hidden_frames["compile_options"],
+            "compile_backend",
+            "Compile Backend:",
+            "Selects how PyTorch compiles the model. 'inductor' generates optimized Triton GPU kernels and is the normal choice for speed. 'aot_eager' and 'eager' are mainly troubleshooting options and usually provide little or no speedup.",
+            kind="combobox",
+            options=["inductor", "aot_eager", "eager"],
+        )
+        self._add_widget(
+            self.hidden_frames["compile_options"],
+            "compile_mode",
+            "Compile Mode:",
+            "'default' balances compilation time and runtime speed. 'reduce-overhead' tries to reduce Python and launch overhead but may use more memory. Autotune modes spend substantially longer compiling to search for faster kernels.",
+            kind="combobox",
+            options=["default", "reduce-overhead", "max-autotune-no-cudagraphs", "max-autotune"],
+        )
+        self._add_widget(
+            self.hidden_frames["compile_options"],
+            "compile_dynamic",
+            "Dynamic Shapes:",
+            "'auto' lets PyTorch choose. 'true' makes compiled kernels accept changing bucket shapes and can reduce recompilation, but may produce slower kernels and requires MSVC C++ tools on Windows. 'false' specializes each shape for speed but recompiles when shapes change.",
+            kind="combobox",
+            options=["auto", "true", "false"],
+        )
+        self._add_widget(
+            self.hidden_frames["compile_options"],
+            "compile_fullgraph",
+            "Compile Full Graph",
+            "Forces each DiT block to compile as one uninterrupted graph. This can expose more optimization, but training fails instead of falling back when PyTorch encounters an unsupported graph break. Leave it off unless the normal compile mode is already proven stable.",
+            kind="checkbox",
+        )
+        self._add_widget(
+            self.hidden_frames["compile_options"],
+            "compile_cache_size_limit",
+            "Graph Cache Limit:",
+            "Controls how many compiled graph variants PyTorch keeps. A value of 32 reduces repeated compilation when a dataset uses several bucket shapes, at the cost of additional system RAM and compile-cache storage.",
+            kind="combobox",
+            options=["32", "16", "8", "64"],
+        )
 
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended for Wan/Flux. 'krea2_shift' matches Krea 2's resolution-aware schedule.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"])
@@ -2724,6 +2772,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if is_offloading and blocks_to_swap_widget.cget('state') == 'normal':
             blocks_to_swap_widget.delete(0, tk.END)
 
+        if self.entries["compile"].var.get():
+            self.hidden_frames["compile_options"].pack(fill="x")
+        else:
+            self.hidden_frames["compile_options"].pack_forget()
+
         scheduler = self.entries["lr_scheduler"].get()
         if scheduler == "constant_with_warmup": self.hidden_frames['lr_warmup'].pack(fill='x', expand=True)
         else: self.hidden_frames['lr_warmup'].pack_forget()
@@ -2803,6 +2856,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "lr_warmup_steps": "0", "lr_scheduler_num_cycles": "1",
             "mixed_precision": "fp16", "gradient_accumulation_steps": "1",
             "max_data_loader_n_workers": "2", "blocks_to_swap": "10", "timestep_sampling": "shift",
+            "compile": False, "compile_backend": "inductor", "compile_mode": "default",
+            "compile_dynamic": "auto", "compile_fullgraph": False, "compile_cache_size_limit": "32",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
             "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,

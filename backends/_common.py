@@ -72,6 +72,13 @@ def build_common_train_args(cmd, settings):
     add_arg(cmd, "--num_timestep_buckets", settings.get("num_timestep_buckets"))
     add_arg(cmd, "--discrete_flow_shift", settings.get("discrete_flow_shift"))
     add_arg(cmd, "--preserve_distribution_shape", settings.get("preserve_distribution_shape"))
+    if settings.get("compile"):
+        cmd.append("--compile")
+        add_arg(cmd, "--compile_backend", settings.get("compile_backend"))
+        add_arg(cmd, "--compile_mode", settings.get("compile_mode"))
+        add_arg(cmd, "--compile_dynamic", settings.get("compile_dynamic"))
+        add_arg(cmd, "--compile_fullgraph", settings.get("compile_fullgraph"))
+        add_arg(cmd, "--compile_cache_size_limit", settings.get("compile_cache_size_limit"))
     opt_args = (settings.get("optimizer_args") or "").strip()
     if opt_args:
         # Split on comma/semicolon/whitespace but NOT inside parentheses (e.g. betas=(0.9,0.99))
