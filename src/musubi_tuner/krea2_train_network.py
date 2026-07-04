@@ -113,6 +113,10 @@ class Krea2NetworkTrainer(NetworkTrainer):
         assert args.text_encoder is not None, "--text_encoder is required for sample generation during training"
         logger.info(f"cache Text Encoder outputs for sample prompt: {sample_prompts}")
         prompts = load_prompts(sample_prompts)
+        if args.turbo_dit:
+            for prompt_dict in prompts:
+                prompt_dict.setdefault("sample_steps", 8)
+                prompt_dict.setdefault("cfg_scale", 1.0)
 
         encoder = krea2_utils.load_krea2_text_encoder(args.text_encoder, dtype=torch.bfloat16, device=device)
 
@@ -169,8 +173,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
         sample parameters (no encoder) and the trainer's DiT + Qwen-Image VAE. CFG (standard
         uncond + scale*(cond-uncond)) is enabled when a negative prompt is present and cfg_scale > 1
         (musubi convention).
-        Resolution-aware mu time-shift uses the K2 raw defaults (y1=0.5, y2=1.15); the distilled
-        (turbo) fixed-mu schedule is not wired here.
+        Resolution-aware mu time-shift uses the K2 raw defaults (y1=0.5, y2=1.15); Turbo
+        sampling uses its fixed mu=1.15 schedule.
         """
         model = transformer  # SingleStreamDiT
         device = accelerator.device

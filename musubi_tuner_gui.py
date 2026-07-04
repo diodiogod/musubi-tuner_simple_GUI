@@ -125,6 +125,9 @@ class MusubiTunerGUI:
         self.loss_data = []
         self.peak_vram = 0
         self.command_sequence = []
+        self._staged_run = None
+        self._staged_training_config = []
+        self._staged_recache_latents = True
         self.last_line_was_progress = False
         self.current_step = 0
         self.current_total_steps = 0
@@ -443,7 +446,10 @@ class MusubiTunerGUI:
             filetypes = options if isinstance(options, list) else None
             def browse():
                 path = filedialog.askdirectory() if is_dir else filedialog.askopenfilename(filetypes=filetypes)
-                if path: widget.delete(0, tk.END); widget.insert(0, path); self.update_button_states()
+                if path:
+                    widget.delete(0, tk.END); widget.insert(0, path)
+                    if command and callable(command): command()
+                    self.update_button_states()
             ttk.Button(path_frame, text="Browse", command=browse).pack(side="right", padx=(5, 0))
         elif kind == 'combobox':
             widget = ttk.Combobox(frame, values=options, state="readonly")
@@ -551,6 +557,10 @@ class MusubiTunerGUI:
         self._add_widget(models_frame, "vae_model", "VAE Model:", "Path to VAE model (.safetensors or .pt). Required for training and caching.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
 
         output_frame = ttk.LabelFrame(frame, text="Output Configuration"); output_frame.pack(fill="x", padx=10, pady=10)
+        self._add_widget(output_frame, "project_root", "Concept Workspace:", "Optional main folder for this concept. Selecting it creates and fills the models and log subfolders.", kind='path_entry', is_dir=True, is_path=True, command=self._apply_project_root_paths)
+        workspace_actions = ttk.Frame(output_frame); workspace_actions.pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Button(workspace_actions, text="Apply Workspace Layout", command=self._apply_project_root_paths).pack(side="right")
+        ttk.Label(workspace_actions, text="Creates models/ and log/ and fills the related paths.", style="PageHelp.TLabel").pack(side="right", padx=(0, 10))
         self._add_widget(output_frame, "output_dir", "Output Directory:", "Base directory to save trained LoRAs. A subfolder will be automatically created.", kind='path_entry', is_dir=True, is_required=True, is_path=True)
         self._add_widget(output_frame, "output_name", "Output Name:", "Base filename for output LoRA (e.g., 'my_character'). Suffixes like '_LowNoise' will be added automatically.", is_required=True)
 
@@ -641,6 +651,28 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['lr_restarts'], "lr_scheduler_num_cycles", "Restart Cycles:", "Number of times the learning rate will be reset for the 'cosine_with_restarts' scheduler.", validate_num=True)
         self._add_widget(lr_frame, "lr_scheduler_power", "LR Scheduler Power:", "The exponent for the polynomial decay. Only used by the 'polynomial' scheduler.", validate_num=True)
         self._add_widget(lr_frame, "lr_scheduler_min_lr_ratio", "Min LR Ratio:", "The minimum learning rate as a ratio of the initial learning rate.", validate_num=True)
+
+    def _apply_project_root_paths(self):
+        root_value = self.entries["project_root"].get().strip()
+        if not root_value:
+            messagebox.showwarning("Workspace", "Choose a concept workspace folder first.")
+            return
+        root_path = Path(root_value).expanduser()
+        try:
+            models_path = root_path / "models"
+            logs_path = root_path / "log"
+            models_path.mkdir(parents=True, exist_ok=True)
+            logs_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Workspace", f"Could not create the workspace folders:\n{exc}")
+            return
+
+        for key, value in (("output_dir", models_path), ("logging_dir", logs_path), ("convert_output_dir", models_path)):
+            widget = self.entries.get(key)
+            if isinstance(widget, ttk.Entry):
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value))
+        self.update_button_states()
 
     def create_advanced_tab(self):
         frame = self._create_scrollable_tab("3  Advanced")
@@ -735,6 +767,7 @@ class MusubiTunerGUI:
         ttk.Button(prompt_btn_row, text="+ Add Prompt", command=self._add_sample_prompt_dialog).pack(side="left")
         ttk.Button(prompt_btn_row, text="Enable All", command=lambda: self._set_all_sample_prompts_enabled(True)).pack(side="left", padx=(6, 0))
         ttk.Button(prompt_btn_row, text="Disable All", command=lambda: self._set_all_sample_prompts_enabled(False)).pack(side="left", padx=(6, 0))
+        ttk.Button(prompt_btn_row, text="Preview Enabled", command=self._test_enabled_sample_prompts).pack(side="left", padx=(6, 0))
         ttk.Label(prompt_btn_row, text="Unchecked prompts stay saved but are skipped during sampling.",
                   foreground=self.colors["muted"], font=("Segoe UI", 9, "italic")).pack(side="left", padx=(12, 0))
 
@@ -840,6 +873,20 @@ class MusubiTunerGUI:
         self.update_button_states()
 
     def _test_sample_prompt(self, idx):
+        prompt_data = self._sample_prompts_data[idx]
+        prompt_summary = prompt_data.get("prompt", "")[:120]
+        self._test_sample_prompts([prompt_data], "Krea 2 Test Sample", prompt_summary)
+
+    def _test_enabled_sample_prompts(self):
+        enabled_prompts = [prompt for prompt in self._sample_prompts_data if prompt.get("enabled", True)]
+        if not enabled_prompts:
+            messagebox.showinfo("No Enabled Prompts", "Enable at least one sample prompt before previewing.")
+            return
+
+        note = f"{len(enabled_prompts)} enabled prompt" + ("s" if len(enabled_prompts) != 1 else "")
+        self._test_sample_prompts(enabled_prompts, "Krea 2 Batch Sample Preview", note)
+
+    def _test_sample_prompts(self, prompt_items, job_title, job_note):
         if self.current_process:
             messagebox.showwarning("Process Running", "Stop the current process before launching a test sample.")
             return
@@ -850,21 +897,19 @@ class MusubiTunerGUI:
             messagebox.showinfo("Not Available", "Sample test generation is currently implemented for Krea 2 only.")
             return
 
-        prompt_data = self._sample_prompts_data[idx]
         try:
-            command = self._build_krea2_test_sample_command(settings, prompt_data)
+            command = self._build_krea2_test_sample_command(settings, prompt_items)
         except ValueError as e:
             messagebox.showerror("Krea 2 Test Sample", str(e))
             return
 
         self.output_text.delete("1.0", tk.END)
-        self.run_status_var.set("🧪 Krea 2 Test Sample")
+        self.run_status_var.set("🧪 " + job_title)
         self.progress_label_var.set("Running test generation...")
-        prompt_summary = prompt_data.get("prompt", "")[:120]
-        self._begin_job("sample_test", "Krea 2 test sample", settings=settings, note=prompt_summary)
+        self._begin_job("sample_test", job_title, settings=settings, note=job_note)
         self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
 
-    def _build_krea2_test_sample_command(self, settings, prompt_data):
+    def _build_krea2_test_sample_command(self, settings, prompt_items):
         required = {
             "DiT model": settings.get("krea2_dit_model"),
             "VAE model": settings.get("vae_model"),
@@ -875,7 +920,8 @@ class MusubiTunerGUI:
             raise ValueError("Missing required Krea 2 paths for test sampling:\n- " + "\n- ".join(missing))
 
         python_executable = sys.executable or "python"
-        dit_path = settings.get("krea2_turbo_dit") if settings.get("krea2_turbo_dit") else settings.get("krea2_dit_model")
+        is_turbo = bool(settings.get("krea2_turbo_dit"))
+        dit_path = settings.get("krea2_turbo_dit") if is_turbo else settings.get("krea2_dit_model")
         if not dit_path or not os.path.exists(dit_path):
             raise ValueError("The selected Krea 2 inference DiT path does not exist.")
 
@@ -895,13 +941,29 @@ class MusubiTunerGUI:
         command = [
             python_executable,
             "src/musubi_tuner/krea2_generate_image.py",
-            prompt_data.get("prompt", ""),
             "--dit", dit_path,
             "--vae", settings["vae_model"],
             "--text_encoder", settings["krea2_text_encoder"],
             "--save_path", str(save_path),
             "--attn_mode", attn_mode,
         ]
+        if is_turbo:
+            command.append("--turbo")
+
+        if not prompt_items:
+            raise ValueError("No prompt data was provided for test sampling.")
+
+        if len(prompt_items) == 1:
+            prompt_data = prompt_items[0]
+            command.insert(2, prompt_data.get("prompt", ""))
+        else:
+            prompts_file = self._write_sample_prompts_txt(
+                prompt_items,
+                output_name_override=f"{output_name}_sample_preview",
+            )
+            if not prompts_file:
+                raise ValueError("Could not create the temporary prompt file for batch preview.")
+            command.extend(["--from_file", prompts_file])
 
         if settings.get("fp8_scaled"):
             command.append("--fp8_scaled")
@@ -916,45 +978,73 @@ class MusubiTunerGUI:
             if strength:
                 command.extend(["--projector_diff_strength", strength])
 
-        network_weights = str(settings.get("network_weights") or "").strip()
-        if network_weights and os.path.exists(network_weights):
+        network_weights = self._resolve_krea2_preview_lora(settings)
+        if network_weights:
             command.extend(["--lora_weight", network_weights])
 
-        negative_prompt = prompt_data.get("neg", "").strip()
-        if negative_prompt:
-            command.extend(["--negative_prompt", negative_prompt])
+        if len(prompt_items) == 1:
+            prompt_data = prompt_items[0]
+            negative_prompt = prompt_data.get("neg", "").strip()
+            if negative_prompt:
+                command.extend(["--negative_prompt", negative_prompt])
 
-        width = str(prompt_data.get("width", "")).strip()
-        if width:
-            command.extend(["--width", width])
+            width = str(prompt_data.get("width", "")).strip()
+            if width:
+                command.extend(["--width", width])
 
-        height = str(prompt_data.get("height", "")).strip()
-        if height:
-            command.extend(["--height", height])
+            height = str(prompt_data.get("height", "")).strip()
+            if height:
+                command.extend(["--height", height])
 
-        steps = str(prompt_data.get("steps", "")).strip()
-        if steps:
-            command.extend(["--steps", steps])
+            steps = str(prompt_data.get("steps", "")).strip()
+            if steps:
+                command.extend(["--steps", steps])
 
-        guidance = str(prompt_data.get("guidance", "")).strip()
-        if guidance:
-            command.extend(["--guidance_scale", guidance])
+            guidance = str(prompt_data.get("guidance", "")).strip()
+            if guidance:
+                command.extend(["--guidance_scale", guidance])
 
-        seed = str(prompt_data.get("seed", "")).strip()
-        if seed:
-            command.extend(["--seed", seed])
+            seed = str(prompt_data.get("seed", "")).strip()
+            if seed:
+                command.extend(["--seed", seed])
 
-        mu = str(prompt_data.get("mu", "")).strip()
-        y1 = str(prompt_data.get("y1", "")).strip()
-        y2 = str(prompt_data.get("y2", "")).strip()
-        if mu:
-            command.extend(["--mu", mu])
-        if y1:
-            command.extend(["--y1", y1])
-        if y2:
-            command.extend(["--y2", y2])
+            mu = str(prompt_data.get("mu", "")).strip()
+            y1 = str(prompt_data.get("y1", "")).strip()
+            y2 = str(prompt_data.get("y2", "")).strip()
+            if mu:
+                command.extend(["--mu", mu])
+            if y1:
+                command.extend(["--y1", y1])
+            if y2:
+                command.extend(["--y2", y2])
 
         return command
+
+    @staticmethod
+    def _resolve_krea2_preview_lora(settings):
+        """Prefer an explicit LoRA, otherwise use the newest checkpoint from this output run."""
+        explicit = Path(str(settings.get("network_weights") or "").strip()).expanduser()
+        if str(explicit) not in ("", ".") and explicit.is_file():
+            return str(explicit)
+
+        output_root = Path(str(settings.get("output_dir") or "").strip()).expanduser()
+        output_name = str(settings.get("output_name") or "").strip()
+        if not output_name or not output_root.is_dir():
+            return ""
+
+        candidates = []
+        exact_run = output_root / output_name
+        search_roots = [exact_run] if exact_run.is_dir() else []
+        if not search_roots:
+            search_roots = [path for path in output_root.glob(f"{output_name}*") if path.is_dir()]
+        for run_dir in search_roots:
+            candidates.extend(
+                path for path in run_dir.glob("*.safetensors")
+                if path.is_file() and "optimizer" not in path.name.lower()
+            )
+        if not candidates:
+            return ""
+        return str(max(candidates, key=lambda path: path.stat().st_mtime))
 
     def _on_test_sample_complete(self, return_code):
         self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)
@@ -976,6 +1066,7 @@ class MusubiTunerGUI:
         existing = self._sample_prompts_data[idx] if idx is not None else {}
         mode = self.training_mode_var.get()
         is_krea2 = mode == "Krea 2"
+        is_krea2_turbo = is_krea2 and bool(self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
         field_tooltips = {
             "guidance": "Classifier-free guidance scale. For Krea 2 RAW, leaving it empty uses the default 5.5. For Turbo previews, 1.0 is usually the safer value.",
             "mu": "Direct timestep-shift value. If you set Mu, it overrides Y1 and Y2 for this prompt.",
@@ -1019,8 +1110,8 @@ class MusubiTunerGUI:
         row1_fields = [
             ("Width", "width", "1024" if is_krea2 else "512", 6),
             ("Height", "height", "1024" if is_krea2 else "512", 6),
-            ("Steps", "steps", "28" if is_krea2 else "20", 5),
-            ("Guidance", "guidance", "5.5" if is_krea2 else "5.0", 6),
+            ("Steps", "steps", ("8" if is_krea2_turbo else "28") if is_krea2 else "20", 5),
+            ("Guidance", "guidance", ("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0", 6),
         ]
         if not is_krea2:
             row1_fields.insert(2, ("Frames", "frames", "25", 5))
@@ -1039,7 +1130,7 @@ class MusubiTunerGUI:
         row2 = ttk.Frame(dlg); row2.pack(fill="x", padx=10, pady=(8, 0))
         if is_krea2:
             row2_fields = [
-                ("Mu", "mu", existing.get("mu", existing.get("flow_shift", "")), 6),
+                ("Mu", "mu", existing.get("mu", existing.get("flow_shift", "1.15" if is_krea2_turbo else "")), 6),
                 ("Y1", "y1", existing.get("y1", ""), 6),
                 ("Y2", "y2", existing.get("y2", ""), 6),
                 ("Seed", "seed", existing.get("seed", ""), 8),
@@ -1121,37 +1212,55 @@ class MusubiTunerGUI:
         dlg.bind("<Escape>", lambda _e: dlg.destroy())
         e_prompt.focus_set()
 
-    def _build_sample_prompts_txt(self):
-        """Serialise self._sample_prompts_data to a .txt file next to the output dir, return path or ''."""
-        if not self._sample_prompts_data:
+    def _serialize_sample_prompt_line(self, prompt_data, is_krea2):
+        line = prompt_data.get("prompt", "")
+        if prompt_data.get("width"):
+            line += f" --w {prompt_data['width']}"
+        if prompt_data.get("height"):
+            line += f" --h {prompt_data['height']}"
+        if prompt_data.get("steps"):
+            line += f" --s {prompt_data['steps']}"
+        if prompt_data.get("guidance"):
+            # Krea 2 uses ordinary CFG; musubi's training sampler reads it from --l.
+            # The standalone Krea generator accepts --g and --l equivalently.
+            line += f" --{'l' if is_krea2 else 'g'} {prompt_data['guidance']}"
+        if is_krea2:
+            if prompt_data.get("mu"):
+                line += f" --mu {prompt_data['mu']}"
+            if prompt_data.get("y1"):
+                line += f" --y1 {prompt_data['y1']}"
+            if prompt_data.get("y2"):
+                line += f" --y2 {prompt_data['y2']}"
+        else:
+            if prompt_data.get("frames"):
+                line += f" --f {prompt_data['frames']}"
+            if prompt_data.get("flow_shift"):
+                line += f" --fs {prompt_data['flow_shift']}"
+            if prompt_data.get("cfg_scale"):
+                line += f" --l {prompt_data['cfg_scale']}"
+        if prompt_data.get("seed"):
+            line += f" --d {prompt_data['seed']}"
+        if prompt_data.get("neg"):
+            line += f" --n {prompt_data['neg']}"
+        if not is_krea2 and prompt_data.get("image_path"):
+            line += f" --i {prompt_data['image_path']}"
+        return line
+
+    def _write_sample_prompts_txt(self, prompts_data, output_name_override=None):
+        """Serialise prompt dicts to a .txt file next to the dataset config, return path or ''."""
+        if not prompts_data:
             return ""
         mode = self.training_mode_var.get()
         is_krea2 = mode == "Krea 2"
         lines = []
-        for p in self._sample_prompts_data:
-            if not p.get("enabled", True):
+        for prompt_data in prompts_data:
+            if not prompt_data.get("enabled", True):
                 continue
-            line = p.get("prompt", "")
-            if p.get("width"):      line += f" --w {p['width']}"
-            if p.get("height"):     line += f" --h {p['height']}"
-            if p.get("steps"):      line += f" --s {p['steps']}"
-            if p.get("guidance"):   line += f" --g {p['guidance']}"
-            if is_krea2:
-                if p.get("mu"):     line += f" --mu {p['mu']}"
-                if p.get("y1"):     line += f" --y1 {p['y1']}"
-                if p.get("y2"):     line += f" --y2 {p['y2']}"
-            else:
-                if p.get("frames"):     line += f" --f {p['frames']}"
-                if p.get("flow_shift"): line += f" --fs {p['flow_shift']}"
-                if p.get("cfg_scale"):  line += f" --l {p['cfg_scale']}"
-            if p.get("seed"):       line += f" --d {p['seed']}"
-            if p.get("neg"):        line += f" --n {p['neg']}"
-            if not is_krea2 and p.get("image_path"): line += f" --i {p['image_path']}"
-            lines.append(line)
+            lines.append(self._serialize_sample_prompt_line(prompt_data, is_krea2))
         if not lines:
             return ""
         # Save next to the dataset config (always outside the repo, always exists)
-        output_name = self.entries["output_name"].get().strip() or "training"
+        output_name = output_name_override or self.entries["output_name"].get().strip() or "training"
         dataset_config = self.entries["dataset_config"].get().strip()
         if dataset_config and os.path.isfile(dataset_config):
             base_dir = os.path.dirname(dataset_config)
@@ -1168,6 +1277,10 @@ class MusubiTunerGUI:
         except Exception as e:
             messagebox.showerror("Sample Prompts Error", f"Could not write sample prompts file:\n{save_path}\n\n{e}")
             return ""
+
+    def _build_sample_prompts_txt(self):
+        """Serialise enabled sample prompts for training to a .txt file, return path or ''."""
+        return self._write_sample_prompts_txt(self._sample_prompts_data)
 
     def _open_output_folder(self):
         output_dir = self.entries["output_dir"].get()
@@ -1355,6 +1468,12 @@ class MusubiTunerGUI:
         train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
         self.start_btn = ttk.Button(train_button_frame, text="Start Training", style="Accent.TButton", command=self.start_training); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
         self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", style="Danger.TButton", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
+        staged_frame = ttk.Frame(controls_frame); staged_frame.pack(fill="x", padx=10, pady=(0, 8))
+        self.staged_summary_var = tk.StringVar(value="No staged run configured")
+        ttk.Label(staged_frame, textvariable=self.staged_summary_var, style="PageHelp.TLabel").pack(side="left", fill="x", expand=True)
+        ttk.Button(staged_frame, text="Staged Run…", command=self._open_staged_training_dialog).pack(side="right", padx=(8, 0))
+        self.staged_start_btn = ttk.Button(staged_frame, text="Run Stages", style="Accent.TButton", command=self.start_staged_training)
+        self.staged_start_btn.pack(side="right")
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(controls_frame, variable=self.progress_var, style='TProgressbar'); self.progress_bar.pack(pady=(5, 5), padx=10, fill='x')
         self.progress_label_var = tk.StringVar(value="Ready"); ttk.Label(controls_frame, textvariable=self.progress_label_var, anchor='center').pack(fill='x')
@@ -1388,6 +1507,97 @@ class MusubiTunerGUI:
         self.output_text = tk.Text(console_frame, wrap=tk.WORD, height=14, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], selectbackground=self.colors["selection"], font=('Consolas', 9), relief=tk.FLAT, bd=0, padx=8, pady=6)
         output_scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.output_text.yview)
         self.output_text.configure(yscrollcommand=output_scrollbar.set); self.output_text.pack(side="left", fill="both", expand=True); output_scrollbar.pack(side="right", fill="y")
+
+    def _open_staged_training_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Staged Resolution Training")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(True, False)
+        dialog.minsize(760, 300)
+
+        host = ttk.Frame(dialog, padding=16)
+        host.pack(fill="both", expand=True)
+        ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(
+            host,
+            text="Each enabled stage trains for its own epoch count. Later stages resume the complete state saved by the previous stage.",
+            style="PageHelp.TLabel",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 14))
+        ttk.Label(host, text="Use").grid(row=2, column=0, sticky="w")
+        ttk.Label(host, text="Stage").grid(row=2, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(host, text="Dataset TOML").grid(row=2, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(host, text="Epochs").grid(row=2, column=3, sticky="w", padx=(8, 0))
+        host.grid_columnconfigure(2, weight=1)
+
+        existing = {str(item.get("label")): item for item in self._staged_training_config}
+        rows = []
+        current_dataset = self.entries["dataset_config"].get().strip()
+        for row_index, label in enumerate(("256", "512", "1024"), start=3):
+            saved = existing.get(label, {})
+            enabled = tk.BooleanVar(value=saved.get("enabled", True))
+            path_var = tk.StringVar(value=saved.get("dataset_config", current_dataset if label == "256" else ""))
+            epochs_var = tk.StringVar(value=str(saved.get("epochs", self.entries["max_train_epochs"].get() or "1")))
+            ttk.Checkbutton(host, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
+            ttk.Label(host, text=f"{label}px", width=8).grid(row=row_index, column=1, sticky="w", padx=(8, 0), pady=4)
+            path_host = ttk.Frame(host)
+            path_host.grid(row=row_index, column=2, sticky="ew", padx=(8, 0), pady=4)
+            path_entry = ttk.Entry(path_host, textvariable=path_var)
+            path_entry.pack(side="left", fill="x", expand=True)
+
+            def browse(var=path_var):
+                selected = filedialog.askopenfilename(filetypes=[("TOML files", "*.toml")])
+                if selected:
+                    var.set(selected)
+
+            ttk.Button(path_host, text="Browse", command=browse).pack(side="right", padx=(5, 0))
+            ttk.Entry(host, textvariable=epochs_var, width=8).grid(row=row_index, column=3, sticky="ew", padx=(8, 0), pady=4)
+            rows.append((label, enabled, path_var, epochs_var))
+
+        recache_var = tk.BooleanVar(value=getattr(self, "_staged_recache_latents", True))
+        ttk.Checkbutton(
+            host,
+            text="Re-cache latents before every stage (recommended when resolution changes)",
+            variable=recache_var,
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(12, 0))
+
+        actions = ttk.Frame(host)
+        actions.grid(row=7, column=0, columnspan=4, sticky="e", pady=(18, 0))
+
+        def save_and_close():
+            configured = []
+            for label, enabled, path_var, epochs_var in rows:
+                if not enabled.get():
+                    configured.append({"label": label, "enabled": False, "dataset_config": path_var.get().strip(), "epochs": epochs_var.get().strip()})
+                    continue
+                path = path_var.get().strip()
+                try:
+                    epochs = int(epochs_var.get())
+                except ValueError:
+                    messagebox.showerror("Staged Run", f"{label}px epochs must be a whole number.", parent=dialog)
+                    return
+                if epochs < 1 or not os.path.isfile(path):
+                    messagebox.showerror("Staged Run", f"{label}px needs an existing TOML file and at least 1 epoch.", parent=dialog)
+                    return
+                configured.append({"label": label, "enabled": True, "dataset_config": path, "epochs": str(epochs)})
+            if not any(item["enabled"] for item in configured):
+                messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
+                return
+            self._staged_training_config = configured
+            self._staged_recache_latents = recache_var.get()
+            self._update_staged_summary()
+            dialog.destroy()
+
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="Save Plan", style="Accent.TButton", command=save_and_close).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+    def _update_staged_summary(self):
+        enabled = [item for item in self._staged_training_config if item.get("enabled")]
+        if not enabled:
+            self.staged_summary_var.set("No staged run configured")
+            return
+        self.staged_summary_var.set(" → ".join(f"{item['label']}px × {item['epochs']}" for item in enabled))
 
     def _copy_console_output(self):
         text = self.output_text.get("1.0", tk.END).strip()
@@ -2258,6 +2468,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if not (train_high or train_low): all_valid = False
         self.start_btn.config(state="normal" if all_valid else "disabled")
         try:
+            self.staged_start_btn.config(state="normal" if all_valid and not self.current_process else "disabled")
+        except AttributeError:
+            pass
+        try:
             if self.current_process:
                 self.validation_status_var.set("Training process active")
                 self.validation_status_label.configure(foreground=self.colors["accent"])
@@ -2354,6 +2568,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         settings["training_mode"] = self.training_mode_var.get()
         settings["appearance_mode"] = self.appearance_mode_var.get()
         settings["sample_prompts_data"] = self._sample_prompts_data
+        settings["staged_training_config"] = self._staged_training_config
+        settings["staged_recache_latents"] = self._staged_recache_latents
         return settings
 
     def set_values(self, settings):
@@ -2373,8 +2589,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     prompt["enabled"] = True
             try: self._rebuild_prompt_list()
             except AttributeError: pass  # UI not built yet during early init
+        if "staged_training_config" in settings:
+            self._staged_training_config = settings.get("staged_training_config") or []
+        if "staged_recache_latents" in settings:
+            self._staged_recache_latents = bool(settings.get("staged_recache_latents"))
         for key, value in settings.items():
-            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts"): continue
+            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts", "staged_training_config", "staged_recache_latents"): continue
             if key in self.entries:
                 widget = self.entries[key]
                 if isinstance(widget, (tk.BooleanVar, tk.StringVar)):
@@ -2386,11 +2606,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 elif isinstance(widget, ttk.Entry):
                     widget.delete(0, tk.END)
                     widget.insert(0, str(value) if value is not None else "")
+        try: self._update_staged_summary()
+        except AttributeError: pass
         self.update_button_states()
 
     def load_default_settings(self):
         defaults = {
-            "dataset_config": "", "dit_high_noise": "", "dit_low_noise": "", "is_i2v": False,
+            "dataset_config": "", "project_root": "", "dit_high_noise": "", "dit_low_noise": "", "is_i2v": False,
             "train_high_noise": True, "train_low_noise": True,
             "min_timestep_low": "0", "max_timestep_low": "875", "min_timestep_high": "875", "max_timestep_high": "1000",
             "vae_model": "", "clip_model": "", "t5_model": "",
@@ -2414,6 +2636,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "training_mode": "Wan 2.2",
             "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
             "sample_prompts_data": [],
+            "staged_training_config": [], "staged_recache_latents": True,
         }
         self.set_values(defaults)
 
@@ -2627,6 +2850,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if return_code != 0:
             self._finalize_active_job("stopped" if self._stop_requested else "failed", return_code)
             self.output_text.insert(tk.END, f"\n--- Previous step failed with code {return_code}. Halting sequence. ---\n")
+            self._staged_run = None
             self.stop_all_activity(); return
         if self.command_sequence:
             self.loss_data.clear()
@@ -2634,10 +2858,152 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.update_loss_graph()
             next_command = self.command_sequence.pop(0)
             self.run_process(next_command, self._run_next_command_in_sequence, self.output_text, job_context={"attach_to_active": True})
+        elif self._staged_run:
+            self._advance_staged_training()
         else:
             self._finalize_active_job("completed", 0)
             self.output_text.insert(tk.END, f"\n--- All steps completed successfully. ---\n")
             self.stop_all_activity()
+
+    def _commands_for_settings(self, settings):
+        python_executable = sys.executable or "python"
+        mode = settings.get("training_mode", "Wan 2.2")
+        if mode == "Wan 2.2":
+            cache_commands = wan_backend.build_cache_commands(
+                settings, python_executable, temp_config_fn=self._create_temp_cache_config
+            )
+            training_commands = wan_backend.build_commands(settings)
+        elif mode == "Krea 2":
+            cache_commands = krea2_backend.build_cache_commands(settings, python_executable)
+            training_commands = krea2_backend.build_commands(settings)
+        else:
+            cache_commands = flux2_backend.build_cache_commands(settings, python_executable)
+            training_commands = flux2_backend.build_commands(settings)
+        return cache_commands + training_commands
+
+    @staticmethod
+    def _final_state_path(settings):
+        run_name = settings["output_name"]
+        if settings.get("training_mode") == "Wan 2.2":
+            train_low = bool(settings.get("train_low_noise"))
+            train_high = bool(settings.get("train_high_noise"))
+            combined = train_low and train_high and not (
+                str(settings.get("network_dim_high") or "").strip()
+                or str(settings.get("network_alpha_high") or "").strip()
+            )
+            if not combined:
+                run_name += "_HighNoise" if train_high else "_LowNoise"
+        return Path(settings["output_dir"]) / run_name / f"{run_name}-state"
+
+    def start_staged_training(self):
+        if self.current_process:
+            messagebox.showwarning("Staged Run", "A process is already running.")
+            return
+        stages = [dict(item) for item in self._staged_training_config if item.get("enabled")]
+        if not stages:
+            self._open_staged_training_dialog()
+            return
+        invalid_stage = next(
+            (item for item in stages if not os.path.isfile(item.get("dataset_config", "")) or not str(item.get("epochs", "")).isdigit() or int(item["epochs"]) < 1),
+            None,
+        )
+        if invalid_stage:
+            messagebox.showerror("Staged Run", f"The {invalid_stage.get('label', '?')}px stage has an invalid TOML path or epoch count.")
+            return
+        first_dataset = stages[0]["dataset_config"]
+        self.entries["dataset_config"].delete(0, tk.END)
+        self.entries["dataset_config"].insert(0, first_dataset)
+        self.update_button_states()
+        if self.start_btn["state"] == "disabled":
+            messagebox.showerror("Validation Error", "Complete the required model and training fields before starting the staged run.")
+            return
+
+        base_settings = self.get_settings()
+        if base_settings.get("training_mode") == "Wan 2.2":
+            separate_wan_runs = (
+                base_settings.get("train_low_noise")
+                and base_settings.get("train_high_noise")
+                and (str(base_settings.get("network_dim_high") or "").strip() or str(base_settings.get("network_alpha_high") or "").strip())
+            )
+            if separate_wan_runs:
+                messagebox.showerror(
+                    "Staged Run",
+                    "Staged continuation cannot map one resume state to two separate Wan low/high-noise runs. Use a combined run or stage each noise model separately.",
+                )
+                return
+        if not self._check_logging_dependencies(base_settings.get("log_with")):
+            return
+        self.loss_data.clear()
+        self.current_step = 0
+        self.update_loss_graph()
+        self.start_vram_monitor()
+        self._start_sample_watcher()
+        self.progress_var.set(0)
+        self.progress_label_var.set("Starting staged run...")
+        self.output_text.delete("1.0", tk.END)
+        self.command_sequence = []
+        self._staged_run = {
+            "base_settings": base_settings,
+            "base_output_name": base_settings["output_name"],
+            "stages": stages,
+            "next_index": 0,
+            "previous_settings": None,
+        }
+        self._begin_job(
+            "staged_training",
+            "Staged resolution training",
+            settings=base_settings,
+            note=" → ".join(f"{item['label']}px × {item['epochs']}" for item in stages),
+        )
+        self._advance_staged_training()
+
+    def _advance_staged_training(self):
+        run = self._staged_run
+        if not run:
+            return
+        previous = run.get("previous_settings")
+        next_index = run["next_index"]
+        if previous is not None and next_index < len(run["stages"]):
+            state_path = self._final_state_path(previous)
+            if not state_path.is_dir():
+                self.output_text.insert(tk.END, f"\n--- Expected continuation state was not created: {state_path} ---\n")
+                self._finalize_active_job("failed", -1)
+                self._staged_run = None
+                self.stop_all_activity()
+                return
+
+        if next_index >= len(run["stages"]):
+            self._staged_run = None
+            self._finalize_active_job("completed", 0)
+            self.output_text.insert(tk.END, "\n--- All staged training runs completed successfully. ---\n")
+            self.stop_all_activity()
+            return
+
+        stage = run["stages"][next_index]
+        settings = dict(run["base_settings"])
+        settings["dataset_config"] = stage["dataset_config"]
+        settings["max_train_epochs"] = str(stage["epochs"])
+        settings["output_name"] = f"{run['base_output_name']}-{stage['label']}px"
+        settings["save_state"] = True
+        settings["recache_latents"] = bool(self._staged_recache_latents)
+        settings["recache_text"] = bool(settings.get("recache_text")) if next_index == 0 else False
+        settings["resume_path"] = str(self._final_state_path(previous)) if previous is not None else settings.get("resume_path", "")
+        settings["network_weights"] = "" if settings["resume_path"] else settings.get("network_weights", "")
+        settings["sample_prompts"] = self._build_sample_prompts_txt()
+
+        run["previous_settings"] = settings
+        run["next_index"] = next_index + 1
+        self.set_values(settings)
+        self.run_status_var.set(f"🟢 Stage {next_index + 1}/{len(run['stages'])}: {stage['label']}px")
+        self.progress_label_var.set(f"Stage {next_index + 1}/{len(run['stages'])} · {stage['label']}px · {stage['epochs']} epochs")
+        self.output_text.insert(
+            tk.END,
+            f"\n=== Stage {next_index + 1}/{len(run['stages'])}: {stage['label']}px for {stage['epochs']} epochs ===\n"
+            f"Dataset: {stage['dataset_config']}\n"
+            f"Resume: {settings['resume_path'] or 'new training state'}\n",
+        )
+        self.command_sequence = self._commands_for_settings(settings)
+        self._run_next_command_in_sequence(0)
 
     def _check_logging_dependencies(self, log_with):
         if log_with in ["wandb", "all"]:
@@ -2649,6 +3015,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         return True
 
     def start_training(self):
+        self._staged_run = None
         self.update_button_states(); settings = self.get_settings()
         if not self._check_logging_dependencies(settings.get("log_with")): return
         mode = settings.get("training_mode", "Wan 2.2")
@@ -2706,6 +3073,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.output_text.insert(tk.END, "\n⚠️ Terminating process and sequence...\n")
             self._stop_requested = True
             self.command_sequence = []
+            self._staged_run = None
             self.run_status_var.set("🛑 Stopping Run")
             self.progress_label_var.set("Stopping current process...")
             try:

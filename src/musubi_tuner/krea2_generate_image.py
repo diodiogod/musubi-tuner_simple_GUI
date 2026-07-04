@@ -168,6 +168,16 @@ def generate(args: argparse.Namespace, dit, ae, encoder, device: str, dtype: tor
     prompts = [args.prompt] * args.num_images
     negative_prompts = [args.negative_prompt] * args.num_images
     cfg = args.guidance_scale > 1.0
+    logger.info(
+        "Sampling mode=%s steps=%s CFG=%s mu=%s size=%sx%s seed=%s",
+        "Turbo" if args.turbo else "RAW",
+        args.steps,
+        args.guidance_scale,
+        args.mu if args.mu is not None else f"resolution-aware ({args.y1}..{args.y2})",
+        args.width,
+        args.height,
+        args.seed,
+    )
 
     txt, txtmask, untxt, untxtmask = encode(encoder, prompts, negative_prompts, cfg, te_device)
 
@@ -273,8 +283,9 @@ def parse_args() -> argparse.Namespace:
         help="Qwen3-VL-4B text encoder safetensors path (official or ComfyUI key layout)",
     )
     parser.add_argument("--negative_prompt", type=str, default="", help="Negative prompt (used only when --guidance_scale > 1)")
-    parser.add_argument("--steps", type=int, default=28, help="Number of denoising steps")
-    parser.add_argument("--guidance_scale", type=float, default=5.5, help="Classifier-free guidance scale (<= 1 disables CFG)")
+    parser.add_argument("--turbo", action="store_true", help="Use Krea 2 Turbo sampling defaults: 8 steps, CFG off, fixed mu=1.15")
+    parser.add_argument("--steps", type=int, default=None, help="Number of denoising steps (default: RAW 28, Turbo 8)")
+    parser.add_argument("--guidance_scale", type=float, default=None, help="Classifier-free guidance scale (default: RAW 5.5, Turbo 1.0)")
     parser.add_argument("--y1", type=float, default=0.5, help="Timestep-shift mu at min resolution")
     parser.add_argument("--y2", type=float, default=1.15, help="Timestep-shift mu at max resolution")
     parser.add_argument("--mu", type=float, default=None, help="Pin a constant timestep-shift mu (overrides y1/y2)")
@@ -364,6 +375,13 @@ def parse_args() -> argparse.Namespace:
     if not args.from_file and not args.interactive and args.prompt is None:
         raise ValueError("Either a positional prompt, --from_file or --interactive must be specified")
 
+    if args.steps is None:
+        args.steps = 8 if args.turbo else 28
+    if args.guidance_scale is None:
+        args.guidance_scale = 1.0 if args.turbo else 5.5
+    if args.turbo and args.mu is None:
+        args.mu = 1.15
+
     return args
 
 
@@ -391,6 +409,14 @@ def main():
     dtype = torch.bfloat16
     device = args.device
     te_device = "cpu" if args.text_encoder_cpu else device
+    logger.info("Krea 2 inference checkpoint: %s", args.dit)
+    logger.info("Krea 2 inference mode: %s", "Turbo" if args.turbo else "RAW")
+    logger.info("Krea 2 inference LoRA(s): %s", args.lora_weight or "none (base model only)")
+    logger.info(
+        "Krea 2 projector patch: %s (strength=%s)",
+        args.projector_diff or "none",
+        args.projector_diff_strength,
+    )
 
     # Load all three models up front and keep them: the encoder and VAE live on CPU, the DiT
     # lives on the GPU (with block swap as needed). Encoder/VAE shuttle to the GPU per prompt.
