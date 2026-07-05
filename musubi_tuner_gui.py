@@ -146,6 +146,7 @@ class MusubiTunerGUI:
         self.current_total_steps = 0
         self.current_epoch_num = 0
         self.current_epoch_total = 0
+        self._last_loss_step = 0
         self.sample_watcher_active = False
         self._sample_watcher_thread = None
         self._last_sample_files = []
@@ -3275,7 +3276,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def update_loss_graph(self, step=None, loss_value=None):
         if not MATPLOTLIB_AVAILABLE: return
-        if step is not None and loss_value is not None: self.loss_data.append((step, loss_value))
+        if step is not None and loss_value is not None:
+            step = int(step)
+            loss_value = float(loss_value)
+            if step < self._last_loss_step:
+                return
+            if self.loss_data and step == self._last_loss_step:
+                self.loss_data[-1] = (step, loss_value)
+            else:
+                self.loss_data.append((step, loss_value))
+            self._last_loss_step = step
         self.ax.clear(); self.setup_graph_style()
         if self.loss_data:
             steps, losses = zip(*self.loss_data)
@@ -3289,7 +3299,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def update_training_counters(self, current_step=None, total_steps=None, current_epoch=None, total_epochs=None):
         if current_step is not None:
-            self.current_step = current_step
+            parsed_step = int(current_step)
+            if parsed_step >= self.current_step:
+                self.current_step = parsed_step
         if total_steps is not None:
             self.current_total_steps = total_steps
         if current_epoch is not None:
@@ -3388,6 +3400,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.current_total_steps = 0
         self.current_epoch_num = 0
         self.current_epoch_total = 0
+        self._last_loss_step = 0
         self._stop_requested = False
         self.update_training_counters()
         self.update_button_states()
@@ -3493,6 +3506,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if self.command_sequence:
             self.loss_data.clear()
             self.current_step = 0
+            self._last_loss_step = 0
             self.update_loss_graph()
             next_command = self.command_sequence.pop(0)
             self.run_process(next_command, self._run_next_command_in_sequence, self.output_text, job_context={"attach_to_active": True})
@@ -3600,6 +3614,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return
         self.loss_data.clear()
         self.current_step = 0
+        self._last_loss_step = 0
         self.update_loss_graph()
         self.start_vram_monitor()
         self._start_sample_watcher()
@@ -3735,7 +3750,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if wants_samples and self._count_enabled_sample_prompts() == 0:
             messagebox.showwarning("No Active Sample Prompts", "You set a sample frequency but have no enabled prompts in the Samples tab.\nNo samples will be generated.\n\nEnable at least one saved prompt or add a new one.")
 
-        self.loss_data.clear(); self.current_step = 0
+        self.loss_data.clear(); self.current_step = 0; self._last_loss_step = 0
         self.update_loss_graph(); self.start_vram_monitor(); self._start_sample_watcher()
         self.progress_var.set(0); self.progress_label_var.set("Starting sequence...")
         self.output_text.delete("1.0", tk.END); self.command_sequence = []
