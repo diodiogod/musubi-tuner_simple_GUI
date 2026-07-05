@@ -244,7 +244,46 @@ class MusubiTunerGUI:
         style.map('TCombobox', fieldbackground=[('readonly', FIELD_BG_COLOR)], foreground=[('readonly', TEXT_COLOR)], selectbackground=[('readonly', SELECT_BG_COLOR)])
         self.root.option_add('*TCombobox*Listbox.background', FIELD_BG_COLOR); self.root.option_add('*TCombobox*Listbox.foreground', TEXT_COLOR)
         self.root.option_add('*TCombobox*Listbox.selectBackground', SELECT_BG_COLOR); self.root.option_add('*TCombobox*Listbox.selectForeground', TEXT_COLOR)
-        style.configure('TCheckbutton', font=('Segoe UI', 10)); style.configure('Title.TLabel', background=self.colors["surface"], font=('Segoe UI Semibold', 18))
+        toggle_indicator_bg = FIELD_BG_COLOR
+        toggle_indicator_fg = self.colors["accent"]
+        toggle_indicator_border = BORDER_COLOR
+        style.configure(
+            'TCheckbutton',
+            font=('Segoe UI', 10),
+            background=self.colors["page"],
+            foreground=TEXT_COLOR,
+            indicatorbackground=toggle_indicator_bg,
+            indicatorforeground=toggle_indicator_fg,
+            upperbordercolor=toggle_indicator_border,
+            lowerbordercolor=toggle_indicator_border,
+            focuscolor=self.colors["page"],
+        )
+        style.map(
+            'TCheckbutton',
+            background=[('disabled', self.colors["page"]), ('active', self.colors["page"])],
+            foreground=[('disabled', self.colors["disabled"]), ('active', TEXT_COLOR)],
+            indicatorbackground=[('disabled', self.colors["surface_alt"]), ('active', toggle_indicator_bg)],
+            indicatorforeground=[('disabled', self.colors["disabled"]), ('selected', toggle_indicator_fg)],
+        )
+        style.configure(
+            'TRadiobutton',
+            font=('Segoe UI', 10),
+            background=self.colors["page"],
+            foreground=TEXT_COLOR,
+            indicatorbackground=toggle_indicator_bg,
+            indicatorforeground=toggle_indicator_fg,
+            upperbordercolor=toggle_indicator_border,
+            lowerbordercolor=toggle_indicator_border,
+            focuscolor=self.colors["page"],
+        )
+        style.map(
+            'TRadiobutton',
+            background=[('disabled', self.colors["page"]), ('active', self.colors["page"])],
+            foreground=[('disabled', self.colors["disabled"]), ('active', TEXT_COLOR)],
+            indicatorbackground=[('disabled', self.colors["surface_alt"]), ('active', toggle_indicator_bg)],
+            indicatorforeground=[('disabled', self.colors["disabled"]), ('selected', toggle_indicator_fg)],
+        )
+        style.configure('Title.TLabel', background=self.colors["surface"], font=('Segoe UI Semibold', 18))
         style.configure('Subtitle.TLabel', background=self.colors["surface"], foreground=self.colors["muted"], font=('Segoe UI', 9))
         style.configure('Status.TLabel', font=('Segoe UI Semibold', 11)); style.configure('TProgressbar', thickness=12, background=self.colors["accent"], troughcolor=FIELD_BG_COLOR)
         style.configure(
