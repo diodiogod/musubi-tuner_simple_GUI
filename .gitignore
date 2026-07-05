@@ -10,5 +10,6 @@ last_settings.json
 job_history_local.json
 CLAUDE.md
 GEMINI.md
+AGENTS.md
 .claude/
 .gemini/
