@@ -613,7 +613,7 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['lokr_factor'], "lokr_factor", "LoKr Factor:", "Controls how LoKr splits weight dimensions via Kronecker factorization. -1 = auto (recommended). Positive values force a specific factor (e.g., 4, 8).", validate_num=False)
 
         self.hidden_frames['low_noise_lora_params'] = ttk.LabelFrame(network_container, text="Low Noise Network Parameters")
-        self._add_widget(self.hidden_frames['low_noise_lora_params'], "network_dim_low", "Network Dimension (Rank):", "Controls network capacity. LoRA: 32-128 typical. LoHa: use lower values (4-32) — the Hadamard product squares expressiveness so smaller ranks go further. LoKr: similar range to LoRA.", is_required=True, validate_num=True)
+        self._add_widget(self.hidden_frames['low_noise_lora_params'], "network_dim_low", "Network Dimension (Rank):", "Controls network capacity. LoRA: 32-128 typical. LoHa: use lower values (4-32) because its paired decomposition is more expressive. LoKr: start around 16-32; sufficiently large values switch its larger Kronecker factor to a full matrix, so size and capacity stop increasing like ordinary LoRA rank.", is_required=True, validate_num=True)
         self._add_widget(self.hidden_frames['low_noise_lora_params'], "network_alpha_low", "Network Alpha:", "Scaling factor for network weights. Often set to half of Network Dimension, or equal to it for LoHa/LoKr.", is_required=True, validate_num=True)
 
         self.hidden_frames['high_noise_lora_params'] = ttk.LabelFrame(network_container, text="High Noise Network Parameters")

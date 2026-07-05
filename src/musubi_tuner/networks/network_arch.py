@@ -30,6 +30,13 @@ def detect_arch_config(unet):
 
         return ZIMAGE_TARGET_REPLACE_MODULES, [r".*(_modulation|_refiner).*"]
 
+    if "SingleStreamDiT" in module_class_names and "SingleStreamBlock" in module_class_names:
+        # Krea 2 intentionally targets every Linear in the DiT, including the
+        # input/output projections, time/text MLPs, text-fusion transformer, and
+        # all main blocks. None tells the generic network walker to scan the
+        # complete model, matching networks.lora_krea2 and Ostris AI Toolkit.
+        return None, []
+
     if "HunyuanVideoTransformerBlock" in module_class_names:
         from .lora_framepack import FRAMEPACK_TARGET_REPLACE_MODULES
 
