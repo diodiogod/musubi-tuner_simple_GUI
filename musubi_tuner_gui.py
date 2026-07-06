@@ -16,6 +16,7 @@ from collections import defaultdict
 
 from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend
 from backends.flux2 import FLUX2_VERSION_MAP
+from dataset_config_builder import DatasetConfigBuilder
 
 # --- Dependency Check ---
 try:
@@ -490,6 +491,8 @@ class MusubiTunerGUI:
     def _route_tab_mousewheel(self, event):
         """Scroll the active page unless a nested widget handles the wheel itself."""
         try:
+            if event.widget.winfo_toplevel() is not self.root:
+                return "break"
             selected = self.notebook.select()
             page = self.root.nametowidget(selected)
             if isinstance(page, ScrollableTab):
@@ -552,12 +555,31 @@ class MusubiTunerGUI:
             widget.bind("<FocusOut>", self.update_button_states); widget.bind("<KeyRelease>", self.update_button_states)
         return widget
 
+    def _open_dataset_config_builder(self):
+        current_path = self.entries["dataset_config"].get().strip()
+
+        def use_config(path):
+            entry = self.entries["dataset_config"]
+            entry.delete(0, tk.END)
+            entry.insert(0, path)
+            self.update_button_states()
+
+        DatasetConfigBuilder(
+            self.root,
+            initial_path=current_path,
+            on_use=use_config,
+            colors=self.colors,
+        )
+
     def create_model_paths_tab(self):
         frame = self._create_scrollable_tab("1  Models")
         self._add_page_intro(frame, "Models & dataset", "Choose the dataset, model components, and output destination for the selected training mode. Required fields are marked with an asterisk.")
 
         dataset_frame = ttk.LabelFrame(frame, text="Dataset Configuration"); dataset_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(dataset_frame, "dataset_config", "Dataset Config (TOML):", "Path to .toml dataset configuration file.", kind='path_entry', options=[("TOML files", "*.toml")], is_required=True, is_path=True)
+        dataset_entry = self._add_widget(dataset_frame, "dataset_config", "Dataset Config (TOML):", "Path to .toml dataset configuration file.", kind='path_entry', options=[("TOML files", "*.toml")], is_required=True, is_path=True)
+        builder_button = ttk.Button(dataset_entry.master, text="Create / Edit", command=self._open_dataset_config_builder)
+        builder_button.pack(side="right", padx=(5, 0))
+        ToolTip(builder_button, "Opens a visual dataset-config builder. You can also edit and validate the raw TOML.")
 
         # ---- WAN 2.2 DiT section ----
         self.hidden_frames['wan_dit'] = ttk.LabelFrame(frame, text="DiT Model Selection")
