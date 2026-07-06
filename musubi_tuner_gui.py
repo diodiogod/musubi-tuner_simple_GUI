@@ -161,6 +161,7 @@ class MusubiTunerGUI:
         self._job_history = []
         self._jobs_tree = None
         self._jobs_details_text = None
+        self._jobs_context_menu = None
         self._jobs_summary_var = tk.StringVar(value="No jobs recorded yet.")
         self._active_job = None
         self._stop_requested = False
@@ -1940,7 +1941,7 @@ class MusubiTunerGUI:
         ttk.Label(intro, text="Recent jobs", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(
             intro,
-            text="Track completed, failed, and stopped runs locally. Historical imports read saved settings, model folders, and log files when available.",
+            text="Track completed, failed, and stopped runs locally. Right-click a job to load its latest saved state as a continuation.",
             style="PageHelp.TLabel",
             wraplength=920,
             justify="left",
@@ -1986,6 +1987,17 @@ class MusubiTunerGUI:
         list_scroll_x.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
         self._jobs_tree.bind("<<TreeviewSelect>>", lambda _e: self._show_selected_job_details())
         self._jobs_tree.bind("<Double-1>", lambda _e: self._open_selected_job_output())
+        self._jobs_tree.bind("<Button-3>", self._show_jobs_context_menu)
+
+        self._jobs_context_menu = tk.Menu(self.root, tearoff=False)
+        self._jobs_context_menu.add_command(
+            label="Load as Continuation / Resume",
+            command=self._load_selected_job_as_continuation,
+        )
+        self._jobs_context_menu.add_separator()
+        self._jobs_context_menu.add_command(label="Open Output", command=self._open_selected_job_output)
+        self._jobs_context_menu.add_command(label="Open Logs", command=self._open_selected_job_logs)
+        self._jobs_context_menu.add_command(label="Copy Command", command=self._copy_selected_job_command)
 
         details_frame = ttk.LabelFrame(split, text="Job Details")
         split.add(details_frame, weight=4)
@@ -2092,6 +2104,238 @@ class MusubiTunerGUI:
         if index >= len(self._job_history):
             return None
         return self._job_history[index]
+
+    def _show_jobs_context_menu(self, event):
+        row_id = self._jobs_tree.identify_row(event.y)
+        if not row_id:
+            return
+        self._jobs_tree.selection_set(row_id)
+        self._jobs_tree.focus(row_id)
+        self._show_selected_job_details()
+        job = self._selected_job()
+        can_continue = bool(
+            job
+            and job.get("kind") in ("training", "staged_training")
+            and isinstance(job.get("settings_snapshot"), dict)
+            and not self.current_process
+        )
+        self._jobs_context_menu.entryconfigure(
+            0,
+            state="normal" if can_continue else "disabled",
+        )
+        try:
+            self._jobs_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._jobs_context_menu.grab_release()
+
+    @staticmethod
+    def _command_option(command, option):
+        match = re.search(
+            rf"(?:^|\s){re.escape(option)}\s+(?:\"([^\"]*)\"|'([^']*)'|(\S+))",
+            str(command or ""),
+        )
+        if not match:
+            return ""
+        return next((value for value in match.groups() if value is not None), "")
+
+    @staticmethod
+    def _is_training_command(command):
+        lowered = str(command or "").lower()
+        return "train_network.py" in lowered or re.search(r"(?:^|[/\\\s])[^/\\\s]*_train\.py(?:\s|$)", lowered) is not None
+
+    def _job_training_command(self, job):
+        commands = job.get("commands") or []
+        return next((command for command in reversed(commands) if self._is_training_command(command)), "")
+
+    @staticmethod
+    def _state_epoch_from_path(state_path):
+        match = re.search(r"-(\d+)-state$", Path(state_path).name, re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+
+    def _continuation_state_candidates(self, job):
+        candidates = []
+
+        def add_candidate(path):
+            try:
+                resolved = Path(path).expanduser()
+                if resolved.is_dir() and any(resolved.iterdir()) and resolved not in candidates:
+                    candidates.append(resolved)
+            except (OSError, TypeError, ValueError):
+                pass
+
+        def add_run_directory(run_dir, output_name):
+            if not run_dir or not output_name:
+                return
+            try:
+                directory = Path(run_dir).expanduser()
+                add_candidate(directory / f"{output_name}-state")
+                for state_dir in directory.glob(f"{output_name}-*-state"):
+                    add_candidate(state_dir)
+            except (OSError, TypeError, ValueError):
+                pass
+
+        settings = job.get("settings_snapshot")
+        if isinstance(settings, dict):
+            try:
+                for state_path in self._candidate_final_state_paths(settings):
+                    add_candidate(state_path)
+                run_name = self._effective_run_name(settings)
+                add_run_directory(Path(settings["output_dir"]) / run_name, run_name)
+            except (KeyError, TypeError, ValueError):
+                pass
+
+        for command in reversed(job.get("commands") or []):
+            if not self._is_training_command(command):
+                continue
+            command_output_dir = self._command_option(command, "--output_dir")
+            command_output_name = self._command_option(command, "--output_name")
+            add_run_directory(command_output_dir, command_output_name)
+
+        job_output_dir = job.get("output_dir", "")
+        job_output_name = job.get("output_name", "")
+        if job_output_dir and job_output_name:
+            add_run_directory(Path(job_output_dir) / job_output_name, job_output_name)
+            add_run_directory(job_output_dir, job_output_name)
+
+        return candidates
+
+    def _resolve_job_continuation_state(self, job):
+        candidates = self._continuation_state_candidates(job)
+        if candidates:
+            finished_raw = str(job.get("finished_at") or "").strip()
+            if finished_raw:
+                try:
+                    finished_timestamp = datetime.fromisoformat(finished_raw).timestamp()
+                    candidates_at_job_time = [
+                        path for path in candidates
+                        if path.stat().st_mtime <= finished_timestamp
+                    ]
+                    if not candidates_at_job_time:
+                        candidates_at_job_time = [
+                            path for path in candidates
+                            if path.stat().st_mtime <= finished_timestamp + 300
+                        ]
+                    if candidates_at_job_time:
+                        candidates = candidates_at_job_time
+                except (OSError, ValueError):
+                    pass
+
+            expected_epoch = int(job.get("current_epoch") or 0)
+            if expected_epoch:
+                epoch_matches = [
+                    path for path in candidates
+                    if self._state_epoch_from_path(path) == expected_epoch
+                ]
+                if epoch_matches:
+                    return max(epoch_matches, key=lambda path: path.stat().st_mtime)
+
+            return max(
+                candidates,
+                key=lambda path: (
+                    path.stat().st_mtime,
+                    self._state_epoch_from_path(path),
+                ),
+            )
+        original_resume = str(job.get("resume_path") or "").strip()
+        if original_resume and Path(original_resume).is_dir():
+            return Path(original_resume)
+        return None
+
+    @staticmethod
+    def _continuation_progress_text(job, state_path):
+        parts = []
+        current_epoch = int(job.get("current_epoch") or 0)
+        total_epochs = int(job.get("total_epochs") or 0)
+        state_epoch = MusubiTunerGUI._state_epoch_from_path(state_path)
+        if current_epoch:
+            parts.append(f"epoch {current_epoch}/{total_epochs}" if total_epochs else f"epoch {current_epoch}")
+        elif state_epoch:
+            parts.append(f"epoch {state_epoch}")
+
+        current_step = int(job.get("current_step") or 0)
+        total_steps = int(job.get("total_steps") or 0)
+        if current_step:
+            parts.append(f"step {current_step}/{total_steps}" if total_steps else f"step {current_step}")
+        return ", ".join(parts) if parts else f"state {Path(state_path).name}"
+
+    def _next_continuation_output_name(self, settings, source_name):
+        base_name = f"{source_name}-cont"
+        output_dir = Path(str(settings.get("output_dir") or "")).expanduser()
+        candidate = base_name
+        suffix = 2
+        while output_dir and (output_dir / candidate).exists():
+            candidate = f"{base_name}{suffix}"
+            suffix += 1
+        return candidate
+
+    def _load_selected_job_as_continuation(self):
+        if self.current_process:
+            messagebox.showwarning("Continuation", "Stop the active process before loading another job.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        settings_snapshot = job.get("settings_snapshot")
+        if not isinstance(settings_snapshot, dict) or not settings_snapshot:
+            messagebox.showerror(
+                "Continuation unavailable",
+                "This imported job does not contain a complete saved settings snapshot, so restoring its model and training settings would be unsafe.",
+            )
+            return
+
+        state_path = self._resolve_job_continuation_state(job)
+        if state_path is None:
+            messagebox.showerror(
+                "Continuation state not found",
+                "No saved Accelerate state folder could be found for this job. Continuation requires Save State to have been enabled.",
+            )
+            return
+
+        settings = dict(settings_snapshot)
+        training_command = self._job_training_command(job)
+        command_output_name = self._command_option(training_command, "--output_name")
+        command_dataset = self._command_option(training_command, "--dataset_config")
+        command_epochs = self._command_option(training_command, "--max_train_epochs")
+        if command_dataset:
+            settings["dataset_config"] = command_dataset
+        if command_epochs:
+            settings["max_train_epochs"] = command_epochs
+
+        if job.get("kind") == "staged_training" and command_output_name:
+            source_name = command_output_name
+        else:
+            # Normal Wan commands add _LowNoise/_HighNoise internally. Keep the
+            # saved base name so the continuation does not duplicate that suffix.
+            source_name = str(
+                settings.get("output_name")
+                or job.get("output_name")
+                or command_output_name
+                or "training"
+            )
+        settings["output_name"] = self._next_continuation_output_name(settings, source_name)
+        settings["resume_path"] = str(state_path)
+        settings["network_weights"] = ""
+        settings["save_state"] = True
+        settings["recache_latents"] = False
+        settings["recache_text"] = False
+        settings["use_staged_training"] = False
+
+        progress = self._continuation_progress_text(job, state_path)
+        source_title = str(job.get("output_name") or job.get("title") or source_name)
+        continuation_note = f"(Continuation from {source_title}: {progress})"
+        existing_comment = str(settings.get("training_comment") or "").rstrip()
+        if continuation_note not in existing_comment:
+            settings["training_comment"] = f"{existing_comment}\n{continuation_note}".strip()
+
+        self.set_values(settings)
+        self._select_page(1)
+        self.run_status_var.set(f"🟢 Continuation loaded from {Path(state_path).name}")
+        messagebox.showinfo(
+            "Continuation loaded",
+            f"Resume state:\n{state_path}\n\n"
+            f"New output name:\n{settings['output_name']}\n\n"
+            "Recaching and staged progression were disabled. Review the epoch count and notes, then run training.",
+        )
 
     def _set_job_details_text(self, text):
         if self._jobs_details_text is None:
@@ -2284,6 +2528,7 @@ class MusubiTunerGUI:
             "total_steps": job.get("total_steps", 0),
             "current_epoch": job.get("current_epoch", 0),
             "total_epochs": job.get("total_epochs", 0),
+            "settings_snapshot": dict(job.get("settings_snapshot", {})) if isinstance(job.get("settings_snapshot"), dict) else {},
         }
         return normalised
 
@@ -2362,6 +2607,7 @@ class MusubiTunerGUI:
                         "commands": [],
                         "current_epoch": data.get("epoch", 0) or data.get("max_train_epochs", 0) or 0,
                         "total_epochs": data.get("max_train_epochs", 0) or 0,
+                        "settings_snapshot": dict(data),
                     }
                 )
         return jobs
