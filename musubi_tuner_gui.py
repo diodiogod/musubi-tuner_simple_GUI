@@ -10,6 +10,7 @@ import signal
 import struct
 import time
 import sys
+import uuid
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -147,6 +148,9 @@ class MusubiTunerGUI:
         self.current_total_steps = 0
         self.current_epoch_num = 0
         self.current_epoch_total = 0
+        self.current_prior_steps = 0
+        self.current_prior_epochs = 0
+        self._pending_continuation = None
         self._last_loss_step = 0
         self.sample_watcher_active = False
         self._sample_watcher_thread = None
@@ -1996,7 +2000,7 @@ class MusubiTunerGUI:
             "progress": "Progress",
             "title": "Title",
         }
-        widths = {"status": 96, "mode": 92, "started": 132, "progress": 128, "title": 340}
+        widths = {"status": 96, "mode": 92, "started": 132, "progress": 250, "title": 280}
         anchors = {"status": "center", "mode": "center", "started": "center", "progress": "center", "title": "w"}
         for key in columns:
             self._jobs_tree.heading(key, text=headings[key])
@@ -2055,6 +2059,8 @@ class MusubiTunerGUI:
             self._job_history = data if isinstance(data, list) else []
         except (OSError, ValueError, TypeError):
             self._job_history = []
+        if self._backfill_job_lineage():
+            self._save_job_history()
         self._refresh_job_history_view()
 
     def _save_job_history(self):
@@ -2063,6 +2069,200 @@ class MusubiTunerGUI:
                 json.dump(self._job_history[:200], history_file, indent=2)
         except OSError:
             pass
+
+    @staticmethod
+    def _job_metric(job, key):
+        try:
+            return max(0, int(job.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _job_cumulative_progress(cls, job):
+        prior_epochs = cls._job_metric(job, "continuation_prior_epochs")
+        prior_steps = cls._job_metric(job, "continuation_prior_steps")
+        return {
+            "current_epoch": prior_epochs + cls._job_metric(job, "current_epoch"),
+            "total_epochs": prior_epochs + cls._job_metric(job, "total_epochs"),
+            "current_step": prior_steps + cls._job_metric(job, "current_step"),
+            "total_steps": prior_steps + cls._job_metric(job, "total_steps"),
+            "prior_epochs": prior_epochs,
+            "prior_steps": prior_steps,
+        }
+
+    @staticmethod
+    def _normalise_history_path(path):
+        value = str(path or "").strip().replace("\\", "/").rstrip("/")
+        return os.path.normcase(value)
+
+    def _job_run_paths(self, job):
+        paths = set()
+
+        def add_path(path):
+            normalised = self._normalise_history_path(path)
+            if normalised:
+                paths.add(normalised)
+
+        settings = job.get("settings_snapshot")
+        if isinstance(settings, dict):
+            output_dir = settings.get("output_dir", "")
+            output_name = settings.get("output_name", "")
+            if output_dir:
+                add_path(output_dir)
+            if output_dir and output_name:
+                try:
+                    run_name = self._effective_run_name(settings)
+                except (KeyError, TypeError, ValueError):
+                    run_name = output_name
+                add_path(Path(output_dir) / run_name)
+
+        output_dir = job.get("output_dir", "")
+        output_name = job.get("output_name", "")
+        if output_dir:
+            add_path(output_dir)
+        if output_dir and output_name:
+            add_path(Path(output_dir) / output_name)
+
+        for command in job.get("commands") or []:
+            if not self._is_training_command(command):
+                continue
+            command_dir = self._command_option(command, "--output_dir")
+            command_name = self._command_option(command, "--output_name")
+            if command_dir:
+                add_path(command_dir)
+            if command_dir and command_name:
+                add_path(Path(command_dir) / command_name)
+        return paths
+
+    def _find_resume_parent_job(self, resume_path, jobs=None, exclude_job=None, before_started=""):
+        resume_parent = self._normalise_history_path(Path(str(resume_path)).parent)
+        if not resume_parent:
+            return None
+        candidates = []
+        before_timestamp = None
+        if before_started:
+            try:
+                before_timestamp = datetime.fromisoformat(str(before_started)).timestamp()
+            except ValueError:
+                pass
+
+        for job in jobs if jobs is not None else self._job_history:
+            if job is exclude_job:
+                continue
+            if before_timestamp is not None and job.get("started_at"):
+                try:
+                    if datetime.fromisoformat(str(job["started_at"])).timestamp() > before_timestamp:
+                        continue
+                except ValueError:
+                    pass
+            if resume_parent not in self._job_run_paths(job):
+                continue
+            try:
+                timestamp = datetime.fromisoformat(str(job.get("finished_at") or job.get("started_at") or "")).timestamp()
+            except ValueError:
+                timestamp = 0
+            candidates.append((timestamp, job))
+        return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+    def _continuation_metadata(self, resume_path, source_job=None, jobs=None, before_started=""):
+        if not resume_path:
+            return {}
+        source_job = source_job or self._find_resume_parent_job(
+            resume_path,
+            jobs=jobs,
+            before_started=before_started,
+        )
+        if source_job:
+            cumulative = self._job_cumulative_progress(source_job)
+            state_epoch = self._state_epoch_from_path(resume_path)
+            source_local_epoch = self._job_metric(source_job, "current_epoch")
+            if state_epoch and state_epoch != source_local_epoch:
+                cumulative["current_epoch"] = cumulative["prior_epochs"] + state_epoch
+                source_total_steps = self._job_metric(source_job, "total_steps")
+                source_total_epochs = self._job_metric(source_job, "total_epochs")
+                if source_total_steps and source_total_epochs:
+                    state_local_step = round(source_total_steps * min(state_epoch, source_total_epochs) / source_total_epochs)
+                    cumulative["current_step"] = cumulative["prior_steps"] + state_local_step
+            return {
+                "continuation_parent_id": source_job.get("job_id", ""),
+                "continuation_parent_title": source_job.get("output_name") or source_job.get("title", ""),
+                "continuation_prior_epochs": cumulative["current_epoch"],
+                "continuation_prior_steps": cumulative["current_step"],
+                "continuation_depth": self._job_metric(source_job, "continuation_depth") + 1,
+                "continuation_resume_state": str(resume_path),
+            }
+
+        state_epoch = self._state_epoch_from_path(resume_path)
+        return {
+            "continuation_parent_id": "",
+            "continuation_parent_title": Path(str(resume_path)).parent.name or Path(str(resume_path)).name,
+            "continuation_prior_epochs": state_epoch,
+            "continuation_prior_steps": 0,
+            "continuation_depth": 1,
+            "continuation_resume_state": str(resume_path),
+        }
+
+    def _backfill_job_lineage(self):
+        changed = False
+        chronological = sorted(
+            self._job_history,
+            key=lambda job: str(job.get("started_at") or ""),
+        )
+        processed = []
+        for job in chronological:
+            if not job.get("job_id"):
+                job["job_id"] = uuid.uuid4().hex
+                changed = True
+            resume_path = str(job.get("resume_path") or "").strip()
+            if (
+                resume_path
+                and job.get("kind") in ("training", "staged_training")
+                and not job.get("continuation_resume_state")
+            ):
+                parent = self._find_resume_parent_job(
+                    resume_path,
+                    jobs=processed,
+                    exclude_job=job,
+                    before_started=job.get("started_at", ""),
+                )
+                job.update(
+                    self._continuation_metadata(
+                        resume_path,
+                        source_job=parent,
+                        jobs=processed,
+                        before_started=job.get("started_at", ""),
+                    )
+                )
+                changed = True
+            processed.append(job)
+        return changed
+
+    def _job_progress_summary(self, job):
+        local_epoch = self._job_metric(job, "current_epoch")
+        local_epoch_total = self._job_metric(job, "total_epochs")
+        local_step = self._job_metric(job, "current_step")
+        local_step_total = self._job_metric(job, "total_steps")
+        cumulative = self._job_cumulative_progress(job)
+        has_lineage = cumulative["prior_epochs"] > 0 or cumulative["prior_steps"] > 0
+
+        if has_lineage:
+            parts = []
+            if local_epoch_total or cumulative["prior_epochs"]:
+                parts.append(
+                    f"E {local_epoch}/{local_epoch_total or '?'}→"
+                    f"{cumulative['current_epoch']}/{cumulative['total_epochs'] or '?'}"
+                )
+            if local_step_total or cumulative["prior_steps"]:
+                parts.append(
+                    f"S {local_step}/{local_step_total or '?'}→"
+                    f"{cumulative['current_step']}/{cumulative['total_steps'] or '?'}"
+                )
+            return "  |  ".join(parts)
+        if local_step_total:
+            return f"{local_step}/{local_step_total}"
+        if local_epoch_total:
+            return f"e{local_epoch}/{local_epoch_total}"
+        return "-"
 
     def _refresh_job_history_view(self):
         if self._jobs_tree is None:
@@ -2086,16 +2286,7 @@ class MusubiTunerGUI:
         for index, job in enumerate(self._job_history):
             started = job.get("started_at", "")
             timestamp = started.replace("T", " ")[:16] if started else ""
-            step_now = job.get("current_step") or 0
-            step_total = job.get("total_steps") or 0
-            epoch_now = job.get("current_epoch") or 0
-            epoch_total = job.get("total_epochs") or 0
-            if step_total:
-                progress = f"{step_now}/{step_total}"
-            elif epoch_total:
-                progress = f"e{epoch_now}/{epoch_total}"
-            else:
-                progress = "-"
+            progress = self._job_progress_summary(job)
             self._jobs_tree.insert(
                 "",
                 "end",
@@ -2312,6 +2503,10 @@ class MusubiTunerGUI:
                 "No saved Accelerate state folder could be found for this job. Continuation requires Save State to have been enabled.",
             )
             return
+        self._pending_continuation = self._continuation_metadata(
+            state_path,
+            source_job=job,
+        )
 
         settings = dict(settings_snapshot)
         training_command = self._job_training_command(job)
@@ -2372,6 +2567,8 @@ class MusubiTunerGUI:
         if not job:
             self._set_job_details_text("No recorded jobs yet.")
             return
+        cumulative = self._job_cumulative_progress(job)
+        parent_title = str(job.get("continuation_parent_title") or "").strip()
         lines = [
             f"Title: {job.get('title', '')}",
             f"Kind: {job.get('kind', '')}",
@@ -2386,14 +2583,21 @@ class MusubiTunerGUI:
             f"Logging Dir: {job.get('logging_dir', '')}",
             f"Peak VRAM: {job.get('peak_vram_gb', 'N/A')}",
             f"Last Loss: {job.get('last_loss', 'N/A')}",
-            f"Step: {job.get('current_step', 'N/A')} / {job.get('total_steps', 'N/A')}",
-            f"Epoch: {job.get('current_epoch', 'N/A')} / {job.get('total_epochs', 'N/A')}",
+            f"Run Step: {job.get('current_step', 'N/A')} / {job.get('total_steps', 'N/A')}",
+            f"Overall Step: {cumulative['current_step']} / {cumulative['total_steps']}",
+            f"Run Epoch: {job.get('current_epoch', 'N/A')} / {job.get('total_epochs', 'N/A')}",
+            f"Overall Epoch: {cumulative['current_epoch']} / {cumulative['total_epochs']}",
             "",
             "Prompt / note:",
             job.get("note", "") or "(none)",
             "",
             "Commands:",
         ]
+        if parent_title:
+            lines[11:11] = [
+                f"Continuation From: {parent_title}",
+                f"Continuation Depth: {self._job_metric(job, 'continuation_depth')}",
+            ]
         commands = job.get("commands") or []
         if commands:
             lines.extend(commands)
@@ -2551,6 +2755,13 @@ class MusubiTunerGUI:
             "current_epoch": job.get("current_epoch", 0),
             "total_epochs": job.get("total_epochs", 0),
             "settings_snapshot": dict(job.get("settings_snapshot", {})) if isinstance(job.get("settings_snapshot"), dict) else {},
+            "job_id": job.get("job_id", ""),
+            "continuation_parent_id": job.get("continuation_parent_id", ""),
+            "continuation_parent_title": job.get("continuation_parent_title", ""),
+            "continuation_prior_epochs": job.get("continuation_prior_epochs", 0),
+            "continuation_prior_steps": job.get("continuation_prior_steps", 0),
+            "continuation_depth": job.get("continuation_depth", 0),
+            "continuation_resume_state": job.get("continuation_resume_state", ""),
         }
         return normalised
 
@@ -2593,6 +2804,7 @@ class MusubiTunerGUI:
 
         self._job_history.sort(key=lambda job: job.get("started_at", ""), reverse=True)
         self._job_history = self._job_history[:200]
+        self._backfill_job_lineage()
         self._save_job_history()
         self._refresh_job_history_view()
         messagebox.showinfo("Import Jobs", f"Imported {added} historical job(s), updated {updated}.")
@@ -2776,10 +2988,29 @@ class MusubiTunerGUI:
         settings = settings or self.get_settings()
         self._stop_requested = False
         self._last_loss_value = None
+        resume_path = str(settings.get("resume_path") or "").strip()
+        continuation = {}
+        if kind in ("training", "staged_training") and resume_path:
+            pending_resume = self._normalise_history_path(
+                (self._pending_continuation or {}).get("continuation_resume_state", "")
+            )
+            if pending_resume and pending_resume == self._normalise_history_path(resume_path):
+                continuation = dict(self._pending_continuation)
+            else:
+                continuation = self._continuation_metadata(resume_path)
+        self._pending_continuation = None
+        self.current_prior_epochs = self._job_metric(continuation, "continuation_prior_epochs")
+        self.current_prior_steps = self._job_metric(continuation, "continuation_prior_steps")
+        if kind in ("training", "staged_training"):
+            self.current_step = 0
+            self.current_total_steps = 0
+            self.current_epoch_num = 0
+            self.current_epoch_total = 0
         training_comment = str(settings.get("training_comment") or "").strip()
         if training_comment:
             note = f"{note}\n\n{training_comment}".strip()
         self._active_job = {
+            "job_id": uuid.uuid4().hex,
             "kind": kind,
             "title": title,
             "mode": settings.get("training_mode", self.training_mode_var.get()),
@@ -2799,6 +3030,8 @@ class MusubiTunerGUI:
             "total_epochs": 0,
             "settings_snapshot": dict(settings),
         }
+        self._active_job.update(continuation)
+        self.update_training_counters()
 
     @staticmethod
     def _effective_run_name(settings):
@@ -3602,7 +3835,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def update_progress_bar(self, current, total):
         percentage = (current / total) * 100 if total > 0 else 0
         self.progress_var.set(percentage)
-        self.progress_label_var.set(f"Epoch {current} of {total}" if total > 0 else "Epochs complete")
+        if total > 0 and self.current_prior_epochs:
+            self.progress_label_var.set(
+                f"Run epoch {current} of {total}  ·  Overall {self.current_prior_epochs + current} of "
+                f"{self.current_prior_epochs + total}"
+            )
+        else:
+            self.progress_label_var.set(f"Epoch {current} of {total}" if total > 0 else "Epochs complete")
 
     def update_training_counters(self, current_step=None, total_steps=None, current_epoch=None, total_epochs=None):
         if current_step is not None:
@@ -3617,12 +3856,28 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.current_epoch_total = total_epochs
 
         if self.current_epoch_num > 0 and self.current_epoch_total > 0:
-            self.epoch_counter_var.set(f"Epoch: {self.current_epoch_num} / {self.current_epoch_total}")
+            epoch_text = f"Epoch: {self.current_epoch_num} / {self.current_epoch_total}"
+            if self.current_prior_epochs:
+                epoch_text += (
+                    f"  ·  Overall: {self.current_prior_epochs + self.current_epoch_num}"
+                    f" / {self.current_prior_epochs + self.current_epoch_total}"
+                )
+            self.epoch_counter_var.set(epoch_text)
+        elif self.current_prior_epochs:
+            self.epoch_counter_var.set(f"Epoch: waiting  ·  Previously completed: {self.current_prior_epochs}")
         else:
             self.epoch_counter_var.set("Epoch: N/A")
 
         if self.current_step > 0 and self.current_total_steps > 0:
-            self.step_counter_var.set(f"Step: {self.current_step} / {self.current_total_steps}")
+            step_text = f"Step: {self.current_step} / {self.current_total_steps}"
+            if self.current_prior_steps:
+                step_text += (
+                    f"  ·  Overall: {self.current_prior_steps + self.current_step}"
+                    f" / {self.current_prior_steps + self.current_total_steps}"
+                )
+            self.step_counter_var.set(step_text)
+        elif self.current_prior_steps:
+            self.step_counter_var.set(f"Step: waiting  ·  Previously completed: {self.current_prior_steps}")
         else:
             self.step_counter_var.set("Step: N/A")
 
@@ -3707,6 +3962,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.current_total_steps = 0
         self.current_epoch_num = 0
         self.current_epoch_total = 0
+        self.current_prior_steps = 0
+        self.current_prior_epochs = 0
         self._last_loss_step = 0
         self._stop_requested = False
         self.update_training_counters()
