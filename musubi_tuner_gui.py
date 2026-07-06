@@ -169,6 +169,8 @@ class MusubiTunerGUI:
         self._jobs_context_menu = None
         self._jobs_summary_var = tk.StringVar(value="No jobs recorded yet.")
         self._active_job = None
+        self._monitor_top_collapsed = False
+        self._monitor_top_sash_position = 270
         self._stop_requested = False
         self._last_loss_value = None
 
@@ -1657,7 +1659,33 @@ class MusubiTunerGUI:
 
     def create_run_monitor_tab(self):
         tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="5  Monitor")
-        top_pane = ttk.Frame(tab_frame); top_pane.pack(fill='x', padx=10, pady=10)
+        layout_toolbar = ttk.Frame(tab_frame)
+        layout_toolbar.pack(fill="x", padx=10, pady=(8, 2))
+        ttk.Label(
+            layout_toolbar,
+            text="Drag the horizontal divider to resize controls and output.",
+            style="PageHelp.TLabel",
+        ).pack(side="left", fill="x", expand=True)
+        self.monitor_top_toggle_btn = ttk.Button(
+            layout_toolbar,
+            text="Hide Controls",
+            command=self._toggle_monitor_top_pane,
+        )
+        self.monitor_top_toggle_btn.pack(side="right")
+        ToolTip(
+            self.monitor_top_toggle_btn,
+            "Hides or restores the controls and live metrics so the loss graph and console can use more screen space.",
+        )
+
+        self.monitor_vertical_pane = ttk.PanedWindow(tab_frame, orient=tk.VERTICAL)
+        self.monitor_vertical_pane.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.monitor_top_pane = ttk.Frame(self.monitor_vertical_pane)
+        self.monitor_bottom_pane = ttk.Frame(self.monitor_vertical_pane)
+        self.monitor_vertical_pane.add(self.monitor_top_pane, weight=0)
+        self.monitor_vertical_pane.add(self.monitor_bottom_pane, weight=1)
+
+        top_pane = ttk.Frame(self.monitor_top_pane)
+        top_pane.pack(fill='both', expand=True, pady=(6, 4))
         controls_frame = ttk.LabelFrame(top_pane, text="Controls & Caching"); controls_frame.pack(side='left', fill='both', expand=True, padx=(0, 10))
         self.run_status_var = tk.StringVar(value="⚪ New Training RUN")
         self.run_status_label = ttk.Label(controls_frame, textvariable=self.run_status_var, style='Status.TLabel')
@@ -1706,8 +1734,8 @@ class MusubiTunerGUI:
         ttk.Label(monitor_frame, textvariable=self.next_epoch_var).pack(anchor='w', padx=10, pady=(2, 0))
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
 
-        bottom_pane_host = ttk.Frame(tab_frame)
-        bottom_pane_host.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        bottom_pane_host = ttk.Frame(self.monitor_bottom_pane)
+        bottom_pane_host.pack(fill='both', expand=True, pady=(4, 0))
 
         bottom_pane = ttk.PanedWindow(bottom_pane_host, orient=tk.HORIZONTAL)
         bottom_pane.pack(fill='both', expand=True)
@@ -1737,6 +1765,36 @@ class MusubiTunerGUI:
         self.output_text.configure(yscrollcommand=output_scrollbar.set)
         self.output_text.grid(row=0, column=0, sticky="nsew")
         output_scrollbar.grid(row=0, column=1, sticky="ns", padx=(3, 0))
+        self.root.after_idle(self._restore_monitor_splitter)
+
+    def _restore_monitor_splitter(self):
+        try:
+            if not self._monitor_top_collapsed and len(self.monitor_vertical_pane.panes()) > 1:
+                available = max(160, self.monitor_vertical_pane.winfo_height() - 180)
+                self.monitor_vertical_pane.sashpos(
+                    0,
+                    min(max(140, self._monitor_top_sash_position), available),
+                )
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _toggle_monitor_top_pane(self):
+        try:
+            panes = self.monitor_vertical_pane.panes()
+            top_path = str(self.monitor_top_pane)
+            if top_path in panes:
+                if len(panes) > 1:
+                    self._monitor_top_sash_position = self.monitor_vertical_pane.sashpos(0)
+                self.monitor_vertical_pane.forget(self.monitor_top_pane)
+                self._monitor_top_collapsed = True
+                self.monitor_top_toggle_btn.configure(text="Show Controls")
+            else:
+                self.monitor_vertical_pane.insert(0, self.monitor_top_pane, weight=0)
+                self._monitor_top_collapsed = False
+                self.monitor_top_toggle_btn.configure(text="Hide Controls")
+                self.root.after_idle(self._restore_monitor_splitter)
+        except (AttributeError, tk.TclError):
+            pass
 
     def _update_run_mode_controls(self):
         try:
