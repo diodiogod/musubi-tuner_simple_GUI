@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import subprocess
 import io
 import threading
+import copy
 import json
 import os
 import re
@@ -2025,7 +2026,7 @@ class MusubiTunerGUI:
         ttk.Label(intro, text="Recent jobs", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(
             intro,
-            text="Track completed, failed, and stopped runs locally. Right-click a job to load its latest saved state as a continuation.",
+            text="Track completed, failed, and stopped runs locally. Right-click a job to repeat/edit its settings or load its latest state as a continuation.",
             style="PageHelp.TLabel",
             wraplength=920,
             justify="left",
@@ -2075,6 +2076,18 @@ class MusubiTunerGUI:
 
         self._jobs_context_menu = tk.Menu(self.root, tearoff=False)
         self._jobs_context_menu.add_command(
+            label="Repeat / Edit as New Run",
+            command=self._load_selected_job_for_repeat,
+        )
+        self._jobs_context_menu.add_command(
+            label="Apply Training Parameters to Current Settings",
+            command=self._apply_selected_job_training_parameters,
+        )
+        self._jobs_context_menu.add_command(
+            label="Import Prompts from Job",
+            command=self._import_prompts_from_selected_job,
+        )
+        self._jobs_context_menu.add_command(
             label="Load as Continuation / Resume",
             command=self._load_selected_job_as_continuation,
         )
@@ -2087,7 +2100,33 @@ class MusubiTunerGUI:
         split.add(details_frame, weight=4)
         details_toolbar = ttk.Frame(details_frame)
         details_toolbar.pack(fill="x", padx=6, pady=(6, 0))
-        ttk.Button(details_toolbar, text="Open Output", command=self._open_selected_job_output).pack(side="left")
+        repeat_button = ttk.Button(details_toolbar, text="Repeat / Edit", command=self._load_selected_job_for_repeat)
+        repeat_button.pack(side="left")
+        ToolTip(
+            repeat_button,
+            "Loads this job's saved settings as a new editable run, clears resume inputs, and chooses a new output name. Nothing starts automatically.",
+        )
+        apply_params_button = ttk.Button(
+            details_toolbar,
+            text="Apply Parameters",
+            command=self._apply_selected_job_training_parameters,
+        )
+        apply_params_button.pack(side="left", padx=(6, 0))
+        ToolTip(
+            apply_params_button,
+            "Copies training hyperparameters from this job into the current form without changing dataset, model, output, note, prompt, or resume fields.",
+        )
+        import_prompts_button = ttk.Button(
+            details_toolbar,
+            text="Import Prompts",
+            command=self._import_prompts_from_selected_job,
+        )
+        import_prompts_button.pack(side="left", padx=(6, 0))
+        ToolTip(
+            import_prompts_button,
+            "Merges saved sample prompts from this job into the current prompt list and skips duplicates.",
+        )
+        ttk.Button(details_toolbar, text="Open Output", command=self._open_selected_job_output).pack(side="left", padx=(6, 0))
         ttk.Button(details_toolbar, text="Open Logs", command=self._open_selected_job_logs).pack(side="left", padx=(6, 0))
         ttk.Button(details_toolbar, text="Copy Command", command=self._copy_selected_job_command).pack(side="left", padx=(6, 0))
         self._jobs_details_text = tk.Text(
@@ -2384,14 +2423,42 @@ class MusubiTunerGUI:
         self._jobs_tree.focus(row_id)
         self._show_selected_job_details()
         job = self._selected_job()
-        can_continue = bool(
+        can_repeat = bool(
             job
             and job.get("kind") in ("training", "staged_training")
+            and (
+                (isinstance(job.get("settings_snapshot"), dict) and job.get("settings_snapshot"))
+                or job.get("commands")
+                or job.get("output_name")
+            )
+            and not self.current_process
+        )
+        can_continue = bool(
+            can_repeat
             and isinstance(job.get("settings_snapshot"), dict)
+            and job.get("settings_snapshot")
+        )
+        can_import_prompts = bool(
+            job
+            and isinstance(job.get("settings_snapshot"), dict)
+            and isinstance(job.get("settings_snapshot", {}).get("sample_prompts_data"), list)
+            and job.get("settings_snapshot", {}).get("sample_prompts_data")
             and not self.current_process
         )
         self._jobs_context_menu.entryconfigure(
             0,
+            state="normal" if can_repeat else "disabled",
+        )
+        self._jobs_context_menu.entryconfigure(
+            1,
+            state="normal" if can_repeat else "disabled",
+        )
+        self._jobs_context_menu.entryconfigure(
+            2,
+            state="normal" if can_import_prompts else "disabled",
+        )
+        self._jobs_context_menu.entryconfigure(
+            3,
             state="normal" if can_continue else "disabled",
         )
         try:
@@ -2539,6 +2606,364 @@ class MusubiTunerGUI:
             suffix += 1
         return candidate
 
+    def _repeat_output_name_exists(self, settings, output_name):
+        output_dir_text = str(settings.get("output_dir") or "").strip()
+        if not output_dir_text:
+            return False
+        output_dir = Path(output_dir_text).expanduser()
+        trial = dict(settings)
+        trial["output_name"] = output_name
+        try:
+            run_names = {self._effective_run_name(trial)}
+        except (KeyError, TypeError, ValueError):
+            run_names = {output_name}
+        if trial.get("use_staged_training"):
+            for stage in trial.get("staged_training_config") or []:
+                if stage.get("enabled"):
+                    run_names.add(f"{output_name}-{self._stage_label_text(stage)}")
+        return any((output_dir / run_name).exists() for run_name in run_names)
+
+    def _next_repeat_output_name(self, settings, source_name):
+        base_name = f"{source_name}-rerun"
+        candidate = base_name
+        suffix = 2
+        while self._repeat_output_name_exists(settings, candidate):
+            candidate = f"{base_name}{suffix}"
+            suffix += 1
+        return candidate
+
+    def _recover_partial_job_settings(self, job):
+        mode = str(job.get("mode") or "")
+        if mode not in ("Wan 2.2", "Krea 2", "Flux.2"):
+            mode = self._infer_mode_from_path(
+                " ".join(job.get("commands") or [])
+                + " " + str(job.get("output_name") or "")
+                + " " + str(job.get("output_dir") or "")
+            )
+        if mode not in ("Wan 2.2", "Krea 2", "Flux.2"):
+            mode = "Wan 2.2"
+        settings = {
+            "training_mode": mode,
+            "output_dir": job.get("output_dir", ""),
+            "output_name": job.get("output_name", ""),
+            "logging_dir": job.get("logging_dir", ""),
+            "training_comment": job.get("note", ""),
+            "use_staged_training": False,
+        }
+        command = self._job_training_command(job)
+        option_map = {
+            "--dataset_config": "dataset_config",
+            "--learning_rate": "learning_rate",
+            "--max_train_epochs": "max_train_epochs",
+            "--save_every_n_epochs": "save_every_n_epochs",
+            "--save_every_n_steps": "save_every_n_steps",
+            "--seed": "seed",
+            "--network_dim": "network_dim_low",
+            "--network_alpha": "network_alpha_low",
+            "--optimizer_type": "optimizer_type",
+            "--max_grad_norm": "max_grad_norm",
+            "--gradient_accumulation_steps": "gradient_accumulation_steps",
+            "--max_data_loader_n_workers": "max_data_loader_n_workers",
+            "--blocks_to_swap": "blocks_to_swap",
+            "--timestep_sampling": "timestep_sampling",
+            "--num_timestep_buckets": "num_timestep_buckets",
+            "--discrete_flow_shift": "discrete_flow_shift",
+            "--mixed_precision": "mixed_precision",
+            "--logging_dir": "logging_dir",
+            "--log_prefix": "log_prefix",
+            "--training_comment": "training_comment",
+            "--vae": "vae_model",
+        }
+        for option, key in option_map.items():
+            value = self._command_option(command, option)
+            if value:
+                settings[key] = value
+
+        mode = settings.get("training_mode")
+        dit_path = self._command_option(command, "--dit")
+        text_encoder = self._command_option(command, "--text_encoder")
+        if mode == "Krea 2":
+            settings["krea2_dit_model"] = dit_path
+            settings["krea2_text_encoder"] = text_encoder
+            settings["krea2_turbo_dit"] = self._command_option(command, "--turbo_dit")
+            settings["krea2_projector_diff"] = self._command_option(command, "--projector_diff")
+            settings["krea2_projector_diff_strength"] = self._command_option(command, "--projector_diff_strength")
+        elif mode == "Flux.2":
+            settings["flux2_dit_model"] = dit_path
+            settings["flux2_text_encoder"] = text_encoder
+
+        network_module = self._command_option(command, "--network_module").lower()
+        if "lokr" in network_module:
+            settings["network_type"] = "LoKr"
+        elif "loha" in network_module:
+            settings["network_type"] = "LoHa"
+        elif network_module:
+            settings["network_type"] = "LoRA"
+
+        flag_map = {
+            "--gradient_checkpointing": "gradient_checkpointing",
+            "--persistent_data_loader_workers": "persistent_data_loader_workers",
+            "--save_state": "save_state",
+            "--fp8_base": "fp8_base",
+            "--fp8_scaled": "fp8_scaled",
+            "--compile": "compile",
+            "--preserve_distribution_shape": "preserve_distribution_shape",
+        }
+        for flag, key in flag_map.items():
+            settings[key] = re.search(rf"(?:^|\s){re.escape(flag)}(?:\s|$)", command) is not None
+
+        if re.search(r"(?:^|\s)--sdpa(?:\s|$)", command):
+            settings["attention_mechanism"] = "sdpa"
+        elif re.search(r"(?:^|\s)--xformers(?:\s|$)", command):
+            settings["attention_mechanism"] = "xformers"
+        return {key: value for key, value in settings.items() if value not in (None, "")}
+
+    @staticmethod
+    def _portable_training_parameter_keys():
+        return {
+            "learning_rate",
+            "max_train_epochs",
+            "save_every_n_epochs",
+            "save_every_n_steps",
+            "seed",
+            "network_type",
+            "lokr_factor",
+            "network_dim_low",
+            "network_alpha_low",
+            "optimizer_type",
+            "max_grad_norm",
+            "optimizer_args",
+            "lr_scheduler",
+            "lr_warmup_steps",
+            "lr_scheduler_num_cycles",
+            "lr_scheduler_power",
+            "lr_scheduler_min_lr_ratio",
+            "mixed_precision",
+            "gradient_checkpointing",
+            "persistent_data_loader_workers",
+            "gradient_accumulation_steps",
+            "max_data_loader_n_workers",
+            "blocks_to_swap",
+            "compile",
+            "compile_backend",
+            "compile_mode",
+            "compile_dynamic",
+            "compile_fullgraph",
+            "compile_cache_size_limit",
+            "attention_mechanism",
+            "save_state",
+            "rename_final_artifacts_to_epoch",
+        }
+
+    @staticmethod
+    def _same_mode_training_parameter_keys():
+        return {
+            "network_dim_high",
+            "network_alpha_high",
+            "offload_inactive_dit",
+            "timestep_sampling",
+            "num_timestep_buckets",
+            "timestep_boundary",
+            "discrete_flow_shift",
+            "preserve_distribution_shape",
+            "fp8_base",
+            "fp8_scaled",
+            "fp8_t5",
+            "fp8_llm",
+            "force_v2_1_time_embedding",
+        }
+
+    def _apply_selected_job_training_parameters(self):
+        if self.current_process:
+            messagebox.showwarning("Apply parameters", "Stop the active process before changing training settings.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        settings_snapshot = job.get("settings_snapshot")
+        has_full_snapshot = isinstance(settings_snapshot, dict) and bool(settings_snapshot)
+        if has_full_snapshot:
+            source_settings = copy.deepcopy(settings_snapshot)
+        elif job.get("commands") or job.get("output_name"):
+            source_settings = self._recover_partial_job_settings(job)
+        else:
+            messagebox.showerror(
+                "Parameters unavailable",
+                "This job has no settings snapshot or command from which training parameters can be recovered.",
+            )
+            return
+
+        current_settings = self.get_settings()
+        keys = self._portable_training_parameter_keys()
+        source_mode = str(source_settings.get("training_mode") or job.get("mode") or "")
+        current_mode = str(current_settings.get("training_mode") or "")
+        same_mode = source_mode == current_mode
+        if same_mode:
+            keys |= self._same_mode_training_parameter_keys()
+
+        updates = {
+            key: copy.deepcopy(source_settings[key])
+            for key in keys
+            if key in source_settings and key in self.entries and source_settings[key] != current_settings.get(key)
+        }
+        if not updates:
+            messagebox.showinfo(
+                "No parameter changes",
+                "The recoverable training parameters from this job already match the current settings.",
+            )
+            return
+
+        labels = [self.field_label_text.get(key, key.replace("_", " ").title()) for key in sorted(updates)]
+        preview = "\n".join(f"• {label}" for label in labels[:14])
+        if len(labels) > 14:
+            preview += f"\n• …and {len(labels) - 14} more"
+        source_title = str(job.get("output_name") or job.get("title") or "selected job")
+        partial_note = (
+            "\n\nThis is an older job without a full snapshot, so only parameters recovered from its command will be applied."
+            if not has_full_snapshot else ""
+        )
+        mode_note = (
+            "\n\nThe source uses a different training mode. Mode-specific timestep, FP8, and dual-model parameters will be kept unchanged."
+            if not same_mode else ""
+        )
+        if not messagebox.askyesno(
+            "Apply training parameters?",
+            f"Apply {len(updates)} training parameter(s) from {source_title}?\n\n{preview}"
+            f"{partial_note}{mode_note}\n\n"
+            "Dataset/model paths, output name and folders, comments, prompts, staged plans, and resume inputs will not be changed.",
+        ):
+            return
+
+        self.set_values(updates)
+        self._select_page(1)
+        self.run_status_var.set(f"⚪ Applied training parameters from {source_title}")
+        messagebox.showinfo(
+            "Training parameters applied",
+            f"Applied {len(updates)} parameter(s). Identity, path, output, notes, prompts, staging, and resume fields were preserved.",
+        )
+
+    @staticmethod
+    def _sample_prompt_identity(prompt):
+        identity = {}
+        for key, value in prompt.items():
+            if key == "enabled":
+                continue
+            if isinstance(value, str):
+                value = value.strip()
+            identity[key] = value
+        return json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str)
+
+    def _import_prompts_from_selected_job(self):
+        if self.current_process:
+            messagebox.showwarning("Import prompts", "Stop the active process before changing the prompt list.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        snapshot = job.get("settings_snapshot")
+        source_prompts = snapshot.get("sample_prompts_data") if isinstance(snapshot, dict) else None
+        source_prompts = [prompt for prompt in (source_prompts or []) if isinstance(prompt, dict)]
+        if not source_prompts:
+            messagebox.showinfo("No saved prompts", "This job does not contain any saved sample prompts.")
+            return
+
+        existing_identities = {
+            self._sample_prompt_identity(prompt)
+            for prompt in self._sample_prompts_data
+            if isinstance(prompt, dict)
+        }
+        additions = []
+        duplicate_count = 0
+        for source_prompt in source_prompts:
+            identity = self._sample_prompt_identity(source_prompt)
+            if identity in existing_identities:
+                duplicate_count += 1
+                continue
+            imported = copy.deepcopy(source_prompt)
+            imported.setdefault("enabled", True)
+            additions.append(imported)
+            existing_identities.add(identity)
+
+        source_title = str(job.get("output_name") or job.get("title") or "selected job")
+        if not additions:
+            messagebox.showinfo(
+                "Prompts already present",
+                f"All {duplicate_count} prompt(s) from {source_title} already exist in the current prompt list.",
+            )
+            return
+        if not messagebox.askyesno(
+            "Import sample prompts?",
+            f"Import {len(additions)} new prompt(s) from {source_title}?\n\n"
+            f"Existing prompts will remain unchanged. {duplicate_count} duplicate(s) will be skipped.",
+        ):
+            return
+
+        self._sample_prompts_data.extend(additions)
+        self._rebuild_prompt_list()
+        self.update_button_states()
+        self._select_page(3)
+        self.run_status_var.set(f"⚪ Imported {len(additions)} sample prompt(s) from {source_title}")
+        messagebox.showinfo(
+            "Sample prompts imported",
+            f"Added {len(additions)} prompt(s) and skipped {duplicate_count} duplicate(s).",
+        )
+
+    def _load_selected_job_for_repeat(self):
+        if self.current_process:
+            messagebox.showwarning("Repeat job", "Stop the active process before loading another job.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        settings_snapshot = job.get("settings_snapshot")
+        has_full_snapshot = isinstance(settings_snapshot, dict) and bool(settings_snapshot)
+        if not has_full_snapshot and not (job.get("commands") or job.get("output_name")):
+            messagebox.showerror(
+                "Repeat unavailable",
+                "This job does not contain a settings snapshot, training command, or output information to restore.",
+            )
+            return
+
+        if has_full_snapshot:
+            settings = copy.deepcopy(settings_snapshot)
+        else:
+            settings = self._recover_partial_job_settings(job)
+            self.load_default_settings()
+        source_name = str(settings.get("output_name") or job.get("output_name") or "training")
+        settings["output_name"] = self._next_repeat_output_name(settings, source_name)
+        settings["resume_path"] = ""
+        settings["network_weights"] = ""
+
+        existing_comment = str(settings.get("training_comment") or "")
+        comment_lines = [
+            line for line in existing_comment.splitlines()
+            if not re.match(r"^\(Continuation from .+: .+\)$", line.strip(), re.IGNORECASE)
+        ]
+        source_title = str(job.get("output_name") or job.get("title") or source_name)
+        repeat_note = f"(Settings repeated from {source_title}; loaded for editing)"
+        cleaned_comment = "\n".join(comment_lines).strip()
+        if repeat_note not in cleaned_comment:
+            settings["training_comment"] = f"{cleaned_comment}\n{repeat_note}".strip()
+
+        self._pending_continuation = None
+        self.set_values(settings)
+        self._select_page(0)
+        self.run_status_var.set("⚪ Repeated job settings loaded for editing")
+        if has_full_snapshot:
+            messagebox.showinfo(
+                "Job settings loaded",
+                f"Loaded settings from:\n{source_title}\n\n"
+                f"New output name:\n{settings['output_name']}\n\n"
+                "Resume state and network weights were cleared, so this is a new run. Review or edit any setting before starting.",
+            )
+        else:
+            messagebox.showwarning(
+                "Partial job settings loaded",
+                f"This older job had no complete settings snapshot. The GUI recovered available values from its command and job record.\n\n"
+                f"New output name:\n{settings['output_name']}\n\n"
+                "All unavailable fields were reset to defaults. Review model paths, noise-model selection, sampling, caching, and advanced options before running.",
+            )
+
     def _load_selected_job_as_continuation(self):
         if self.current_process:
             messagebox.showwarning("Continuation", "Stop the active process before loading another job.")
@@ -2566,7 +2991,7 @@ class MusubiTunerGUI:
             source_job=job,
         )
 
-        settings = dict(settings_snapshot)
+        settings = copy.deepcopy(settings_snapshot)
         training_command = self._job_training_command(job)
         command_output_name = self._command_option(training_command, "--output_name")
         command_dataset = self._command_option(training_command, "--dataset_config")
