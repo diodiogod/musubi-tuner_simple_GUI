@@ -19,6 +19,7 @@ from collections import defaultdict
 from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
+from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
 
 # --- Dependency Check ---
 try:
@@ -158,6 +159,9 @@ class MusubiTunerGUI:
         self._last_sample_files = []
         self._sample_list_frame = None
         self._sample_prompts_data = []  # list of dicts
+        self.prompt_library = PromptLibraryStore()
+        self._prompt_library_dialog = None
+        self._sample_test_context = None
         self._temp_prompts_file = None  # path to auto-written temp .txt
         self._sample_thumbnail_refs = {}
         self._sample_preview_images = {}
@@ -972,6 +976,12 @@ class MusubiTunerGUI:
         ttk.Button(prompt_btn_row, text="Enable All", command=lambda: self._set_all_sample_prompts_enabled(True)).pack(side="left", padx=(6, 0))
         ttk.Button(prompt_btn_row, text="Disable All", command=lambda: self._set_all_sample_prompts_enabled(False)).pack(side="left", padx=(6, 0))
         ttk.Button(prompt_btn_row, text="Preview Enabled", command=self._test_enabled_sample_prompts).pack(side="left", padx=(6, 0))
+        prompt_library_button = ttk.Button(prompt_btn_row, text="Prompt Library", command=self._open_prompt_library)
+        prompt_library_button.pack(side="left", padx=(6, 0))
+        ToolTip(
+            prompt_library_button,
+            "Opens the global searchable prompt gallery. Library prompts are copied into runs; successful standalone tests add model-badged thumbnails automatically.",
+        )
         ttk.Label(prompt_btn_row, text="Unchecked prompts stay saved but are skipped during sampling.",
                   foreground=self.colors["muted"], font=("Segoe UI", 9, "italic")).pack(side="left", padx=(12, 0))
 
@@ -1064,6 +1074,47 @@ class MusubiTunerGUI:
     def _count_enabled_sample_prompts(self):
         return sum(1 for p in self._sample_prompts_data if p.get("enabled", True))
 
+    def _merge_library_prompts(self, prompts):
+        existing = {prompt_identity(prompt) for prompt in self._sample_prompts_data if isinstance(prompt, dict)}
+        added = duplicates = 0
+        for prompt in prompts:
+            identity = prompt_identity(prompt)
+            if identity in existing:
+                duplicates += 1
+                continue
+            self._sample_prompts_data.append(copy.deepcopy(prompt))
+            existing.add(identity)
+            added += 1
+        if added:
+            self._rebuild_prompt_list()
+            self.update_button_states()
+        return added, duplicates
+
+    def _open_prompt_library(self):
+        if self._prompt_library_dialog is not None:
+            try:
+                if self._prompt_library_dialog.window.winfo_exists():
+                    self._prompt_library_dialog.refresh()
+                    self._prompt_library_dialog.window.deiconify()
+                    self._prompt_library_dialog.window.lift()
+                    return
+            except tk.TclError:
+                pass
+        if not self.prompt_library.prompts:
+            self.prompt_library.import_prompts(
+                self._sample_prompts_data,
+                source={"type": "initial_current_settings"},
+            )
+            self.prompt_library.import_jobs(self._job_history)
+        self._prompt_library_dialog = PromptLibraryDialog(
+            self.root,
+            store=self.prompt_library,
+            colors=self.colors,
+            current_prompts=lambda: copy.deepcopy(self._sample_prompts_data),
+            jobs=lambda: self._job_history,
+            on_use=self._merge_library_prompts,
+        )
+
     def _delete_sample_prompt(self, idx):
         self._sample_prompts_data.pop(idx)
         self._rebuild_prompt_list()
@@ -1106,6 +1157,23 @@ class MusubiTunerGUI:
         except ValueError as e:
             messagebox.showerror("Krea 2 Test Sample", str(e))
             return
+
+        try:
+            save_path = Path(command[command.index("--save_path") + 1])
+        except (ValueError, IndexError):
+            save_path = None
+        existing_outputs = {
+            str(path.resolve()) for path in (save_path.glob("*") if save_path else [])
+            if path.is_file() and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+        }
+        self._sample_test_context = {
+            "prompts": copy.deepcopy(prompt_items),
+            "save_path": str(save_path),
+            "existing_outputs": existing_outputs,
+            "mode": "Krea 2 Turbo" if "--turbo" in command else "Krea 2",
+            "output_name": settings.get("output_name", ""),
+            "network_weights": self._resolve_krea2_preview_lora(settings),
+        } if save_path else None
 
         self.output_text.delete("1.0", tk.END)
         self.run_status_var.set("🧪 " + job_title)
@@ -1254,10 +1322,60 @@ class MusubiTunerGUI:
         self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)
         if return_code == 0:
             self.output_text.insert(tk.END, "\n--- Test sample completed successfully. ---\n")
+            captured = self._capture_sample_test_thumbnails()
+            if captured:
+                self.output_text.insert(
+                    tk.END,
+                    f"--- Added {captured} tested prompt thumbnail(s) to the global Prompt Library. ---\n",
+                )
             self._refresh_sample_list()
         else:
             self.output_text.insert(tk.END, f"\n--- Test sample failed with code {return_code}. ---\n")
+            self._sample_test_context = None
         self.stop_all_activity()
+
+    def _capture_sample_test_thumbnails(self):
+        context = self._sample_test_context
+        self._sample_test_context = None
+        if not context:
+            return 0
+        save_path = Path(context["save_path"])
+        before = set(context.get("existing_outputs") or [])
+        new_images = [
+            path for path in save_path.glob("*")
+            if path.is_file()
+            and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+            and str(path.resolve()) not in before
+        ]
+        new_images.sort(key=lambda path: (path.stat().st_mtime, path.name))
+        captured = 0
+        for prompt, image_path in zip(context.get("prompts") or [], new_images):
+            metadata = {
+                "test_type": "standalone_zero_step",
+                "output_name": context.get("output_name", ""),
+                "network_weights": context.get("network_weights", ""),
+                "seed": prompt.get("seed", ""),
+                "width": prompt.get("width", ""),
+                "height": prompt.get("height", ""),
+            }
+            try:
+                entry, _created = self.prompt_library.capture_thumbnail(
+                    prompt,
+                    image_path,
+                    context.get("mode", "Krea 2"),
+                    metadata=metadata,
+                )
+                if entry:
+                    captured += 1
+            except OSError as exc:
+                self.output_text.insert(tk.END, f"--- Prompt Library thumbnail could not be saved: {exc} ---\n")
+        if captured and self._prompt_library_dialog is not None:
+            try:
+                if self._prompt_library_dialog.window.winfo_exists():
+                    self._prompt_library_dialog.refresh()
+            except tk.TclError:
+                pass
+        return captured
 
     def _add_sample_prompt_dialog(self):
         self._open_prompt_dialog(None)
@@ -2844,14 +2962,7 @@ class MusubiTunerGUI:
 
     @staticmethod
     def _sample_prompt_identity(prompt):
-        identity = {}
-        for key, value in prompt.items():
-            if key == "enabled":
-                continue
-            if isinstance(value, str):
-                value = value.strip()
-            identity[key] = value
-        return json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str)
+        return prompt_identity(prompt)
 
     def _import_prompts_from_selected_job(self):
         if self.current_process:

@@ -16,7 +16,7 @@
 
 **Key architectural rules:**
 
-- GUI behavior should prefer living in `musubi_tuner_gui.py` and `backends/` rather than patching upstream-style `src/` training logic unless the backend itself genuinely needs a behavior change
+- GUI behavior should prefer living in `musubi_tuner_gui.py`, GUI helper modules such as `dataset_config_builder.py` / `prompt_library.py`, and `backends/` rather than patching upstream-style `src/` training logic unless the backend itself genuinely needs a behavior change
 - `backends/` is the command-construction layer; it decides which wrappers/scripts run for each mode
 - Root-level wrapper scripts mirror packaged modules so users can launch workflows from the repo root without remembering `src/` module paths
 - The GUI keeps musubi-tuner’s underlying CLI workflow intact and mainly adds state management, UX, monitoring, and automation around it
@@ -72,6 +72,8 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 ## Core Files
 
 **`musubi_tuner_gui.py`** - Main Tkinter application; the center of GUI behavior
+**`dataset_config_builder.py`** - Visual/raw dataset TOML builder with validation and safe round-tripping
+**`prompt_library.py`** - Global prompt-library persistence, searchable gallery, job migration, and test thumbnails
 **`README.md`** - Main project docs
 **`LAUNCH_GUI.bat`** - Windows launcher
 **`pyproject.toml`** - Package metadata and Python dependencies
@@ -82,6 +84,8 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 ### Main Desktop App
 
 - `musubi_tuner_gui.py` - everything GUI-side: tab layout, validation, process launch, output parsing, monitoring, sample gallery, job history, staged training, conversion, setup helpers
+- `dataset_config_builder.py` - standalone dataset-config editor used from the Models page
+- `prompt_library.py` - user-level prompt gallery stored outside the repo; prompts remain copied into run snapshots for reproducibility
 
 ### GUI Backend Adapters (`backends/`)
 

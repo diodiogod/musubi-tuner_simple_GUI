@@ -155,6 +155,14 @@ python musubi_tuner_gui.py
 - Duplicate a prompt and edit the copy
 - Test Krea 2 prompts directly from the GUI
 - Preview generated sample images inside the app
+- Open a global prompt library with search, tags, collections, favorites, and model filters
+- Collect and deduplicate prompts from current settings or historical jobs
+- Copy library prompts into a run without creating a live dependency on the library
+- Automatically preserve a model-badged library thumbnail after a successful standalone prompt test
+
+The global library is user data, stored outside the repository at
+`%APPDATA%\MusubiTuner\prompt_library` on Windows. Each run and job snapshot still stores a
+complete copy of its prompts so later library edits cannot change an existing run configuration.
 
 ### Job History
 
