@@ -49,7 +49,10 @@ def scan_reference_faces(reference_dir: str, model_dir: str) -> dict:
     if report["similarity_min"] < 0.15:
         report["warnings"].append("Reference faces may contain mixed identities or severe outliers.")
     if skipped:
-        report["warnings"].append(f"Skipped {len(skipped)} image(s) where no usable face was found.")
+        report["warnings"].append(
+            f"Skipped {len(skipped)} image(s): no reliable full-face identity embedding could be created. "
+            "They will not be used by face refinement, but may still be useful for normal LoRA training."
+        )
     return report
 
 

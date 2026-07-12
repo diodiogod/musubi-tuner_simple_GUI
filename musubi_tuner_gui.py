@@ -2157,10 +2157,16 @@ class MusubiTunerGUI:
             if not report:
                 messagebox.showinfo("Reference review", "Run Face Check first.", parent=dialog); return
             review = tk.Toplevel(dialog); review.title("Review Face References"); review.transient(dialog); review.minsize(900, 560)
-            ttk.Label(review, text="Detected identity outliers and skipped detail crops", style="PageTitle.TLabel").pack(anchor="w", padx=12, pady=(12, 2))
-            ttk.Label(review, text="Low scores can indicate another person, a bad detection, or an extreme angle. Skipped mouth/nose crops have no score and are never used.", style="PageHelp.TLabel", wraplength=850).pack(anchor="w", padx=12, pady=(0, 8))
+            ttk.Label(review, text="Detected identity outliers and unusable face references", style="PageTitle.TLabel").pack(anchor="w", padx=12, pady=(12, 2))
+            ttk.Label(
+                review,
+                text="Low scores can indicate another person, a bad detection, or an extreme angle. ‘No usable face’ means the method could not create a reliable full-face identity embedding—often because the image is a mouth/nose crop, an extreme profile, too small, blurred, or occluded. It is not used here, but may still be useful for normal LoRA training.",
+                style="PageHelp.TLabel", wraplength=850,
+            ).pack(anchor="w", padx=12, pady=(0, 8))
             split = ttk.Panedwindow(review, orient="horizontal"); split.pack(fill="both", expand=True, padx=12)
-            table_host = ttk.Frame(split); preview_host = ttk.Frame(split); split.add(table_host, weight=4); split.add(preview_host, weight=2)
+            table_host = ttk.Frame(split)
+            preview_host = tk.Frame(split, bg=self.colors["page"], bd=0, highlightthickness=0)
+            split.add(table_host, weight=4); split.add(preview_host, weight=2)
             tree = ttk.Treeview(table_host, columns=("use", "kind", "score", "file"), show="headings", selectmode="browse")
             for key, label, width in (("use", "Use", 55), ("kind", "Result", 105), ("score", "Similarity", 85), ("file", "File", 430)):
                 tree.heading(key, text=label); tree.column(key, width=width, stretch=key == "file")
@@ -2174,9 +2180,19 @@ class MusubiTunerGUI:
                 tree.insert("", "end", iid=iid, values=("Yes" if use else "No", "Review" if flagged else "Detected", f"{item['similarity']:.3f}", Path(path).name), tags=("outlier",) if flagged else ())
             for index, item in enumerate(report.get("skipped_images", [])):
                 path = item["path"]; iid = f"skip-{index}"; records[iid] = {"path": path, "scored": False}
-                tree.insert("", "end", iid=iid, values=("No", "Skipped", "—", Path(path).name))
+                tree.insert("", "end", iid=iid, values=("No", "No usable face", "—", Path(path).name))
             tree.tag_configure("outlier", foreground="#d97706")
-            preview_label = ttk.Label(preview_host, text="Select an image", anchor="center"); preview_label.pack(fill="both", expand=True, padx=10, pady=10)
+            preview_label = tk.Label(
+                preview_host,
+                text="Select an image",
+                anchor="center",
+                bg=self.colors["page"],
+                fg=self.colors["muted"],
+                bd=0,
+                highlightthickness=0,
+                relief="flat",
+            )
+            preview_label.pack(fill="both", expand=True, padx=10, pady=10)
             preview_host._photo = None
             def selected_record():
                 selected = tree.selection(); return records.get(selected[0]) if selected else None
