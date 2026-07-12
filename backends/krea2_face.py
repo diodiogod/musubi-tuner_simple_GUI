@@ -12,6 +12,7 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
     add_arg(command, "--text_encoder", settings.get("krea2_text_encoder"), is_path=True)
     add_arg(command, "--network_weights", str(input_lora), is_path=True)
     add_arg(command, "--reference_dir", config.get("reference_dir"), is_path=True)
+    add_arg(command, "--reference_manifest", config.get("reference_manifest"), is_path=True)
     add_arg(command, "--face_model_dir", config.get("face_model_dir"), is_path=True)
     add_arg(command, "--prompts_json", str(prompts_json), is_path=True)
     add_arg(command, "--output", str(output_lora), is_path=True)

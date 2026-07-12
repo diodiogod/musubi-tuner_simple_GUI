@@ -23,15 +23,25 @@ def scan_reference_faces(reference_dir: str, model_dir: str) -> dict:
     valid = list(reward.valid_reference_images)
     skipped = [{"path": path, "faces": count} for path, count in reward.skipped_reference_images]
     similarities = (reward.reference_embeddings @ reward.reference_prototype.t()).squeeze(1).cpu().tolist()
+    scored = sorted(
+        ({"path": path, "similarity": float(score)} for path, score in zip(valid, similarities)),
+        key=lambda item: item["similarity"],
+    )
+    similarity_mean = sum(similarities) / len(similarities)
+    outlier_threshold = min(0.35, max(0.15, similarity_mean - 0.30))
+    for item in scored:
+        item["outlier"] = item["similarity"] < outlier_threshold
     report = {
         "reference_dir": str(root),
         "images_scanned": len(images),
         "valid_faces": len(valid),
         "valid_images": valid,
+        "scored_images": scored,
         "skipped_images": skipped,
         "similarity_min": min(similarities),
-        "similarity_mean": sum(similarities) / len(similarities),
+        "similarity_mean": similarity_mean,
         "similarity_max": max(similarities),
+        "outlier_threshold": outlier_threshold,
         "warnings": [],
     }
     if len(valid) < 3:

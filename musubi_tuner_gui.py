@@ -2041,16 +2041,17 @@ class MusubiTunerGUI:
         from musubi_tuner.face_refinement.face_models import default_model_dir
 
         return {
+            "input_mode": "previous_stage", "input_lora": "", "trigger_word": "", "excluded_reference_images": [],
             "reference_dir": "", "face_model_dir": str(default_model_dir()),
             "prompts": [
-                "portrait photo of the person, natural expression, soft daylight",
-                "close-up portrait of the person smiling",
-                "photo of the person looking to the side",
-                "photo of the person outdoors, candid expression",
-                "studio portrait of the person, neutral background",
-                "low-angle photo of the person",
-                "photo of the person laughing",
-                "cinematic portrait of the person in dramatic lighting",
+                "portrait photo of {trigger}, natural expression, soft daylight",
+                "close-up portrait of {trigger} smiling",
+                "photo of {trigger} looking to the side",
+                "photo of {trigger} outdoors, candid expression",
+                "studio portrait of {trigger}, neutral background",
+                "low-angle photo of {trigger}",
+                "photo of {trigger} laughing",
+                "cinematic portrait of {trigger} in dramatic lighting",
             ],
             "steps": 30, "resolution": 512, "denoise_steps": 12, "draft_k": 1,
             "cfg_scale": 5.5, "learning_rate": 1e-4, "target_similarity": 0.45,
@@ -2083,7 +2084,27 @@ class MusubiTunerGUI:
             style="PageHelp.TLabel", wraplength=700,
         ).pack(anchor="w", pady=(3, 12))
 
-        identity = ttk.LabelFrame(host, text="1 · Reference identity"); identity.pack(fill="x", pady=6)
+        source = ttk.LabelFrame(host, text="1 · Starting LoRA"); source.pack(fill="x", pady=6)
+        input_mode_var = tk.StringVar(value=config.get("input_mode", "previous_stage"))
+        input_lora_var = tk.StringVar(value=config.get("input_lora", ""))
+        trigger_var = tk.StringVar(value=config.get("trigger_word", ""))
+        ttk.Radiobutton(source, text="Use the LoRA produced by the previous stage", variable=input_mode_var, value="previous_stage").pack(anchor="w", padx=8, pady=(7, 2))
+        ttk.Radiobutton(source, text="Refine an existing Krea 2 LoRA", variable=input_mode_var, value="existing_lora").pack(anchor="w", padx=8, pady=2)
+        lora_row = ttk.Frame(source); lora_row.pack(fill="x", padx=8, pady=5)
+        ttk.Label(lora_row, text="Existing LoRA", width=22).pack(side="left")
+        input_lora_entry = ttk.Entry(lora_row, textvariable=input_lora_var); input_lora_entry.pack(side="left", fill="x", expand=True)
+        input_lora_button = ttk.Button(lora_row, text="Browse", command=lambda: input_lora_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("LoRA weights", "*.safetensors")]) or input_lora_var.get()))
+        input_lora_button.pack(side="right", padx=(6, 0))
+        trigger_row = ttk.Frame(source); trigger_row.pack(fill="x", padx=8, pady=(2, 7))
+        ttk.Label(trigger_row, text="Trigger word", width=22).pack(side="left")
+        ttk.Entry(trigger_row, textvariable=trigger_var).pack(side="left", fill="x", expand=True)
+        ttk.Label(source, text="The trigger is inserted into {trigger} prompts and prefixed to prompts that omit it.", style="PageHelp.TLabel").pack(anchor="w", padx=8, pady=(0, 7))
+        def sync_input_mode(*_args):
+            state = "normal" if input_mode_var.get() == "existing_lora" else "disabled"
+            input_lora_entry.configure(state=state); input_lora_button.configure(state=state)
+        input_mode_var.trace_add("write", sync_input_mode); sync_input_mode()
+
+        identity = ttk.LabelFrame(host, text="2 · Reference identity"); identity.pack(fill="x", pady=6)
         reference_var = tk.StringVar(value=config["reference_dir"])
         model_var = tk.StringVar(value=config["face_model_dir"])
         status_var = tk.StringVar(value="Run Face Check before adding this stage.")
@@ -2126,18 +2147,76 @@ class MusubiTunerGUI:
             from musubi_tuner.face_refinement.preflight import scan_reference_faces
             def show(report):
                 warnings = " ".join(report["warnings"]) or "No obvious reference-set problems found."
-                status_var.set(f"Usable faces: {report['valid_faces']}/{report['images_scanned']}. Mean identity consistency: {report['similarity_mean']:.2f}. {warnings}")
+                outliers = sum(1 for item in report.get("scored_images", []) if item.get("outlier"))
+                status_var.set(f"Usable faces: {report['valid_faces']}/{report['images_scanned']}. Mean identity consistency: {report['similarity_mean']:.2f}. Flagged for review: {outliers}. {warnings}")
                 config["preflight_report"] = report
+                review_button.configure(state="normal")
             run_background(lambda: scan_reference_faces(reference_var.get(), model_var.get()), show)
+        def review_references():
+            report = config.get("preflight_report") or {}
+            if not report:
+                messagebox.showinfo("Reference review", "Run Face Check first.", parent=dialog); return
+            review = tk.Toplevel(dialog); review.title("Review Face References"); review.transient(dialog); review.minsize(900, 560)
+            ttk.Label(review, text="Detected identity outliers and skipped detail crops", style="PageTitle.TLabel").pack(anchor="w", padx=12, pady=(12, 2))
+            ttk.Label(review, text="Low scores can indicate another person, a bad detection, or an extreme angle. Skipped mouth/nose crops have no score and are never used.", style="PageHelp.TLabel", wraplength=850).pack(anchor="w", padx=12, pady=(0, 8))
+            split = ttk.Panedwindow(review, orient="horizontal"); split.pack(fill="both", expand=True, padx=12)
+            table_host = ttk.Frame(split); preview_host = ttk.Frame(split); split.add(table_host, weight=4); split.add(preview_host, weight=2)
+            tree = ttk.Treeview(table_host, columns=("use", "kind", "score", "file"), show="headings", selectmode="browse")
+            for key, label, width in (("use", "Use", 55), ("kind", "Result", 105), ("score", "Similarity", 85), ("file", "File", 430)):
+                tree.heading(key, text=label); tree.column(key, width=width, stretch=key == "file")
+            scroll = ttk.Scrollbar(table_host, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=scroll.set)
+            tree.pack(side="left", fill="both", expand=True); scroll.pack(side="right", fill="y")
+            excluded = set(config.get("excluded_reference_images") or [])
+            records = {}
+            for index, item in enumerate(report.get("scored_images", [])):
+                path = item["path"]; flagged = bool(item.get("outlier")); use = path not in excluded
+                iid = f"face-{index}"; records[iid] = {"path": path, "scored": True}
+                tree.insert("", "end", iid=iid, values=("Yes" if use else "No", "Review" if flagged else "Detected", f"{item['similarity']:.3f}", Path(path).name), tags=("outlier",) if flagged else ())
+            for index, item in enumerate(report.get("skipped_images", [])):
+                path = item["path"]; iid = f"skip-{index}"; records[iid] = {"path": path, "scored": False}
+                tree.insert("", "end", iid=iid, values=("No", "Skipped", "—", Path(path).name))
+            tree.tag_configure("outlier", foreground="#d97706")
+            preview_label = ttk.Label(preview_host, text="Select an image", anchor="center"); preview_label.pack(fill="both", expand=True, padx=10, pady=10)
+            preview_host._photo = None
+            def selected_record():
+                selected = tree.selection(); return records.get(selected[0]) if selected else None
+            def show_preview(_event=None):
+                record = selected_record()
+                if not record: return
+                try:
+                    from PIL import Image, ImageTk
+                    image = Image.open(record["path"]); image.thumbnail((320, 400))
+                    preview_host._photo = ImageTk.PhotoImage(image)
+                    preview_label.configure(image=preview_host._photo, text="")
+                except Exception as exc:
+                    preview_label.configure(image="", text=f"Preview unavailable:\n{exc}")
+            def toggle_use(_event=None):
+                selected = tree.selection()
+                if not selected: return
+                iid = selected[0]; record = records[iid]
+                if not record["scored"]: return
+                values = list(tree.item(iid, "values")); path = record["path"]
+                if values[0] == "Yes": values[0] = "No"; excluded.add(path)
+                else: values[0] = "Yes"; excluded.discard(path)
+                tree.item(iid, values=values)
+                config["excluded_reference_images"] = sorted(excluded)
+            tree.bind("<<TreeviewSelect>>", show_preview); tree.bind("<Double-1>", toggle_use)
+            buttons = ttk.Frame(review); buttons.pack(fill="x", padx=12, pady=10)
+            ttk.Button(buttons, text="Use / Exclude Selected", command=toggle_use).pack(side="left")
+            ttk.Button(buttons, text="Open Image", command=lambda: self._open_path(selected_record()["path"]) if selected_record() else None).pack(side="left", padx=6)
+            ttk.Button(buttons, text="Open Folder", command=lambda: self._open_path(str(Path(selected_record()["path"]).parent)) if selected_record() else None).pack(side="left")
+            ttk.Button(buttons, text="Close", command=review.destroy).pack(side="right")
         ttk.Button(identity_actions, text="Download Face Models…", command=download_models).pack(side="left")
         ttk.Button(identity_actions, text="Run Face Check", command=face_check).pack(side="left", padx=6)
+        review_button = ttk.Button(identity_actions, text="Review Results…", command=review_references, state="normal" if config.get("preflight_report") else "disabled")
+        review_button.pack(side="left")
 
-        prompts_frame = ttk.LabelFrame(host, text="2 · Generation prompts"); prompts_frame.pack(fill="both", expand=True, pady=6)
-        ttk.Label(prompts_frame, text="One prompt per line. Use varied angles, expressions, and lighting; keep one primary person.", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
+        prompts_frame = ttk.LabelFrame(host, text="3 · Generation prompts"); prompts_frame.pack(fill="both", expand=True, pady=6)
+        ttk.Label(prompts_frame, text="One prompt per line. Use {trigger} for the subject. Vary angles, expressions, and lighting; keep one primary person.", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
         prompts_text = tk.Text(prompts_frame, height=9, wrap="word")
         prompts_text.pack(fill="both", expand=True, padx=8, pady=(0, 8)); prompts_text.insert("1.0", "\n".join(config["prompts"]))
 
-        settings_frame = ttk.LabelFrame(host, text="3 · Safe starting settings"); settings_frame.pack(fill="x", pady=6)
+        settings_frame = ttk.LabelFrame(host, text="4 · Safe starting settings"); settings_frame.pack(fill="x", pady=6)
         variables = {}
         fields = [
             ("steps", "Refinement steps", int), ("resolution", "Generation resolution", int),
@@ -2163,12 +2242,16 @@ class MusubiTunerGUI:
         def save():
             try:
                 updated = dict(config)
+                updated["input_mode"] = input_mode_var.get(); updated["input_lora"] = input_lora_var.get().strip(); updated["trigger_word"] = trigger_var.get().strip()
                 updated["reference_dir"] = reference_var.get().strip(); updated["face_model_dir"] = model_var.get().strip()
                 updated["prompts"] = [line.strip() for line in prompts_text.get("1.0", "end").splitlines() if line.strip()]
                 for key, _label, kind in fields: updated[key] = kind(variables[key].get())
                 updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["license_acknowledged"] = license_var.get()
                 if not updated["prompts"] or not os.path.isdir(updated["reference_dir"]): raise ValueError("Choose a reference folder and provide at least one prompt.")
                 if not updated["license_acknowledged"]: raise ValueError("Acknowledge the third-party face-model notice.")
+                if updated["input_mode"] == "existing_lora":
+                    from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+                    updated["input_lora_report"] = validate_krea2_lora(updated["input_lora"])
                 if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
                     raise ValueError("Run Face Check successfully for this reference folder before saving.")
                 if updated["steps"] < 1 or updated["resolution"] % 16 or not 1 <= updated["draft_k"] <= updated["denoise_steps"] or not 0 <= updated["blocks_to_swap"] <= 26: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value.")
@@ -2494,6 +2577,10 @@ class MusubiTunerGUI:
             label="Load as Continuation / Resume",
             command=self._load_selected_job_as_continuation,
         )
+        self._jobs_context_menu.add_command(
+            label="Refine Face Identity…",
+            command=self._load_selected_job_for_face_refinement,
+        )
         self._jobs_context_menu.add_separator()
         self._jobs_context_menu.add_command(label="Open Output", command=self._open_selected_job_output)
         self._jobs_context_menu.add_command(label="Open Logs", command=self._open_selected_job_logs)
@@ -2529,6 +2616,9 @@ class MusubiTunerGUI:
             import_prompts_button,
             "Merges saved sample prompts from this job into the current prompt list and skips duplicates.",
         )
+        refine_face_button = ttk.Button(details_toolbar, text="Refine Face…", command=self._load_selected_job_for_face_refinement)
+        refine_face_button.pack(side="left", padx=(6, 0))
+        ToolTip(refine_face_button, "Loads this completed Krea run as the input to a new face-refinement-only plan. Nothing starts automatically.")
         ttk.Button(details_toolbar, text="Open Output", command=self._open_selected_job_output).pack(side="left", padx=(6, 0))
         ttk.Button(details_toolbar, text="Open Logs", command=self._open_selected_job_logs).pack(side="left", padx=(6, 0))
         ttk.Button(details_toolbar, text="Copy Command", command=self._copy_selected_job_command).pack(side="left", padx=(6, 0))
@@ -2848,6 +2938,12 @@ class MusubiTunerGUI:
             and job.get("settings_snapshot", {}).get("sample_prompts_data")
             and not self.current_process
         )
+        can_refine_face = bool(
+            can_repeat
+            and isinstance(job.get("settings_snapshot"), dict)
+            and job.get("settings_snapshot", {}).get("training_mode") == "Krea 2"
+            and self._resolve_job_face_lora(job) is not None
+        )
         self._jobs_context_menu.entryconfigure(
             0,
             state="normal" if can_repeat else "disabled",
@@ -2864,6 +2960,7 @@ class MusubiTunerGUI:
             3,
             state="normal" if can_continue else "disabled",
         )
+        self._jobs_context_menu.entryconfigure(4, state="normal" if can_refine_face else "disabled")
         try:
             self._jobs_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -2980,6 +3077,34 @@ class MusubiTunerGUI:
         original_resume = str(job.get("resume_path") or "").strip()
         if original_resume and Path(original_resume).is_dir():
             return Path(original_resume)
+        return None
+
+    def _resolve_job_face_lora(self, job):
+        """Find a complete Krea LoRA produced by a recorded job."""
+        candidates = []
+        settings = job.get("settings_snapshot")
+        if isinstance(settings, dict):
+            if settings.get("face_output_path"):
+                candidates.append(Path(settings["face_output_path"]))
+            try:
+                candidates.extend(self._candidate_final_model_paths(settings))
+            except (KeyError, TypeError, ValueError):
+                pass
+        for state_dir in self._continuation_state_candidates(job):
+            candidates.append(state_dir / "model.safetensors")
+
+        from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+        seen = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                validate_krea2_lora(resolved)
+                return resolved
+            except (OSError, ValueError):
+                continue
         return None
 
     @staticmethod
@@ -3359,6 +3484,42 @@ class MusubiTunerGUI:
                 f"New output name:\n{settings['output_name']}\n\n"
                 "All unavailable fields were reset to defaults. Review model paths, noise-model selection, sampling, caching, and advanced options before running.",
             )
+
+    def _load_selected_job_for_face_refinement(self):
+        if self.current_process:
+            messagebox.showwarning("Face Refinement", "Stop the active process before loading another job.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        snapshot = job.get("settings_snapshot")
+        if not isinstance(snapshot, dict) or snapshot.get("training_mode") != "Krea 2":
+            messagebox.showerror("Face Refinement unavailable", "Select a recorded Krea 2 training job with a complete settings snapshot.")
+            return
+        input_lora = self._resolve_job_face_lora(job)
+        if input_lora is None:
+            messagebox.showerror("Face Refinement unavailable", "No complete Krea 2 LoRA could be found for this job.")
+            return
+
+        settings = copy.deepcopy(snapshot)
+        source_name = str(settings.get("output_name") or job.get("output_name") or "krea-lora")
+        settings["output_name"] = self._next_repeat_output_name(settings, f"{source_name}-face")
+        settings["resume_path"] = ""
+        settings["network_weights"] = ""
+        face_config = self._default_face_refinement_config()
+        face_config.update(copy.deepcopy(snapshot.get("face_refinement_config") or {}))
+        face_config.update({"input_mode": "existing_lora", "input_lora": str(input_lora)})
+        settings["use_staged_training"] = True
+        settings["staged_training_config"] = [{
+            "label": "face-refinement", "enabled": True, "type": "face_refinement",
+            "dataset_config": "", "epochs": "", "steps": str(face_config["steps"]),
+        }]
+        settings["face_refinement_config"] = face_config
+        self._pending_continuation = None
+        self.set_values(settings)
+        self._select_page(1)
+        self.run_status_var.set("⚪ Face-refinement continuation loaded for review")
+        self._open_face_refinement_dialog()
 
     def _load_selected_job_as_continuation(self):
         if self.current_process:
@@ -4326,6 +4487,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             )
         )
 
+        refinement_only = bool(
+            self.entries.get("use_staged_training")
+            and self.entries["use_staged_training"].var.get()
+            and next((item for item in self._staged_training_config if item.get("enabled")), {}).get("type") == "face_refinement"
+            and (self._face_refinement_config or {}).get("input_mode") == "existing_lora"
+        )
+        self.entries["dataset_config"].is_required = not refinement_only
+
         if is_wan:
             train_high = self.entries["train_high_noise"].var.get(); train_low = self.entries["train_low_noise"].var.get()
             self.entries["dit_high_noise"].is_required = train_high; self.entries["dit_low_noise"].is_required = train_low
@@ -4341,7 +4510,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["flux2_dit_model"].is_required = is_flux2
             self.entries["flux2_text_encoder"].is_required = is_flux2
             self.entries["krea2_dit_model"].is_required = is_krea2
-            self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples)
+            self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples or refinement_only)
             self.entries["t5_model"].is_required = False
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
@@ -5079,17 +5248,29 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if invalid_stage:
             messagebox.showerror("Staged Run", f"The {self._stage_label_text(invalid_stage)} stage has an invalid TOML path or training limit.")
             return
-        if stages[0].get("type", "standard") != "standard":
-            messagebox.showerror("Staged Run", "Face Refinement cannot be the first stage; it needs a LoRA produced by standard training.")
-            return
+        first_is_face = stages[0].get("type", "standard") == "face_refinement"
+        if first_is_face:
+            face_config = self._face_refinement_config or {}
+            if face_config.get("input_mode") != "existing_lora":
+                messagebox.showerror(
+                    "Staged Run",
+                    "Face Refinement can be the first stage only when ‘Refine an existing Krea 2 LoRA’ is selected in its settings.",
+                )
+                return
+            try:
+                from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+                validate_krea2_lora(face_config.get("input_lora", ""))
+            except ValueError as exc:
+                messagebox.showerror("Staged Run", str(exc)); return
         if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() != "Krea 2":
             messagebox.showerror("Staged Run", "Face Refinement is currently available only in Krea 2 mode.")
             return
         if any(item.get("type") == "face_refinement" for item in stages) and not self._check_face_refinement_dependencies():
             return
-        first_dataset = stages[0]["dataset_config"]
-        self.entries["dataset_config"].delete(0, tk.END)
-        self.entries["dataset_config"].insert(0, first_dataset)
+        if not first_is_face:
+            first_dataset = stages[0]["dataset_config"]
+            self.entries["dataset_config"].delete(0, tk.END)
+            self.entries["dataset_config"].insert(0, first_dataset)
         self.update_button_states()
         if self.start_btn["state"] == "disabled":
             messagebox.showerror("Validation Error", "Complete the required model and training fields before starting the staged run.")
@@ -5145,6 +5326,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         next_index = run["next_index"]
         state_path = None
         input_lora = None
+        if previous is None and next_index < len(run["stages"]) and run["stages"][next_index].get("type") == "face_refinement":
+            configured_input = str((self._face_refinement_config or {}).get("input_lora", "")).strip()
+            input_lora = Path(configured_input) if configured_input else None
         if previous is not None and next_index < len(run["stages"]):
             previous_type = previous.get("stage_type", "standard")
             next_type = run["stages"][next_index].get("type", "standard")
@@ -5219,9 +5403,22 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             face_config = dict(self._face_refinement_config)
             face_config["steps"] = int(stage_steps)
             output_path = krea2_face_backend.output_path(run["base_settings"], stage_label)
+            if input_lora is None:
+                raise RuntimeError("Face Refinement has no input LoRA. Select an existing LoRA or place it after a standard stage.")
+            if output_path.resolve() == input_lora.resolve():
+                raise RuntimeError("Face Refinement output would overwrite its input LoRA. Change the output name or stage label.")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             prompts_path = output_path.parent / "face_refinement_prompts.json"
-            prompts_path.write_text(json.dumps({"prompts": face_config["prompts"]}, indent=2), encoding="utf-8")
+            from musubi_tuner.face_refinement.lora_validation import render_trigger_prompts
+            rendered_prompts = render_trigger_prompts(face_config["prompts"], face_config.get("trigger_word", ""))
+            prompts_path.write_text(json.dumps({"prompts": rendered_prompts}, indent=2), encoding="utf-8")
+            excluded = set(face_config.get("excluded_reference_images") or [])
+            valid_references = [path for path in face_config.get("preflight_report", {}).get("valid_images", []) if path not in excluded]
+            if not valid_references:
+                raise RuntimeError("No enabled face references remain. Review the Face Check results and enable at least one detected face.")
+            manifest_path = output_path.parent / "face_refinement_references.json"
+            manifest_path.write_text(json.dumps({"reference_images": valid_references}, indent=2), encoding="utf-8")
+            face_config["reference_manifest"] = str(manifest_path)
             settings["python_executable"] = sys.executable or "python"
             settings["face_output_path"] = str(output_path)
             run["previous_settings"] = settings

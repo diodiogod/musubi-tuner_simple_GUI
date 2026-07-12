@@ -174,23 +174,31 @@ for implementation details, cautions, and attribution.
 
 ### Krea 2 Face Refinement (DRaFT, Experimental)
 
-Face Refinement is an optional **staged-training step** for human-identity LoRAs. After standard
-training has taught the subject, Krea generates temporary images from a varied prompt list. A
+Face Refinement is an optional **staged-training step** for human-identity LoRAs. It can follow standard
+training automatically or run by itself from an existing Krea 2 LoRA. In refinement-only mode,
+select the source LoRA in the Face Refinement window; no dataset TOML or dummy training stage is required.
+Once the starting LoRA has learned the subject, Krea generates temporary images from a varied prompt list. A
 frozen face-recognition model compares each generated face with embeddings prepared from your
 reference folder, and the similarity reward updates the LoRA through the final denoising step.
 
 - It does not use a second dataset TOML. Settings and prompts live in the GUI/job snapshot.
-- It must follow at least one standard Krea training stage and is normally the final stage.
-- It trains from the previous stage's LoRA file, not its optimizer-state directory.
+- It can use the previous standard stage's LoRA or an explicitly selected existing Krea 2 LoRA.
+- Automatic handoff uses the previous stage's LoRA file, not its optimizer-state directory.
 - Reference images establish identity but are not pixel targets during refinement.
+- **Review Results…** shows each detected face's similarity score separately from images skipped
+  because no complete face was visible. Flagged detections can be previewed and excluded without
+  moving or deleting the source image.
 - It is intended for recognizable human faces, not clothing, body shape, tattoos, or general style.
 - Built-in saturation, Q/K/V/O-only training, face-detection monitoring, previews, and early stopping
   reduce—but cannot eliminate—the risk of overfitting or a pasted-on “face swap” appearance.
 
-Open **Configure Face Refinement…**, acknowledge the third-party face-model notice, download or
+Open **Configure Face Refinement…**, choose the starting-LoRA mode and trigger word, acknowledge the third-party face-model notice, download or
 select AntelopeV2, run **Face Check**, then add a `face_refinement` stage in the staged-training
 window. The recommended starting point is 30 updates at 512px with 12 denoising steps and
 `draft_k=1`. Optional dependencies are installed with `pip install -e ".[face_refinement]"`.
+For a recorded Krea run, the **Jobs** page also provides **Refine Face Identity…** in the
+right-click menu; it restores the run's model paths, finds its complete LoRA, and prepares a
+refinement-only plan without starting it.
 
 This workflow adapts the Apache-2.0 face reward from
 [KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2) and the

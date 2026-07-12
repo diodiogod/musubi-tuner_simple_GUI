@@ -159,11 +159,11 @@ These exist at repo root mainly as user-facing launch points that import the pac
 
 ### Experimental Face Refinement
 
-- `face_refinement/` - AntelopeV2 reference preflight, differentiable face reward, model download helper, and truncated DRaFT sampling
+- `face_refinement/` - AntelopeV2 per-image reference preflight/outlier scoring, Krea LoRA/trigger validation, differentiable face reward, model download helper, and truncated DRaFT sampling
 - `krea2_face_refinement.py` - standalone Krea face-refinement trainer that consumes/emits complete LoRA files
 - `backends/krea2_face.py` - command construction for typed face-refinement stages
 - Face settings and prompts are persisted in GUI/job JSON snapshots; no second dataset TOML is exposed
-- Staged handoff remains type-aware: standard→standard uses state directories, while standard↔face uses LoRA files
+- Staged handoff remains type-aware: standard→standard uses state directories, standard↔face uses LoRA files, and a first-stage face run uses an explicitly validated existing LoRA
 
 ### Shared Utilities
 

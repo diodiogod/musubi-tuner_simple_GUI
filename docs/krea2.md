@@ -386,7 +386,9 @@ is already cached.
 ## Experimental DRaFT face refinement
 
 The GUI can add `face_refinement` as a distinct staged-training step after standard Krea LoRA
-training. It does not consume the dataset TOML. Reference photos are processed once into identity
+training, or run it as the first and only stage from an existing Krea 2 LoRA. For the latter,
+choose **Refine an existing Krea 2 LoRA** and select its `.safetensors` file. The GUI checks the
+tensor layout before launch and never intentionally overwrites the source. It does not consume the dataset TOML. Reference photos are processed once into identity
 embeddings; training then generates images from the saved prompt list and optimizes facial
 similarity through the final denoising step (`DRaFT-K`, with `K=1` by default).
 
@@ -395,10 +397,19 @@ standard stage follows it, that stage starts a fresh optimizer from the refined 
 DRaFT stage cannot continue Musubi's previous optimizer state. Final-stage refinement is therefore
 the recommended order.
 
-Use the dedicated settings window to select reference images, manage prompts, download/select
+Use the dedicated settings window to select the starting-LoRA mode, trigger word, reference images, manage prompts, download/select
 AntelopeV2, and run the mandatory Face Check. Defaults are 30 updates, 512px, 12 denoising steps,
 one differentiable final step, Q/K/V/O-only adapter updates, reward saturation, periodic previews,
 minimum detection-rate enforcement, and similarity-based early stopping.
+After the check, **Review Results…** lists detected faces from lowest to highest similarity and
+separates them from skipped images where no complete face was detected. You can preview, open, or
+exclude a suspicious detection; excluded files remain untouched on disk and are omitted through a
+run-local reference manifest.
+
+Completed Krea jobs can be prepared directly from **Jobs → right-click → Refine Face Identity…**.
+This restores the saved Krea model paths, locates and validates the job's complete LoRA (including
+`model.safetensors` inside a saved state folder), and opens the settings for review. It never starts
+training automatically.
 
 Install optional dependencies with `pip install -e ".[face_refinement]"`. AntelopeV2 weights are
 not distributed by this repository and have separate terms. The reward code is adapted under

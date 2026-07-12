@@ -124,8 +124,14 @@ def train(args) -> None:
     optimizer = torch.optim.AdamW(parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
 
     vae.to(device)
+    reference_images = args.reference_dir
+    if args.reference_manifest:
+        manifest = json.loads(Path(args.reference_manifest).read_text(encoding="utf-8"))
+        reference_images = manifest.get("reference_images", manifest) if isinstance(manifest, dict) else manifest
+        if not reference_images:
+            raise ValueError("The reference manifest contains no enabled face images")
     reward = FaceSimilarityReward(
-        reference_images=args.reference_dir,
+        reference_images=reference_images,
         model_dir=args.face_model_dir,
         target_similarity=args.target_similarity,
         reference_entropy_weight=args.anti_copy_weight,
@@ -179,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Krea 2 DRaFT face-identity LoRA refinement")
     for name in ("dit", "vae", "text_encoder", "network_weights", "reference_dir", "face_model_dir", "prompts_json", "output"):
         parser.add_argument(f"--{name}", required=True)
+    parser.add_argument("--reference_manifest")
     parser.add_argument("--train_steps", type=int, default=30)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--denoise_steps", type=int, default=12)
