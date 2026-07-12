@@ -13,6 +13,7 @@
     "src/musubi_tuner/perceptual",
     "src/musubi_tuner/face_refinement",
     "src/musubi_tuner/krea2_face_refinement.py",
+    "src/musubi_tuner/krea2_face_evaluate.py",
     "src/musubi_tuner/training/weight_noise.py"
   ]
 }

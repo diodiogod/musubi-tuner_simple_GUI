@@ -198,6 +198,10 @@ reference folder, and the similarity reward updates the LoRA through the final d
   target patience, plateau patience, and minimum evaluations per pose. Seven grouped prompt
   editors add tags automatically and can generate editable offline suggestions or import tagged
   TXT/JSON prompts. Monitor output reports each pose against its target and the final stop reason.
+- **Evaluate Starting LoRA…** performs a read-only fixed-seed baseline with Krea Turbo—the
+  renderer users actually see, not RAW. It reports overall and matching-pose identity, requested
+  pose success, detection, worst cases, and before/after deltas. Any saved LoRA checkpoint can be
+  compared against the baseline, then **Build Plan from Weak Poses** prepares an editable plan.
 - It is intended for recognizable human faces, not clothing, body shape, tattoos, or general style.
 - Built-in saturation, Q/K/V/O-only training, face-detection monitoring, previews, and early stopping
   reduce—but cannot eliminate—the risk of overfitting or a pasted-on “face swap” appearance.

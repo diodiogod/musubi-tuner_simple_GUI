@@ -70,6 +70,7 @@ not contain the GUI files.
 ### Krea 2 DRaFT face refinement
 
 - Isolated implementation: `face_refinement/` and `krea2_face_refinement.py`.
+- Turbo evaluation stays isolated in `face_refinement/evaluation.py` and `krea2_face_evaluate.py`; upstream Krea generation behavior is unchanged.
 - GUI/backend integration: `backends/krea2_face.py` plus typed staged-training handoff.
 - Standard stages continue through Musubi state directories; face stages consume and emit full
   LoRA files and never use dataset TOML.

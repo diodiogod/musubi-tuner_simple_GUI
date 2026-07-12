@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, krea2_face as krea2_face_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -145,6 +145,7 @@ class MusubiTunerGUI:
         self._staged_training_config = []
         self._staged_recache_latents = True
         self._face_refinement_config = {}
+        self._face_eval_context = None
         self.last_line_was_progress = False
         self.last_progress_milestone = 0
         self.current_step = 0
@@ -996,6 +997,8 @@ class MusubiTunerGUI:
             wraplength=700,
         ).pack(side="left", fill="x", expand=True)
         ttk.Button(face_action, text="Configure Face Refinement…", command=self._open_face_refinement_dialog).pack(side="right")
+        eval_button = ttk.Button(face_action, text="Evaluate Starting LoRA…", command=self._open_face_evaluation_dialog); eval_button.pack(side="right", padx=(0, 6))
+        ToolTip(eval_button, "Generates a fixed read-only test suite with Krea Turbo, then measures overall identity, matching-pose identity, face detection, and whether each requested angle was produced. No weights are changed.")
 
         attention_frame = ttk.LabelFrame(frame, text="Attention Mechanism"); attention_frame.pack(fill="x", padx=10, pady=10)
         self.attention_var = tk.StringVar(value="xformers")
@@ -2062,6 +2065,9 @@ class MusubiTunerGUI:
             "checkpoint_vae": True, "license_acknowledged": False,
             "pose_aware": False, "pose_reward_weight": 0.20, "pose_min_references": 2,
             "pose_plan": default_pose_plan(),
+            "evaluation_prompts_per_pose": 1, "evaluation_seeds_per_prompt": 2,
+            "evaluation_seed": 42000, "evaluation_resolution": 512, "evaluation_steps": 8,
+            "evaluation_baseline_result": "",
             "blocks_to_swap": 10,
             "gpu_id": "auto",
         }
@@ -2339,6 +2345,109 @@ class MusubiTunerGUI:
             dialog.destroy()
         ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(actions, text="Save Settings", style="Accent.TButton", command=save).pack(side="right")
+
+    def _open_face_evaluation_dialog(self):
+        if self.current_process:
+            messagebox.showwarning("Turbo Evaluation", "Stop the active process before starting an evaluation."); return
+        config = self._default_face_refinement_config(); config.update(copy.deepcopy(self._face_refinement_config or {}))
+        dialog = tk.Toplevel(self.root); dialog.title("Evaluate Starting LoRA with Krea Turbo"); dialog.transient(self.root); dialog.grab_set(); dialog.minsize(720, 480)
+        host = ttk.Frame(dialog, padding=16); host.pack(fill="both", expand=True)
+        ttk.Label(host, text="Turbo face and pose baseline", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(host, text="This generates images with the Turbo model users actually render with. It never trains or changes the LoRA. Fixed prompts and seeds make later comparisons fair.", style="PageHelp.TLabel", wraplength=680).pack(anchor="w", pady=(3, 12))
+        mode_var = tk.StringVar(value="compare" if config.get("evaluation_baseline_result") and Path(config["evaluation_baseline_result"]).is_file() else "baseline")
+        ttk.Radiobutton(host, text="Create or replace the starting baseline", variable=mode_var, value="baseline").pack(anchor="w")
+        ttk.Radiobutton(host, text="Compare this LoRA with the saved baseline", variable=mode_var, value="compare").pack(anchor="w", pady=(2, 8))
+        lora_var = tk.StringVar(value=config.get("input_lora", "")); baseline_var = tk.StringVar(value=config.get("evaluation_baseline_result", ""))
+        def path_row(label, variable, browse_command):
+            row = ttk.Frame(host); row.pack(fill="x", pady=4); ttk.Label(row, text=label, width=22).pack(side="left"); ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True); ttk.Button(row, text="Browse", command=browse_command).pack(side="right", padx=(6, 0))
+        path_row("LoRA to evaluate", lora_var, lambda: lora_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("LoRA weights", "*.safetensors")]) or lora_var.get()))
+        path_row("Saved baseline result", baseline_var, lambda: baseline_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("Evaluation result", "results.json"), ("JSON", "*.json")]) or baseline_var.get()))
+        settings_frame = ttk.LabelFrame(host, text="Evaluation size"); settings_frame.pack(fill="x", pady=10)
+        fields = [("evaluation_prompts_per_pose", "Prompts per enabled pose", int, "How many different prompt descriptions to test for each enabled viewing angle."), ("evaluation_seeds_per_prompt", "Seeds per prompt", int, "How many image variations to generate for each prompt. More seeds give a more trustworthy average but take longer."), ("evaluation_resolution", "Turbo resolution", int, "Square image size used for both baseline and later comparison. Keep it identical between runs."), ("evaluation_steps", "Turbo denoising steps", int, "Turbo normally uses 8 steps. Keep this identical for before/after comparisons."), ("evaluation_seed", "Starting seed", int, "The fixed seed family used to reproduce exactly the same test images after refinement.")]
+        variables = {}; grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
+        for index, (key, label, kind, tip) in enumerate(fields):
+            variable = tk.StringVar(value=str(config.get(key))); variables[key] = variable
+            row, column = divmod(index, 2); cell = ttk.Frame(grid); cell.grid(row=row, column=column, sticky="ew", padx=5, pady=3)
+            label_widget = ttk.Label(cell, text=label, width=24); label_widget.pack(side="left"); entry = ttk.Entry(cell, textvariable=variable, width=10); entry.pack(side="right"); ToolTip(label_widget, tip); ToolTip(entry, tip)
+        grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
+        ttk.Label(host, text="Generation count depends on enabled pose groups × prompts × seeds. Turbo weights, projector settings, LoRA strength, prompts, seeds, and resolution are held constant in comparisons.", style="PageHelp.TLabel", wraplength=680).pack(anchor="w", pady=6)
+        actions = ttk.Frame(host); actions.pack(fill="x", pady=(12, 0))
+        def run():
+            try:
+                from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+                validate_krea2_lora(lora_var.get())
+                if not config.get("preflight_report"): raise ValueError("Run Analyze Faces & Poses and save Face Refinement settings first.")
+                for key, _label, kind, _tip in fields: config[key] = kind(variables[key].get())
+                if min(config["evaluation_prompts_per_pose"], config["evaluation_seeds_per_prompt"], config["evaluation_resolution"], config["evaluation_steps"]) < 1: raise ValueError("Evaluation counts, resolution, and steps must be positive.")
+                baseline = baseline_var.get().strip() if mode_var.get() == "compare" else None
+                if mode_var.get() == "compare" and (not baseline or not Path(baseline).is_file()): raise ValueError("Choose an existing baseline results.json before comparing.")
+                settings = self.get_settings(); settings["python_executable"] = sys.executable or "python"
+                prepared = krea2_face_eval_backend.prepare(settings, config, lora_var.get(), baseline_result=baseline, label=mode_var.get())
+            except Exception as exc: messagebox.showerror("Turbo Evaluation", str(exc), parent=dialog); return
+            config["input_lora"] = lora_var.get().strip(); config["input_mode"] = "existing_lora"
+            self._face_refinement_config = config
+            settings["face_refinement_config"] = copy.deepcopy(config)
+            self._face_eval_context = {**prepared, "mode": mode_var.get(), "config": config, "commands": list(prepared["commands"])}
+            self.output_text.delete("1.0", tk.END); self._select_page(4); self.run_status_var.set("🧪 Turbo face baseline evaluation")
+            self.progress_label_var.set(f"Generating {prepared['cases']} fixed Turbo evaluation image(s)…")
+            self._begin_job("sample_test", "Krea Turbo face evaluation", settings=settings, note=f"{mode_var.get()} · {prepared['cases']} fixed cases")
+            dialog.destroy(); self.run_process(prepared["commands"][0], on_complete=self._on_face_eval_generation_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
+        cancel = ttk.Button(actions, text="Cancel", command=dialog.destroy); cancel.pack(side="right", padx=(6, 0)); run_button = ttk.Button(actions, text="Run Turbo Evaluation", style="Accent.TButton", command=run); run_button.pack(side="right"); ToolTip(run_button, "Starts read-only Turbo image generation, then scores those images against the saved face and pose references. No optimizer or training code is used.")
+
+    def _on_face_eval_generation_complete(self, return_code):
+        context = self._face_eval_context
+        if return_code != 0 or not context:
+            self._finalize_active_job("failed", return_code); self._face_eval_context = None; self.stop_all_activity(); return
+        self.progress_label_var.set("Scoring generated faces and requested poses…")
+        self.run_process(context["commands"][1], on_complete=self._on_face_eval_scoring_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
+
+    def _on_face_eval_scoring_complete(self, return_code):
+        context = self._face_eval_context; self._face_eval_context = None
+        if return_code != 0 or not context or not Path(context["result"]).is_file():
+            self._finalize_active_job("failed", return_code); self.stop_all_activity(); return
+        if context["mode"] == "baseline":
+            self._face_refinement_config["evaluation_baseline_result"] = str(context["result"])
+        self._finalize_active_job("completed", 0); self.stop_all_activity(); self._show_face_evaluation_results(context["result"])
+
+    def _show_face_evaluation_results(self, result_path):
+        payload = json.loads(Path(result_path).read_text(encoding="utf-8")); dialog = tk.Toplevel(self.root); dialog.title("Krea Turbo Face Evaluation Results"); dialog.minsize(920, 480)
+        host = ttk.Frame(dialog, padding=14); host.pack(fill="both", expand=True); ttk.Label(host, text="Turbo evaluation results", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(host, text="Identity measures who the face resembles. Pose success measures whether Turbo actually followed the requested angle. Review the images as well as the numbers.", style="PageHelp.TLabel", wraplength=870).pack(anchor="w", pady=(2, 10))
+        columns = ("pose", "samples", "identity", "pose_identity", "pose_success", "detection", "delta")
+        tree = ttk.Treeview(host, columns=columns, show="headings"); tree.pack(fill="both", expand=True)
+        labels = {"pose": "Requested pose", "samples": "Samples", "identity": "Overall identity", "pose_identity": "Matching-pose identity", "pose_success": "Pose success", "detection": "Face detected", "delta": "Identity change"}
+        for key in columns: tree.heading(key, text=labels[key]); tree.column(key, width=135)
+        for pose, metrics in payload.get("poses", {}).items():
+            delta = payload.get("deltas", {}).get(pose, {}).get("overall_similarity")
+            fmt = lambda value: "—" if value is None else f"{value:.3f}"
+            tree.insert("", "end", values=(pose.replace("_", " ").title(), metrics["samples"], fmt(metrics.get("overall_similarity")), fmt(metrics.get("pose_similarity")), f"{metrics['pose_success_rate']:.0%}", f"{metrics['detection_rate']:.0%}", fmt(delta)))
+        actions = ttk.Frame(host); actions.pack(fill="x", pady=(10, 0)); ttk.Button(actions, text="Open Evaluation Folder", command=lambda: self._open_path(str(Path(result_path).parent))).pack(side="left")
+        focus_button = ttk.Button(actions, text="Build Plan from Weak Poses", command=lambda: self._apply_turbo_evaluation_to_pose_plan(payload, dialog)); focus_button.pack(side="left", padx=(6, 0)); ToolTip(focus_button, "Creates an editable Pose Training Plan that spends more steps on angles below their target or often ignored by Turbo. It never starts training and does not overwrite your reference analysis.")
+        ttk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
+
+    def _apply_turbo_evaluation_to_pose_plan(self, payload, results_dialog=None):
+        from musubi_tuner.face_refinement.pose_plan import TRAINABLE_POSES, default_pose_plan, normalize_pose_plan
+        config = self._default_face_refinement_config(); config.update(copy.deepcopy(self._face_refinement_config or {}))
+        plan = copy.deepcopy(config.get("pose_plan") or default_pose_plan("custom")); plan["enabled"] = True; plan["preset"] = "custom"
+        scores = {}
+        for pose in TRAINABLE_POSES:
+            cfg = plan["buckets"][pose]; metrics = payload.get("poses", {}).get(pose)
+            if not metrics:
+                cfg["enabled"] = False; cfg["share"] = 0; continue
+            identity = metrics.get("pose_similarity") if metrics.get("pose_similarity") is not None else metrics.get("overall_similarity")
+            target = float(cfg.get("target", 0.55)); pose_failure = 1.0 - float(metrics.get("pose_success_rate", 0.0))
+            weakness = max(0.0, target - float(identity or 0.0)) + 0.20 * pose_failure
+            cfg["enabled"] = weakness > 0.01; cfg["share"] = weakness * 100.0; scores[pose] = weakness
+        if not any(cfg.get("enabled") for cfg in plan["buckets"].values()):
+            messagebox.showinfo("Turbo Evaluation", "Every evaluated pose already meets its current target and pose-following threshold. No weak-pose plan was created.", parent=results_dialog); return
+        counts = (config.get("preflight_report") or {}).get("pose_bucket_counts", {})
+        try: plan, warnings = normalize_pose_plan(plan, counts, int(config.get("pose_min_references", 2)))
+        except ValueError as exc: messagebox.showerror("Turbo Evaluation", str(exc), parent=results_dialog); return
+        config["pose_plan"] = plan; config["pose_aware"] = True; config["evaluation_baseline_result"] = str(payload.get("baseline") or config.get("evaluation_baseline_result") or "")
+        self._face_refinement_config = config
+        if results_dialog: results_dialog.destroy()
+        self._open_face_refinement_dialog()
+        if warnings: messagebox.showwarning("Pose plan safeguards", "\n".join(warnings), parent=self.root)
 
     def _open_pose_training_plan_dialog(self, face_config, trigger_word, on_save, parent=None):
         from musubi_tuner.face_refinement.pose import POSE_LABELS, parse_pose_prompt
@@ -5136,6 +5245,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.progress_var.set((current / total) * 100 if total > 0 else 0)
         self.progress_label_var.set(f"Face refinement step {current} of {total}")
 
+    def update_turbo_evaluation_progress(self, current, total):
+        self.progress_var.set((current / total) * 100 if total > 0 else 0)
+        self.progress_label_var.set(f"Turbo evaluation case {current} of {total}")
+
     def update_training_counters(self, current_step=None, total_steps=None, current_epoch=None, total_epochs=None):
         if current_step is not None:
             parsed_step = int(current_step)
@@ -5323,6 +5436,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                             self._staged_run
                             and (self._staged_run.get("previous_settings") or {}).get("stage_type") == "face_refinement"
                         )
+                        face_evaluation_active = bool(self._face_eval_context)
+                        eval_prompt_match = re.search(r"\[(\d+)\]\s+Prompt:", chunk)
+                        if face_evaluation_active and eval_prompt_match:
+                            completed = int(eval_prompt_match.group(1)) + 1
+                            self.root.after(0, self.update_turbo_evaluation_progress, completed, int(self._face_eval_context.get("cases", completed)))
                         if face_step_match:
                             self.root.after(
                                 0, self.update_training_counters,
@@ -5336,7 +5454,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                         stop_match = re.search(r"^(?:early_stop|pose_stop)=([a-z_]+)", chunk)
                         if stop_match:
                             self.root.after(0, self.progress_label_var.set, f"Face refinement stopping: {stop_match.group(1).replace('_', ' ')}")
-                        if step_total_match and not face_refinement_active:
+                        if step_total_match and not face_refinement_active and not face_evaluation_active:
                             self.root.after(
                                 0,
                                 self.update_training_counters,

@@ -457,6 +457,23 @@ is saved to `face_refinement_pose_summary.json`, and the plan (without prompt te
 LoRA metadata. The overall identity anchor defaults to `0.80` and cannot be set below `0.65`, so a
 profile-focused continuation cannot silently replace the general identity objective.
 
+### Turbo baseline and before/after evaluation
+
+Face refinement updates the LoRA against RAW, but practical evaluation uses the configured Krea
+Turbo checkpoint. **Evaluate Starting LoRA…** runs a read-only Turbo suite with fixed pose prompts,
+seeds, resolution, eight-step Turbo sampling, projector settings, and LoRA. No optimizer is created
+and no weight is changed. RAW training reward and Turbo evaluation remain clearly separate metrics.
+
+The baseline records overall identity, matching-pose identity, face detection, whether Turbo
+generated the requested pose, averages, and worst identity scores. The same window can evaluate a
+refined or intermediate LoRA against the saved `results.json`; identical cases produce per-pose
+before/after deltas. Images and results stay in the local run's `face_evaluations/` folder.
+
+**Build Plan from Weak Poses** creates—but never starts—an editable custom plan. Angles below their
+target or with poor pose-following receive more prompt share; already-good or unevaluated angles
+are disabled, and minimum-reference safeguards still apply. This supports short RAW refinement
+rounds followed by manual Turbo checks of saved intermediate LoRAs.
+
 Completed Krea jobs can be prepared directly from **Jobs → right-click → Refine Face Identity…**.
 This restores the saved Krea model paths, locates and validates the job's complete LoRA (including
 `model.safetensors` inside a saved state folder), and opens the settings for review. It never starts

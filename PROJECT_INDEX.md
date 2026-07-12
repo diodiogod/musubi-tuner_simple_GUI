@@ -163,7 +163,9 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `face_refinement/pose.py` - optional landmark-only yaw/pitch/roll estimates, broad virtual pose buckets, confidence, and prompt-tag parsing; no extra model weights
 - `face_refinement/pose_plan.py` - pose-goal presets, offline prompt suggestions, share normalization, sparse-bucket safeguards, and per-pose target/plateau tracking
 - `krea2_face_refinement.py` - standalone Krea face-refinement trainer that consumes/emits complete LoRA files
+- `krea2_face_evaluate.py` + `face_refinement/evaluation.py` - read-only fixed-suite Turbo scoring for identity, matching pose, requested-pose success, detection, and baseline deltas
 - `backends/krea2_face.py` - command construction for typed face-refinement stages
+- `backends/krea2_face_eval.py` - fixed prompt/seed Turbo suite preparation plus generation/scoring command construction
 - Face settings and prompts are persisted in GUI/job JSON snapshots; no second dataset TOML is exposed
 - Staged handoff remains type-aware: standard→standard uses state directories, standard↔face uses LoRA files, and a first-stage face run uses an explicitly validated existing LoRA
 
