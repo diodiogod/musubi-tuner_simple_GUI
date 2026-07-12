@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, krea2_face as krea2_face_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -144,6 +144,7 @@ class MusubiTunerGUI:
         self._staged_run = None
         self._staged_training_config = []
         self._staged_recache_latents = True
+        self._face_refinement_config = {}
         self.last_line_was_progress = False
         self.last_progress_milestone = 0
         self.current_step = 0
@@ -988,6 +989,13 @@ class MusubiTunerGUI:
             kind='checkbox',
             default_val=True,
         )
+        face_action = ttk.Frame(self.hidden_frames['krea2_regularization']); face_action.pack(fill="x", padx=10, pady=(8, 10))
+        ttk.Label(
+            face_action,
+            text="Face Refinement (DRaFT) is configured separately and can be added as a staged-training step.",
+            wraplength=700,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(face_action, text="Configure Face Refinement…", command=self._open_face_refinement_dialog).pack(side="right")
 
         attention_frame = ttk.LabelFrame(frame, text="Attention Mechanism"); attention_frame.pack(fill="x", padx=10, pady=10)
         self.attention_var = tk.StringVar(value="xformers")
@@ -1927,7 +1935,7 @@ class MusubiTunerGUI:
         self.staged_config_btn.pack(side="right", padx=(8, 0))
         ToolTip(
             self.staged_config_btn,
-            "Opens the stage plan editor. Each stage selects its own dataset TOML and training limit; configuring a plan does not run it until Staged Progression is enabled and Run is pressed.",
+            "Opens the stage plan editor. Standard stages select a dataset TOML; Krea Face Refinement stages use their separate saved reference/prompt settings. Configuring a plan does not run it until Staged Progression is enabled and Run is pressed.",
         )
 
         train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
@@ -2028,13 +2036,158 @@ class MusubiTunerGUI:
         else:
             self.start_training()
 
+    @staticmethod
+    def _default_face_refinement_config():
+        from musubi_tuner.face_refinement.face_models import default_model_dir
+
+        return {
+            "reference_dir": "", "face_model_dir": str(default_model_dir()),
+            "prompts": [
+                "portrait photo of the person, natural expression, soft daylight",
+                "close-up portrait of the person smiling",
+                "photo of the person looking to the side",
+                "photo of the person outdoors, candid expression",
+                "studio portrait of the person, neutral background",
+                "low-angle photo of the person",
+                "photo of the person laughing",
+                "cinematic portrait of the person in dramatic lighting",
+            ],
+            "steps": 30, "resolution": 512, "denoise_steps": 12, "draft_k": 1,
+            "cfg_scale": 5.5, "learning_rate": 1e-4, "target_similarity": 0.45,
+            "stop_similarity": 0.55, "early_stop_patience": 5,
+            "min_detection_rate": 0.25, "anti_copy_weight": 0.02,
+            "preview_every": 5, "save_every": 10, "qkvo_only": True,
+            "checkpoint_vae": True, "license_acknowledged": False,
+            "blocks_to_swap": 10,
+            "gpu_id": "auto",
+        }
+
+    def _open_face_refinement_dialog(self, on_save=None):
+        config = self._default_face_refinement_config()
+        config.update(self._face_refinement_config or {})
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Krea 2 · Face Refinement (Experimental)")
+        dialog.transient(self.root); dialog.grab_set(); dialog.minsize(760, 720)
+        canvas = tk.Canvas(dialog, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        host = ttk.Frame(canvas, padding=16)
+        host.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=host, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+
+        ttk.Label(host, text="Face identity refinement", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            host,
+            text="A final-stage polish: Krea generates temporary images from prompts and the LoRA is rewarded when their faces resemble your references. It does not use a dataset TOML.",
+            style="PageHelp.TLabel", wraplength=700,
+        ).pack(anchor="w", pady=(3, 12))
+
+        identity = ttk.LabelFrame(host, text="1 · Reference identity"); identity.pack(fill="x", pady=6)
+        reference_var = tk.StringVar(value=config["reference_dir"])
+        model_var = tk.StringVar(value=config["face_model_dir"])
+        status_var = tk.StringVar(value="Run Face Check before adding this stage.")
+        def path_row(parent, label, variable, directory=True):
+            row = ttk.Frame(parent); row.pack(fill="x", padx=8, pady=5)
+            ttk.Label(row, text=label, width=22).pack(side="left")
+            ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="Browse", command=lambda: variable.set(filedialog.askdirectory(parent=dialog) or variable.get())).pack(side="right", padx=(6, 0))
+        path_row(identity, "Reference image folder", reference_var)
+        path_row(identity, "AntelopeV2 folder", model_var)
+        ttk.Label(identity, textvariable=status_var, wraplength=680).pack(anchor="w", padx=8, pady=(3, 6))
+
+        license_var = tk.BooleanVar(value=bool(config.get("license_acknowledged")))
+        ttk.Checkbutton(
+            identity, variable=license_var,
+            text="I understand AntelopeV2 model files are third-party artifacts with separate terms and are not bundled with this GUI.",
+        ).pack(anchor="w", padx=8, pady=4)
+
+        def run_background(action, success):
+            def worker():
+                try:
+                    result = action()
+                    self.root.after(0, lambda: success(result))
+                except Exception as exc:
+                    self.root.after(0, lambda exc=exc: messagebox.showerror("Face Refinement", str(exc), parent=dialog))
+            threading.Thread(target=worker, daemon=True).start()
+
+        identity_actions = ttk.Frame(identity); identity_actions.pack(fill="x", padx=8, pady=(4, 8))
+        def download_models():
+            if not license_var.get():
+                messagebox.showwarning("Face-model terms", "Acknowledge the third-party model notice before downloading.", parent=dialog); return
+            if not messagebox.askokcancel("Download AntelopeV2", "Download approximately 220 MB of third-party face-analysis model files from Hugging Face?", parent=dialog): return
+            status_var.set("Downloading face models…")
+            from musubi_tuner.face_refinement.face_models import ensure_models
+            run_background(lambda: ensure_models(model_var.get()), lambda _r: status_var.set("Face models are ready. Run Face Check."))
+        def face_check():
+            if not self._check_face_refinement_dependencies(parent=dialog):
+                return
+            status_var.set("Checking reference faces…")
+            from musubi_tuner.face_refinement.preflight import scan_reference_faces
+            def show(report):
+                warnings = " ".join(report["warnings"]) or "No obvious reference-set problems found."
+                status_var.set(f"Usable faces: {report['valid_faces']}/{report['images_scanned']}. Mean identity consistency: {report['similarity_mean']:.2f}. {warnings}")
+                config["preflight_report"] = report
+            run_background(lambda: scan_reference_faces(reference_var.get(), model_var.get()), show)
+        ttk.Button(identity_actions, text="Download Face Models…", command=download_models).pack(side="left")
+        ttk.Button(identity_actions, text="Run Face Check", command=face_check).pack(side="left", padx=6)
+
+        prompts_frame = ttk.LabelFrame(host, text="2 · Generation prompts"); prompts_frame.pack(fill="both", expand=True, pady=6)
+        ttk.Label(prompts_frame, text="One prompt per line. Use varied angles, expressions, and lighting; keep one primary person.", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
+        prompts_text = tk.Text(prompts_frame, height=9, wrap="word")
+        prompts_text.pack(fill="both", expand=True, padx=8, pady=(0, 8)); prompts_text.insert("1.0", "\n".join(config["prompts"]))
+
+        settings_frame = ttk.LabelFrame(host, text="3 · Safe starting settings"); settings_frame.pack(fill="x", pady=6)
+        variables = {}
+        fields = [
+            ("steps", "Refinement steps", int), ("resolution", "Generation resolution", int),
+            ("denoise_steps", "Denoising steps", int), ("draft_k", "Differentiable final steps", int),
+            ("learning_rate", "Learning rate", float), ("target_similarity", "Reward saturation", float),
+            ("stop_similarity", "Early-stop similarity", float), ("early_stop_patience", "Early-stop patience", int),
+            ("min_detection_rate", "Minimum face detection rate", float), ("preview_every", "Preview every N steps", int),
+            ("blocks_to_swap", "DiT blocks moved to CPU", int),
+            ("gpu_id", "GPU index (auto recommended)", str),
+        ]
+        grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
+        for index, (key, label, _kind) in enumerate(fields):
+            variable = tk.StringVar(value=str(config[key])); variables[key] = variable
+            row, column = divmod(index, 2)
+            cell = ttk.Frame(grid); cell.grid(row=row, column=column, sticky="ew", padx=5, pady=3)
+            ttk.Label(cell, text=label, width=26).pack(side="left"); ttk.Entry(cell, textvariable=variable, width=12).pack(side="right")
+        grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
+        qkvo_var = tk.BooleanVar(value=config["qkvo_only"]); checkpoint_var = tk.BooleanVar(value=config["checkpoint_vae"])
+        ttk.Checkbutton(settings_frame, text="Train attention Q/K/V/O adapters only (recommended anti-overfit safeguard)", variable=qkvo_var).pack(anchor="w", padx=12)
+        ttk.Checkbutton(settings_frame, text="Checkpoint VAE decode to save VRAM", variable=checkpoint_var).pack(anchor="w", padx=12, pady=(0, 8))
+
+        actions = ttk.Frame(host); actions.pack(fill="x", pady=(12, 0))
+        def save():
+            try:
+                updated = dict(config)
+                updated["reference_dir"] = reference_var.get().strip(); updated["face_model_dir"] = model_var.get().strip()
+                updated["prompts"] = [line.strip() for line in prompts_text.get("1.0", "end").splitlines() if line.strip()]
+                for key, _label, kind in fields: updated[key] = kind(variables[key].get())
+                updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["license_acknowledged"] = license_var.get()
+                if not updated["prompts"] or not os.path.isdir(updated["reference_dir"]): raise ValueError("Choose a reference folder and provide at least one prompt.")
+                if not updated["license_acknowledged"]: raise ValueError("Acknowledge the third-party face-model notice.")
+                if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
+                    raise ValueError("Run Face Check successfully for this reference folder before saving.")
+                if updated["steps"] < 1 or updated["resolution"] % 16 or not 1 <= updated["draft_k"] <= updated["denoise_steps"] or not 0 <= updated["blocks_to_swap"] <= 26: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value.")
+                if updated["gpu_id"] != "auto" and (not updated["gpu_id"].isdigit() or int(updated["gpu_id"]) < 0): raise ValueError("GPU index must be 'auto' or a non-negative number.")
+            except Exception as exc:
+                messagebox.showerror("Face Refinement", str(exc), parent=dialog); return
+            self._face_refinement_config = updated
+            if on_save: on_save(updated)
+            dialog.destroy()
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="Save Settings", style="Accent.TButton", command=save).pack(side="right")
+
     def _open_staged_training_dialog(self):
         dialog = tk.Toplevel(self.root)
         dialog.title("Staged Resolution Training")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(True, True)
-        dialog.minsize(900, 360)
+        dialog.minsize(1080, 380)
 
         host = ttk.Frame(dialog, padding=16)
         host.pack(fill="both", expand=True)
@@ -2042,18 +2195,19 @@ class MusubiTunerGUI:
         ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             host,
-            text="Labels name the stage and its output; resolution comes from the dataset TOML. Each stage uses either epochs or a step cap.",
+            text="Standard stages use a dataset TOML. Krea Face Refinement is a separate prompt-and-reference stage and uses its saved GUI settings.",
             style="PageHelp.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(3, 14))
 
         table = ttk.Frame(host)
         table.grid(row=2, column=0, sticky="nsew")
-        table.grid_columnconfigure(2, weight=1)
+        table.grid_columnconfigure(3, weight=1)
         ttk.Label(table, text="Use").grid(row=0, column=0, sticky="w")
         ttk.Label(table, text="Stage Label").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(table, text="Dataset TOML").grid(row=0, column=2, sticky="w", padx=(8, 0))
-        ttk.Label(table, text="Epochs").grid(row=0, column=3, sticky="w", padx=(8, 0))
-        ttk.Label(table, text="Max Steps").grid(row=0, column=4, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Stage Type").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Dataset TOML").grid(row=0, column=3, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Epochs").grid(row=0, column=4, sticky="w", padx=(8, 0))
+        ttk.Label(table, text="Max Steps").grid(row=0, column=5, sticky="w", padx=(8, 0))
 
         rows = []
         next_row_index = [1]
@@ -2061,6 +2215,7 @@ class MusubiTunerGUI:
         initial_stages = self._staged_training_config or [
             {
                 "label": label,
+                "type": "standard",
                 "enabled": True,
                 "dataset_config": current_dataset if label == "256" else "",
                 "epochs": self.entries["max_train_epochs"].get() or "1",
@@ -2075,13 +2230,16 @@ class MusubiTunerGUI:
             next_row_index[0] += 1
             enabled = tk.BooleanVar(value=saved.get("enabled", True))
             label_var = tk.StringVar(value=str(saved.get("label", f"stage-{row_index}")))
+            type_var = tk.StringVar(value=saved.get("type", "standard"))
             path_var = tk.StringVar(value=saved.get("dataset_config", ""))
             epochs_var = tk.StringVar(value=str(saved.get("epochs", self.entries["max_train_epochs"].get() or "1")))
             steps_var = tk.StringVar(value=str(saved.get("steps", "")))
             ttk.Checkbutton(table, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
             ttk.Entry(table, textvariable=label_var, width=14).grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=4)
+            type_widget = ttk.Combobox(table, textvariable=type_var, width=18, state="readonly", values=["standard", "face_refinement"])
+            type_widget.grid(row=row_index, column=2, sticky="ew", padx=(8, 0), pady=4)
             path_host = ttk.Frame(table)
-            path_host.grid(row=row_index, column=2, sticky="ew", padx=(8, 0), pady=4)
+            path_host.grid(row=row_index, column=3, sticky="ew", padx=(8, 0), pady=4)
             path_entry = ttk.Entry(path_host, textvariable=path_var)
             path_entry.pack(side="left", fill="x", expand=True)
 
@@ -2092,18 +2250,34 @@ class MusubiTunerGUI:
 
             ttk.Button(path_host, text="Browse", command=browse).pack(side="right", padx=(5, 0))
             epochs_entry = ttk.Entry(table, textvariable=epochs_var, width=8)
-            epochs_entry.grid(row=row_index, column=3, sticky="ew", padx=(8, 0), pady=4)
-            ttk.Entry(table, textvariable=steps_var, width=10).grid(row=row_index, column=4, sticky="ew", padx=(8, 0), pady=4)
+            epochs_entry.grid(row=row_index, column=4, sticky="ew", padx=(8, 0), pady=4)
+            steps_entry = ttk.Entry(table, textvariable=steps_var, width=10)
+            steps_entry.grid(row=row_index, column=5, sticky="ew", padx=(8, 0), pady=4)
 
-            def sync_limit_fields(*_args, steps=steps_var, epochs_widget=epochs_entry):
-                epochs_widget.configure(state="disabled" if steps.get().strip() else "normal")
+            configure_button = ttk.Button(table, text="Settings…")
+            configure_button.grid(row=row_index, column=6, sticky="ew", padx=(8, 0), pady=4)
+
+            def sync_limit_fields(*_args, steps=steps_var, epochs_widget=epochs_entry, steps_widget=steps_entry, path_widget=path_entry, browse_parent=path_host, stage_type=type_var, button=configure_button):
+                face = stage_type.get() == "face_refinement"
+                epochs_widget.configure(state="disabled" if face or steps.get().strip() else "normal")
+                steps_widget.configure(state="normal")
+                path_widget.configure(state="disabled" if face else "normal")
+                for child in browse_parent.winfo_children()[1:]: child.configure(state="disabled" if face else "normal")
+                button.configure(state="normal" if face else "disabled")
+                if face:
+                    configured_steps = str((self._face_refinement_config or self._default_face_refinement_config())["steps"])
+                    if steps.get() != configured_steps:
+                        steps.set(configured_steps)
 
             steps_var.trace_add("write", sync_limit_fields)
+            type_var.trace_add("write", sync_limit_fields)
+            configure_button.configure(command=lambda: self._open_face_refinement_dialog(on_save=lambda cfg: steps_var.set(str(cfg["steps"]))) )
             sync_limit_fields()
 
             row = {
                 "enabled": enabled,
                 "label": label_var,
+                "type": type_var,
                 "path": path_var,
                 "epochs": epochs_var,
                 "steps": steps_var,
@@ -2118,10 +2292,10 @@ class MusubiTunerGUI:
                 rows.remove(target)
 
             remove_button = ttk.Button(table, text="Remove", command=remove_stage)
-            remove_button.grid(row=row_index, column=5, sticky="ew", padx=(8, 0), pady=4)
+            remove_button.grid(row=row_index, column=7, sticky="ew", padx=(8, 0), pady=4)
             row["widgets"] = [
                 table.grid_slaves(row=row_index, column=column)[0]
-                for column in range(6)
+                for column in range(8)
             ]
             rows.append(row)
 
@@ -2160,13 +2334,15 @@ class MusubiTunerGUI:
                 seen_labels.add(label_key)
 
                 enabled = row["enabled"]
+                stage_type = row["type"].get()
                 path_var = row["path"]
                 steps_text = row["steps"].get().strip()
-                epochs_text = "" if steps_text else row["epochs"].get().strip()
+                epochs_text = "" if steps_text or stage_type == "face_refinement" else row["epochs"].get().strip()
                 if not enabled.get():
                     configured.append({
                         "label": label,
                         "enabled": False,
+                        "type": stage_type,
                         "dataset_config": path_var.get().strip(),
                         "epochs": epochs_text,
                         "steps": steps_text,
@@ -2179,20 +2355,34 @@ class MusubiTunerGUI:
                     field_name = "steps" if steps_text else "epochs"
                     messagebox.showerror("Staged Run", f"{label} {field_name} must be a whole number.", parent=dialog)
                     return
-                if limit < 1 or not os.path.isfile(path):
+                if limit < 1 or (stage_type == "standard" and not os.path.isfile(path)):
                     limit_name = "step" if steps_text else "epoch"
-                    messagebox.showerror("Staged Run", f"{label} needs an existing TOML file and at least 1 {limit_name}.", parent=dialog)
+                    requirement = "an existing TOML file and " if stage_type == "standard" else ""
+                    messagebox.showerror("Staged Run", f"{label} needs {requirement}at least 1 {limit_name}.", parent=dialog)
+                    return
+                if stage_type == "face_refinement" and not self._face_refinement_config.get("preflight_report"):
+                    messagebox.showerror("Staged Run", f"Configure {label} and complete its Face Check first.", parent=dialog)
                     return
                 configured.append({
                     "label": label,
                     "enabled": True,
-                    "dataset_config": path,
-                    "epochs": "" if steps_text else str(limit),
+                    "type": stage_type,
+                    "dataset_config": path if stage_type == "standard" else "",
+                    "epochs": "" if steps_text or stage_type == "face_refinement" else str(limit),
                     "steps": str(limit) if steps_text else "",
                 })
             if not any(item["enabled"] for item in configured):
                 messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
                 return
+            enabled_plan = [item for item in configured if item["enabled"]]
+            face_positions = [index for index, item in enumerate(enabled_plan) if item.get("type") == "face_refinement"]
+            if face_positions and face_positions[-1] != len(enabled_plan) - 1:
+                if not messagebox.askyesno(
+                    "Face Refinement ordering",
+                    "A standard-training stage comes after Face Refinement. That later SFT stage starts a fresh optimizer from the refined LoRA and may weaken the identity gain.\n\nKeep this order?",
+                    parent=dialog,
+                ):
+                    return
             self._staged_training_config = configured
             self._staged_recache_latents = recache_var.get()
             self._update_staged_summary()
@@ -4318,6 +4508,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         settings["sample_prompts_data"] = self._sample_prompts_data
         settings["staged_training_config"] = self._staged_training_config
         settings["staged_recache_latents"] = self._staged_recache_latents
+        settings["face_refinement_config"] = self._face_refinement_config
         return settings
 
     def set_values(self, settings):
@@ -4341,8 +4532,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._staged_training_config = settings.get("staged_training_config") or []
         if "staged_recache_latents" in settings:
             self._staged_recache_latents = bool(settings.get("staged_recache_latents"))
+        if "face_refinement_config" in settings:
+            self._face_refinement_config = settings.get("face_refinement_config") or {}
         for key, value in settings.items():
-            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts", "staged_training_config", "staged_recache_latents"): continue
+            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts", "staged_training_config", "staged_recache_latents", "face_refinement_config"): continue
             if key in self.entries:
                 widget = self.entries[key]
                 if isinstance(widget, (tk.BooleanVar, tk.StringVar)):
@@ -4395,7 +4588,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "training_mode": "Wan 2.2",
             "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
             "sample_prompts_data": [],
-            "use_staged_training": False, "staged_training_config": [], "staged_recache_latents": True,
+            "use_staged_training": False, "staged_training_config": [], "staged_recache_latents": True, "face_refinement_config": {},
         }
         self.set_values(defaults)
 
@@ -4743,6 +4936,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     if output_widget == self.output_text:
                         step_match = re.search(r"(\d+)/\d+ \[", chunk)
                         step_total_match = re.search(r"(\d+)/(\d+) \[", chunk)
+                        face_step_match = re.search(r"^step=(\d+)/(\d+)\s", chunk)
+                        if face_step_match:
+                            self.root.after(
+                                0, self.update_training_counters,
+                                int(face_step_match.group(1)), int(face_step_match.group(2)), None, None,
+                            )
                         if step_total_match:
                             self.root.after(
                                 0,
@@ -4754,10 +4953,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                             )
 
                         loss_match = re.search(r"(?:avr_loss|loss)=([\d\.]+)", chunk)
-                        if loss_match and self.current_step > 0:
+                        graph_step = int(face_step_match.group(1)) if face_step_match else self.current_step
+                        if loss_match and graph_step > 0:
                             loss_value = float(loss_match.group(1))
                             self._last_loss_value = loss_value
-                            self.root.after(0, self.update_loss_graph, self.current_step, loss_value)
+                            self.root.after(0, self.update_loss_graph, graph_step, loss_value)
 
                         epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", chunk, re.IGNORECASE)
                         if epoch_match:
@@ -4846,6 +5046,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 candidates.append(extra)
         return candidates
 
+    @staticmethod
+    def _candidate_final_model_paths(settings):
+        run_name = MusubiTunerGUI._effective_run_name(settings)
+        base_dir = Path(settings["output_dir"]) / run_name
+        candidates = [base_dir / f"{run_name}.safetensors"]
+        epoch_text = str(settings.get("max_train_epochs", "")).strip()
+        if epoch_text.isdigit():
+            candidates.insert(0, base_dir / f"{run_name}-{int(epoch_text):06d}.safetensors")
+        return candidates
+
     def start_staged_training(self):
         if self.current_process:
             messagebox.showwarning("Staged Run", "A process is already running.")
@@ -4859,7 +5069,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             steps = str(item.get("steps", "")).strip()
             epochs = str(item.get("epochs", "")).strip()
             limit = steps or epochs
-            return os.path.isfile(item.get("dataset_config", "")) and limit.isdigit() and int(limit) >= 1
+            has_source = item.get("type", "standard") == "face_refinement" or os.path.isfile(item.get("dataset_config", ""))
+            return has_source and limit.isdigit() and int(limit) >= 1
 
         invalid_stage = next(
             (item for item in stages if not valid_stage(item)),
@@ -4867,6 +5078,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         )
         if invalid_stage:
             messagebox.showerror("Staged Run", f"The {self._stage_label_text(invalid_stage)} stage has an invalid TOML path or training limit.")
+            return
+        if stages[0].get("type", "standard") != "standard":
+            messagebox.showerror("Staged Run", "Face Refinement cannot be the first stage; it needs a LoRA produced by standard training.")
+            return
+        if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() != "Krea 2":
+            messagebox.showerror("Staged Run", "Face Refinement is currently available only in Krea 2 mode.")
+            return
+        if any(item.get("type") == "face_refinement" for item in stages) and not self._check_face_refinement_dependencies():
             return
         first_dataset = stages[0]["dataset_config"]
         self.entries["dataset_config"].delete(0, tk.END)
@@ -4924,15 +5143,22 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return
         previous = run.get("previous_settings")
         next_index = run["next_index"]
+        state_path = None
+        input_lora = None
         if previous is not None and next_index < len(run["stages"]):
-            state_candidates = self._candidate_final_state_paths(previous)
-            state_path = next((path for path in state_candidates if path.is_dir()), None)
-            if state_path is None:
+            previous_type = previous.get("stage_type", "standard")
+            next_type = run["stages"][next_index].get("type", "standard")
+            if previous_type == "face_refinement":
+                input_lora = Path(previous["face_output_path"])
+            elif next_type == "face_refinement":
+                input_lora = next((path for path in self._candidate_final_model_paths(previous) if path.is_file()), None)
+            else:
+                state_candidates = self._candidate_final_state_paths(previous)
+                state_path = next((path for path in state_candidates if path.is_dir()), None)
+            if (next_type == "face_refinement" and input_lora is None) or (previous_type == "face_refinement" and not input_lora.is_file()) or (next_type == "standard" and previous_type == "standard" and state_path is None):
                 self.output_text.insert(
                     tk.END,
-                    "\n--- Expected continuation state was not created. Checked: "
-                    + ", ".join(path.name for path in state_candidates)
-                    + " ---\n",
+                    "\n--- Expected staged handoff artifact was not created. ---\n",
                 )
                 self._finalize_active_job("failed", -1)
                 self._staged_run = None
@@ -4940,6 +5166,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 return
 
         if next_index >= len(run["stages"]):
+            if previous is not None and previous.get("stage_type") == "face_refinement" and not Path(previous.get("face_output_path", "")).is_file():
+                self.output_text.insert(tk.END, "\n--- Face Refinement finished without creating its expected LoRA. ---\n")
+                self._finalize_active_job("failed", -1)
+                self._staged_run = None
+                self.stop_all_activity()
+                return
             self._staged_run = None
             self._finalize_active_job("completed", 0)
             self.output_text.insert(tk.END, "\n--- All staged training runs completed successfully. ---\n")
@@ -4948,7 +5180,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         stage = run["stages"][next_index]
         settings = dict(run["base_settings"])
-        settings["dataset_config"] = stage["dataset_config"]
+        stage_type = stage.get("type", "standard")
+        settings["dataset_config"] = stage.get("dataset_config", "") if stage_type == "standard" else settings.get("dataset_config", "")
         stage_steps = str(stage.get("steps", "")).strip()
         if stage_steps:
             settings["max_train_steps"] = stage_steps
@@ -4958,11 +5191,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             settings["max_train_epochs"] = str(stage["epochs"])
         stage_label = self._stage_label_text(stage)
         settings["output_name"] = f"{run['base_output_name']}-{stage_label}"
-        settings["save_state"] = True
-        settings["recache_latents"] = bool(self._staged_recache_latents)
-        settings["recache_text"] = bool(settings.get("recache_text")) if next_index == 0 else False
-        settings["resume_path"] = str(state_path) if previous is not None else settings.get("resume_path", "")
-        settings["network_weights"] = "" if settings["resume_path"] else settings.get("network_weights", "")
+        settings["stage_type"] = stage_type
+        settings["save_state"] = stage_type == "standard"
+        settings["recache_latents"] = stage_type == "standard" and bool(self._staged_recache_latents)
+        settings["recache_text"] = stage_type == "standard" and (bool(settings.get("recache_text")) if next_index == 0 else False)
+        settings["resume_path"] = str(state_path) if state_path is not None else ""
+        if input_lora is not None and stage_type == "standard":
+            settings["network_weights"] = str(input_lora)
+        else:
+            settings["network_weights"] = "" if settings["resume_path"] else settings.get("network_weights", "")
         settings["sample_prompts"] = self._build_sample_prompts_txt()
 
         run["previous_settings"] = settings
@@ -4974,10 +5211,23 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.output_text.insert(
             tk.END,
             f"\n=== Stage {next_index + 1}/{len(run['stages'])}: {stage_label} for {stage_limit} ===\n"
-            f"Dataset: {stage['dataset_config']}\n"
-            f"Resume: {settings['resume_path'] or 'new training state'}\n",
+            f"Type: {stage_type}\n"
+            f"Dataset: {stage.get('dataset_config') or 'not used'}\n"
+            f"Handoff: {settings['resume_path'] or settings.get('network_weights') or input_lora or 'new training state'}\n",
         )
-        self.command_sequence = self._commands_for_settings(settings)
+        if stage_type == "face_refinement":
+            face_config = dict(self._face_refinement_config)
+            face_config["steps"] = int(stage_steps)
+            output_path = krea2_face_backend.output_path(run["base_settings"], stage_label)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            prompts_path = output_path.parent / "face_refinement_prompts.json"
+            prompts_path.write_text(json.dumps({"prompts": face_config["prompts"]}, indent=2), encoding="utf-8")
+            settings["python_executable"] = sys.executable or "python"
+            settings["face_output_path"] = str(output_path)
+            run["previous_settings"] = settings
+            self.command_sequence = [krea2_face_backend.build_command(settings, face_config, input_lora, output_path, prompts_path)]
+        else:
+            self.command_sequence = self._commands_for_settings(settings)
         self._run_next_command_in_sequence(0)
 
     def _check_logging_dependencies(self, log_with):
@@ -4988,6 +5238,22 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             try: import tensorboard
             except Exception: messagebox.showerror("Missing Dependency", "Please run: pip install tensorboard"); return False
         return True
+
+    def _check_face_refinement_dependencies(self, parent=None):
+        import importlib.util
+
+        missing = [name for name in ("onnx", "onnxruntime", "insightface") if importlib.util.find_spec(name) is None]
+        if not missing:
+            return True
+        messagebox.showerror(
+            "Face Refinement dependencies",
+            "Face Refinement is optional and needs additional face-analysis packages.\n\n"
+            f"Missing: {', '.join(missing)}\n\n"
+            "Install them in this project's environment with:\n"
+            'pip install -e ".[face_refinement]"',
+            parent=parent or self.root,
+        )
+        return False
 
     def _check_compile_dependencies(self, settings):
         if not settings.get("compile") or settings.get("compile_backend", "inductor") != "inductor":

@@ -66,3 +66,14 @@ not contain the GUI files.
   `tests/test_krea2_backend_regularization.py`.
 - Effective regularization settings are embedded in saved LoRA metadata under
   `ss_krea2_*` keys for reproducibility and job-history audits.
+
+### Krea 2 DRaFT face refinement
+
+- Isolated implementation: `face_refinement/` and `krea2_face_refinement.py`.
+- GUI/backend integration: `backends/krea2_face.py` plus typed staged-training handoff.
+- Standard stages continue through Musubi state directories; face stages consume and emit full
+  LoRA files and never use dataset TOML.
+- The face reward is adapted from `KONAKONA666/krea-2` under Apache-2.0. Preserve
+  `THIRD_PARTY_NOTICES.md`, the source header, and `licenses/Apache-2.0.txt`.
+- AntelopeV2 artifacts are optional, user-initiated downloads and must never be committed or
+  silently bundled.

@@ -157,6 +157,14 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps
 - Saved LoRAs record effective settings in `ss_krea2_*` metadata
 
+### Experimental Face Refinement
+
+- `face_refinement/` - AntelopeV2 reference preflight, differentiable face reward, model download helper, and truncated DRaFT sampling
+- `krea2_face_refinement.py` - standalone Krea face-refinement trainer that consumes/emits complete LoRA files
+- `backends/krea2_face.py` - command construction for typed face-refinement stages
+- Face settings and prompts are persisted in GUI/job JSON snapshots; no second dataset TOML is exposed
+- Staged handoff remains type-aware: standard→standard uses state directories, while standard↔face uses LoRA files
+
 ### Shared Utilities
 
 - `utils/train_utils.py` - checkpoint/state naming, save/remove policies

@@ -172,6 +172,31 @@ using the same dataset, seed, step count, and sample prompts. Start with weight-
 `0.0125` and depth-anchor strength `0.01`. See [the Krea 2 guide](./docs/krea2.md#experimental-lora-generalization-controls-in-this-gui-fork)
 for implementation details, cautions, and attribution.
 
+### Krea 2 Face Refinement (DRaFT, Experimental)
+
+Face Refinement is an optional **staged-training step** for human-identity LoRAs. After standard
+training has taught the subject, Krea generates temporary images from a varied prompt list. A
+frozen face-recognition model compares each generated face with embeddings prepared from your
+reference folder, and the similarity reward updates the LoRA through the final denoising step.
+
+- It does not use a second dataset TOML. Settings and prompts live in the GUI/job snapshot.
+- It must follow at least one standard Krea training stage and is normally the final stage.
+- It trains from the previous stage's LoRA file, not its optimizer-state directory.
+- Reference images establish identity but are not pixel targets during refinement.
+- It is intended for recognizable human faces, not clothing, body shape, tattoos, or general style.
+- Built-in saturation, Q/K/V/O-only training, face-detection monitoring, previews, and early stopping
+  reduce—but cannot eliminate—the risk of overfitting or a pasted-on “face swap” appearance.
+
+Open **Configure Face Refinement…**, acknowledge the third-party face-model notice, download or
+select AntelopeV2, run **Face Check**, then add a `face_refinement` stage in the staged-training
+window. The recommended starting point is 30 updates at 512px with 12 denoising steps and
+`draft_k=1`. Optional dependencies are installed with `pip install -e ".[face_refinement]"`.
+
+This workflow adapts the Apache-2.0 face reward from
+[KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2) and the
+[DRaFT paper](https://arxiv.org/abs/2309.17400). AntelopeV2 model files are not bundled and have
+separate terms; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
 ### Sample Tools
 
 - Save prompt presets without deleting older ones

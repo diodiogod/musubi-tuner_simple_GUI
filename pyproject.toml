@@ -44,7 +44,12 @@ gui = [
     "gradio>=4.0.0, <6.0.0",
 ]
 hidream_o1 = [
-    "sensecraft[dinov3]>=0.3.11",
+  "sensecraft[dinov3]>=0.3.11",
+]
+face_refinement = [
+  "insightface==0.7.3",
+  "onnx>=1.16,<2",
+  "onnxruntime>=1.18,<2",
 ]
 
 [tool.uv]

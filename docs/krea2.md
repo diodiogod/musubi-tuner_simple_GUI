@@ -382,3 +382,25 @@ to appearance prompts, reduce the anchor weight.
 The target-depth cache is held in CPU RAM for the current run and is bounded to
 256 samples. The depth model downloads from Hugging Face on first use unless it
 is already cached.
+
+## Experimental DRaFT face refinement
+
+The GUI can add `face_refinement` as a distinct staged-training step after standard Krea LoRA
+training. It does not consume the dataset TOML. Reference photos are processed once into identity
+embeddings; training then generates images from the saved prompt list and optimizes facial
+similarity through the final denoising step (`DRaFT-K`, with `K=1` by default).
+
+The stage consumes the previous stage's `.safetensors` LoRA and writes a new complete LoRA. If a
+standard stage follows it, that stage starts a fresh optimizer from the refined weights because a
+DRaFT stage cannot continue Musubi's previous optimizer state. Final-stage refinement is therefore
+the recommended order.
+
+Use the dedicated settings window to select reference images, manage prompts, download/select
+AntelopeV2, and run the mandatory Face Check. Defaults are 30 updates, 512px, 12 denoising steps,
+one differentiable final step, Q/K/V/O-only adapter updates, reward saturation, periodic previews,
+minimum detection-rate enforcement, and similarity-based early stopping.
+
+Install optional dependencies with `pip install -e ".[face_refinement]"`. AntelopeV2 weights are
+not distributed by this repository and have separate terms. The reward code is adapted under
+Apache-2.0 from [KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2), based on
+[DRaFT](https://arxiv.org/abs/2309.17400). See `THIRD_PARTY_NOTICES.md`.

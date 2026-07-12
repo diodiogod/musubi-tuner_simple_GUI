@@ -11,6 +11,8 @@
     "src/musubi_tuner/krea2_generate_image.py",
     "src/musubi_tuner/krea2_train_network.py",
     "src/musubi_tuner/perceptual",
+    "src/musubi_tuner/face_refinement",
+    "src/musubi_tuner/krea2_face_refinement.py",
     "src/musubi_tuner/training/weight_noise.py"
   ]
 }
