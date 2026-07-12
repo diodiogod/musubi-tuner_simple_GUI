@@ -39,6 +39,9 @@ not contain the GUI files.
 ### Adapter weight noise
 
 - Implementation: `training/weight_noise.py`.
+- Technique inspiration and practical reference:
+  `https://github.com/BuffaloBuffaloBuffaloBuffalo/ai-toolkit-perceptual`.
+  The Musubi/Krea code is an independent adaptation, not a direct source port.
 - Upstream seam: Krea overrides the existing
   `NetworkTrainer.on_post_optimizer_step` and `extra_step_logs` hooks; the
   shared upstream trainer remains byte-for-byte unchanged.

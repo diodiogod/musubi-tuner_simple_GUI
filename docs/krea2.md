@@ -348,6 +348,14 @@ python src/musubi_tuner/krea2_generate_image.py \
 This fork adds two optional Krea 2 LoRA/LoKr regularizers. Both default to off,
 so existing commands and training behavior are unchanged.
 
+These features were inspired by
+[Perceptual LoRA Toolkit](https://github.com/BuffaloBuffaloBuffaloBuffalo/ai-toolkit-perceptual)
+by BuffaloBuffaloBuffaloBuffalo, which documented and tested practical LoRA applications of
+adapter weight noise and frozen depth-perceptor losses. This implementation is an independent
+Musubi/Krea 2 adaptation; it is not a direct port and has not been validated or endorsed by the
+reference project's author. Weight noise and perceptual loss are established broader techniques;
+the credit here is for the experiments and practical approach that motivated this adaptation.
+
 ### Weight noise
 
 Weight noise adds a small Gaussian perturbation to trainable adapter weights

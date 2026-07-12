@@ -67,6 +67,7 @@ Docs: [docs/flux_2.md](./docs/flux_2.md)
 - Optional projector patch and patch strength
 - Krea-specific timestep sampling and prompt controls
 - In-app Krea test sample generation
+- Experimental small-dataset generalization presets with adapter weight noise and automatic depth anchoring
 
 Docs: [docs/krea2.md](./docs/krea2.md)
 
@@ -148,6 +149,29 @@ python musubi_tuner_gui.py
 
 ## Notable Features
 
+### Krea 2 Generalization (Experimental)
+
+The Krea 2 training page includes three starting presets:
+
+- **Off (Baseline):** original Musubi training behavior
+- **Weight Noise Only:** the safer first experiment for resisting overtraining on small datasets
+- **Balanced Experimental:** weight noise plus a conservative depth anchor
+
+Depth anchoring automatically estimates a depth map for each training image. During training, it
+checks whether Krea's predicted image has a similar 3D structure. Users do not create or supply
+depth maps, and Krea does not receive them as reference-image or ControlNet input—the depth model
+only acts as an additional training judge.
+
+This may help preserve subject, face, body, or object shape without forcing the LoRA to reproduce
+the exact background, colors, or lighting. It also performs an extra VAE decode and depth-model
+pass, so it increases training time and VRAM use. Its best settings for Krea 2 are not yet
+established.
+
+For a meaningful first test, compare **Off**, **Weight Noise Only**, and **Balanced Experimental**
+using the same dataset, seed, step count, and sample prompts. Start with weight-noise strength
+`0.0125` and depth-anchor strength `0.01`. See [the Krea 2 guide](./docs/krea2.md#experimental-lora-generalization-controls-in-this-gui-fork)
+for implementation details, cautions, and attribution.
+
 ### Sample Tools
 
 - Save prompt presets without deleting older ones
@@ -214,6 +238,12 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
 ## Credits
 
 - Upstream training backend: [kohya-ss/musubi-tuner](https://github.com/kohya-ss/musubi-tuner)
+- The experimental Krea 2 weight-noise and depth-anchor features were inspired by
+  [Perceptual LoRA Toolkit](https://github.com/BuffaloBuffaloBuffaloBuffalo/ai-toolkit-perceptual)
+  by BuffaloBuffaloBuffaloBuffalo. That project documented practical LoRA applications of adapter
+  weight noise and frozen depth-perceptor losses. This repository contains an independent
+  Musubi/Krea 2 adaptation and is not endorsed by the reference project. Weight noise and
+  perceptual loss are broader techniques that predate both projects.
 - This repo builds a GUI workflow around that backend and adds mode-specific UX, sampling, monitoring, and local job tracking.
 
 ## License

@@ -527,6 +527,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         return dict(self._weight_noise_logs)
 
     def extra_metadata(self, args):
+        regularization_enabled = args.weight_noise_sigma > 0 or args.depth_anchor_weight > 0
         return {
             "ss_krea2_weight_noise_sigma": args.weight_noise_sigma,
             "ss_krea2_weight_noise_mode": args.weight_noise_mode,
@@ -535,6 +536,11 @@ class Krea2NetworkTrainer(NetworkTrainer):
             "ss_krea2_depth_anchor_model": args.depth_anchor_model if args.depth_anchor_weight > 0 else "",
             "ss_krea2_depth_anchor_input_size": args.depth_anchor_input_size,
             "ss_krea2_depth_anchor_gradient_weight": args.depth_anchor_gradient_weight,
+            "ss_krea2_regularization_inspiration": (
+                "https://github.com/BuffaloBuffaloBuffaloBuffalo/ai-toolkit-perceptual"
+                if regularization_enabled
+                else ""
+            ),
         }
 
     def call_dit(

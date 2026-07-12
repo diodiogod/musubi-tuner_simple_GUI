@@ -900,6 +900,18 @@ class MusubiTunerGUI:
             text="Optional tools for small datasets. Use a preset for a controlled first comparison; all existing behavior stays unchanged when Off.",
             wraplength=850,
         ).pack(anchor="w", padx=8, pady=(8, 4))
+        inspiration_label = ttk.Label(
+            self.hidden_frames['krea2_regularization'],
+            text="Inspired by BuffaloBuffaloBuffaloBuffalo's Perceptual LoRA Toolkit (independent Krea 2 adaptation).",
+            wraplength=850,
+        )
+        inspiration_label.pack(anchor="w", padx=8, pady=(0, 4))
+        ToolTip(
+            inspiration_label,
+            "Reference project: github.com/BuffaloBuffaloBuffaloBuffalo/ai-toolkit-perceptual. "
+            "It documented practical LoRA experiments with weight noise and frozen depth models. "
+            "This Krea 2 implementation was written independently for Musubi and is not endorsed by that project.",
+        )
         preset_row = ttk.Frame(self.hidden_frames['krea2_regularization']); preset_row.pack(fill="x", padx=8, pady=(0, 6))
         preset_widget = self._add_widget(
             preset_row,
