@@ -18,6 +18,15 @@ def build_commands(settings):
     add_arg(cmd, "--turbo_dit_cache", settings.get("krea2_turbo_dit_cache"))
     add_arg(cmd, "--projector_diff", settings.get("krea2_projector_diff"), is_path=True)
     add_arg(cmd, "--projector_diff_strength", settings.get("krea2_projector_diff_strength"))
+    add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
+    add_arg(cmd, "--weight_noise_mode", settings.get("krea2_weight_noise_mode"))
+    add_arg(cmd, "--weight_noise_bound_norm", settings.get("krea2_weight_noise_bound_norm"))
+    add_arg(cmd, "--depth_anchor_weight", settings.get("krea2_depth_anchor_weight"))
+    add_arg(cmd, "--depth_anchor_model", settings.get("krea2_depth_anchor_model"))
+    add_arg(cmd, "--depth_anchor_input_size", settings.get("krea2_depth_anchor_input_size"))
+    add_arg(cmd, "--depth_anchor_gradient_weight", settings.get("krea2_depth_anchor_gradient_weight"))
+    if not settings.get("krea2_depth_anchor_grad_checkpoint", True):
+        cmd.append("--no-depth_anchor_grad_checkpoint")
 
     build_network_args(cmd, settings, "networks.lora_krea2")
     build_attention_arg(cmd, settings)

@@ -894,6 +894,89 @@ class MusubiTunerGUI:
         self._add_widget(flow_frame, "discrete_flow_shift", "Discrete Flow Shift:", "Shift value for 'shift' sampling. The documentation recommends 3.0.", validate_num=True)
         self._add_widget(flow_frame, "preserve_distribution_shape", "Preserve Distribution Shape", "Prevents distortion of the timestep distribution. Recommended when training only one model (e.g., only low noise).", kind='checkbox')
 
+        self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(frame, text="Krea 2 · Generalization (Experimental)")
+        ttk.Label(
+            self.hidden_frames['krea2_regularization'],
+            text="Optional tools for small datasets. Use a preset for a controlled first comparison; all existing behavior stays unchanged when Off.",
+            wraplength=850,
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+        preset_row = ttk.Frame(self.hidden_frames['krea2_regularization']); preset_row.pack(fill="x", padx=8, pady=(0, 6))
+        preset_widget = self._add_widget(
+            preset_row,
+            "krea2_generalization_preset",
+            "Starting Preset:",
+            "Off is the exact baseline. Weight Noise Only is the safer first experiment. Balanced Experimental combines weight noise with a conservative Krea depth anchor.",
+            kind='combobox',
+            options=["Off (Baseline)", "Weight Noise Only", "Balanced Experimental"],
+        )
+        ttk.Button(preset_widget.master, text="Apply Preset", command=self._apply_krea2_generalization_preset).grid(
+            row=0, column=2, padx=(6, 0)
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_weight_noise_sigma",
+            "Weight Noise Strength:",
+            "Adds a tiny random perturbation to LoRA/LoKr weights after each optimizer update. 0 disables it. Suggested first experiment: 0.0125; useful range reported by the reference project is roughly 0.01–0.017, but Krea 2 still needs validation.",
+            kind='combobox',
+            options=["0", "0.01", "0.0125", "0.015", "0.017"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_weight_noise_mode",
+            "Noise Scaling:",
+            "Relative adapts to each adapter tensor's size and is the recommended default. Absolute applies the same raw magnitude everywhere and requires careful calibration.",
+            kind='combobox',
+            options=["relative", "absolute"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_weight_noise_bound_norm",
+            "Prevent Weight-Norm Drift",
+            "Keeps each adapter tensor at its pre-noise norm. Recommended for long runs; usually unnecessary for short comparisons.",
+            kind='checkbox',
+        )
+        ttk.Separator(self.hidden_frames['krea2_regularization']).pack(fill="x", padx=8, pady=6)
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_anchor_weight",
+            "Depth Anchor Strength:",
+            "Automatically makes a depth map for each training image, then checks whether the LoRA's predicted image has a similar 3D shape. You do not need to create depth maps yourself. This can help preserve faces, bodies, and object shapes without copying the exact colors, lighting, or background. It is slower and uses more VRAM. 0 turns it off; start with 0.01.",
+            kind='combobox',
+            options=["0", "0.005", "0.01", "0.025", "0.05"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_anchor_model",
+            "Depth Model:",
+            "The helper model that creates the automatic depth maps. Small is recommended and downloads automatically the first time you enable depth anchoring. Base may see more detail but needs more memory and has not been calibrated for Krea 2.",
+            kind='combobox',
+            options=["depth-anything/Depth-Anything-V2-Small-hf", "depth-anything/Depth-Anything-V2-Base-hf"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_anchor_input_size",
+            "Depth Resolution:",
+            "How much detail the automatic depth checker sees. 518 is the recommended starting point. Larger values may capture finer shapes but make training slower and use more VRAM.",
+            kind='combobox',
+            options=["518", "714", "980"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_anchor_gradient_weight",
+            "Edge/Shape Emphasis:",
+            "How much the trainer cares about clear shape boundaries, such as a face outline, limbs, or the edge of an object. Leave this at 0.5 unless you are deliberately comparing test runs.",
+            kind='combobox',
+            options=["0", "0.25", "0.5", "1.0"],
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_anchor_grad_checkpoint",
+            "Checkpoint Depth Model",
+            "Saves GPU memory while using the depth checker, at the cost of some extra processing time. Keep this enabled unless you have plenty of VRAM.",
+            kind='checkbox',
+            default_val=True,
+        )
+
         attention_frame = ttk.LabelFrame(frame, text="Attention Mechanism"); attention_frame.pack(fill="x", padx=10, pady=10)
         self.attention_var = tk.StringVar(value="xformers")
         self.entries['attention_mechanism'] = self.attention_var
@@ -4186,6 +4269,30 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if is_wan: self.hidden_frames['fp8_t5_frame'].pack(fill='x')
             else: self.hidden_frames['fp8_t5_frame'].pack_forget()
         except KeyError: pass
+        try:
+            if is_krea2:
+                self.hidden_frames['krea2_regularization'].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames['krea2_regularization'].pack_forget()
+        except (KeyError, tk.TclError):
+            pass
+
+    def _apply_krea2_generalization_preset(self):
+        preset = self.entries["krea2_generalization_preset"].get()
+        values = {
+            "Off (Baseline)": ("0", "0"),
+            "Weight Noise Only": ("0.0125", "0"),
+            "Balanced Experimental": ("0.0125", "0.01"),
+        }.get(preset)
+        if values is None:
+            return
+        self.entries["krea2_weight_noise_sigma"].set(values[0])
+        self.entries["krea2_weight_noise_mode"].set("relative")
+        self.entries["krea2_depth_anchor_weight"].set(values[1])
+        self.entries["krea2_depth_anchor_model"].set("depth-anything/Depth-Anything-V2-Small-hf")
+        self.entries["krea2_depth_anchor_input_size"].set("518")
+        self.entries["krea2_depth_anchor_gradient_weight"].set("0.5")
+        self.entries["krea2_depth_anchor_grad_checkpoint"].var.set(True)
 
     def get_settings(self):
         settings = {}
@@ -4251,6 +4358,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "flux2_model_version": "Klein Base 4B ★", "flux2_dit_model": "", "flux2_text_encoder": "", "fp8_text_encoder": False,
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
+            "krea2_generalization_preset": "Off (Baseline)",
+            "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
+            "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
+            "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
             "output_dir": "", "output_name": "my-lora",
             "training_comment": "",
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
@@ -4902,6 +5013,24 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 return
             if settings.get("krea2_turbo_dit") and (settings.get("blocks_to_swap") or "").strip() not in ("", "0"):
                 messagebox.showerror("Validation Error", "Krea 2 Turbo DiT sampling is not compatible with Blocks to Swap. Clear one of them.")
+                return
+            try:
+                noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
+                depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
+                depth_size = int(settings.get("krea2_depth_anchor_input_size") or 518)
+                if noise_strength < 0 or depth_strength < 0:
+                    raise ValueError("strengths cannot be negative")
+                if depth_size <= 0 or depth_size % 14:
+                    raise ValueError("depth resolution must be a positive multiple of 14")
+            except ValueError as exc:
+                messagebox.showerror("Validation Error", f"Invalid Krea 2 generalization setting: {exc}.")
+                return
+            if depth_strength > 0 and not messagebox.askokcancel(
+                "Experimental Depth Anchor",
+                "Depth anchoring is experimental for Krea 2. It downloads a frozen depth model on first use, "
+                "decodes predicted images during every training step, and can substantially increase VRAM use and training time.\n\n"
+                "Run a short comparison first and keep a baseline with the same seed and dataset. Continue?",
+            ):
                 return
         # Warn if sample frequency is set but no prompts were added
         wants_samples = (settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first"))

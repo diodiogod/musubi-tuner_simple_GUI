@@ -343,3 +343,34 @@ python src/musubi_tuner/krea2_generate_image.py \
   - `--text_encoder_cpu`はエンコーダをGPUに移動せずCPUでエンコードします。常駐DiTと並んでエンコーダがGPUに載りきらない場合に使用します。低速ですがエンコードをGPUの外に出せます。
 
 </details>
+## Experimental LoRA generalization controls in this GUI fork
+
+This fork adds two optional Krea 2 LoRA/LoKr regularizers. Both default to off,
+so existing commands and training behavior are unchanged.
+
+### Weight noise
+
+Weight noise adds a small Gaussian perturbation to trainable adapter weights
+after each optimizer update. It is intended to reduce brittle memorization on
+small datasets. A sensible first comparison is relative mode with strength
+`0.0125`; this value is borrowed from experiments in ai-toolkit-perceptual and
+is **not yet a validated Krea 2 optimum**. Use `--weight_noise_bound_norm` for
+long runs if the logged adapter weight norm continually rises.
+
+### Depth anchor
+
+The depth anchor reconstructs the model's predicted clean latent, decodes it
+through the frozen Qwen-Image VAE, and compares Depth Anything V2 output with a
+cached target-depth map. This encourages structural similarity without directly
+requiring identical colors or textures.
+
+Start with Depth Anything V2 Small, input size `518`, and a conservative weight
+of `0.01`. It performs an additional differentiable VAE decode and depth-model
+forward during every active step, so expect materially slower training and
+higher VRAM use. Run a short baseline and anchored job with the same seed before
+committing to a full run. If images become overly smooth, rigid, or insensitive
+to appearance prompts, reduce the anchor weight.
+
+The target-depth cache is held in CPU RAM for the current run and is bounded to
+256 samples. The depth model downloads from Hugging Face on first use unless it
+is already cached.

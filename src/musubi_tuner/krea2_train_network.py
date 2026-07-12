@@ -54,6 +54,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
         self._raw_stash = None
         self._sample_projector_backup = None
         self._sample_projector_diff = None
+        self._depth_anchor = None
+        self._weight_noise = None
+        self._weight_noise_logs = {}
 
     # region model specific
 
@@ -75,6 +78,12 @@ class Krea2NetworkTrainer(NetworkTrainer):
         # whole DiT (incl. norms) to fp8, which breaks. Require --fp8_scaled with --fp8_base.
         if args.fp8_base and not args.fp8_scaled:
             raise ValueError("Krea 2 fp8 supports only scaled fp8: pass --fp8_scaled together with --fp8_base.")
+        if args.weight_noise_sigma < 0:
+            raise ValueError("--weight_noise_sigma must be non-negative.")
+        if args.depth_anchor_weight < 0:
+            raise ValueError("--depth_anchor_weight must be non-negative.")
+        if args.depth_anchor_input_size <= 0 or args.depth_anchor_input_size % 14:
+            raise ValueError("--depth_anchor_input_size must be a positive multiple of 14.")
         # RAW-train / Turbo-sample: the recommended K2 LoRA workflow is to train on the RAW
         # checkpoint and run inference on the distilled Turbo. --turbo_dit makes sample
         # generation during training swap the base weights to Turbo (LoRA, hooked on the live
@@ -447,6 +456,87 @@ class Krea2NetworkTrainer(NetworkTrainer):
         # K2 latents are already normalized by the Qwen-Image VAE caching ((raw-mean)/std).
         return latents
 
+    def process_batch(
+        self, args, accelerator, transformer, network, batch, latents, noise, noise_scheduler,
+        dit_dtype, network_dtype, vae, global_step,
+    ):
+        if args.depth_anchor_weight <= 0:
+            return super().process_batch(
+                args, accelerator, transformer, network, batch, latents, noise, noise_scheduler,
+                dit_dtype, network_dtype, vae, global_step,
+            )
+
+        noisy_input, timesteps = self.get_noisy_model_input_and_timesteps(
+            args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+        )
+        output = self.call_dit(
+            args, accelerator, transformer, latents, batch, noise, noisy_input, timesteps, network_dtype
+        )
+        diffusion_loss, metrics = self.compute_loss(
+            args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step
+        )
+
+        from musubi_tuner.perceptual.depth_anchor import reconstruct_clean_latents
+
+        predicted_clean = reconstruct_clean_latents(noisy_input, output.pred, timesteps)
+        vae.to(accelerator.device)
+        vae.requires_grad_(False)
+        predicted_pixels = vae.decode_to_pixels(predicted_clean.to(vae.dtype))
+
+        if self._depth_anchor is None:
+            from musubi_tuner.perceptual.depth_anchor import DepthAnchor
+
+            logger.info("Loading frozen depth perceptor: %s", args.depth_anchor_model)
+            self._depth_anchor = DepthAnchor(
+                args.depth_anchor_model,
+                accelerator.device,
+                input_size=args.depth_anchor_input_size,
+                grad_checkpoint=args.depth_anchor_grad_checkpoint,
+            )
+        target_depths = []
+        for sample in latents:
+            key = self._depth_anchor.cache_key(sample)
+            if key in self._depth_anchor.target_cache:
+                target_depths.append(self._depth_anchor.target_depth(None, key))
+            else:
+                with torch.no_grad():
+                    target_pixels = vae.decode_to_pixels(sample.unsqueeze(0).to(accelerator.device, dtype=vae.dtype))
+                target_depths.append(self._depth_anchor.target_depth(target_pixels, key))
+        target_depth = torch.cat(target_depths, dim=0)
+        depth_loss = self._depth_anchor.loss(
+            predicted_pixels, grad_weight=args.depth_anchor_gradient_weight, target_depth=target_depth
+        )
+        total = diffusion_loss + args.depth_anchor_weight * depth_loss
+        metrics.update({"loss/diffusion": diffusion_loss.detach(), "loss/depth_anchor": depth_loss.detach()})
+        return total, metrics
+
+    def on_post_optimizer_step(self, args, accelerator, network, transformer, sync_gradients, global_step):
+        if not sync_gradients or args.weight_noise_sigma <= 0:
+            return
+        if self._weight_noise is None:
+            from musubi_tuner.training.weight_noise import AdapterWeightNoise, WeightNoiseConfig
+
+            self._weight_noise = AdapterWeightNoise(
+                WeightNoiseConfig(args.weight_noise_sigma, args.weight_noise_mode, args.weight_noise_bound_norm)
+            )
+        self._weight_noise_logs = self._weight_noise.apply(
+            accelerator.unwrap_model(network).get_trainable_params()
+        )
+
+    def extra_step_logs(self, args, logs):
+        return dict(self._weight_noise_logs)
+
+    def extra_metadata(self, args):
+        return {
+            "ss_krea2_weight_noise_sigma": args.weight_noise_sigma,
+            "ss_krea2_weight_noise_mode": args.weight_noise_mode,
+            "ss_krea2_weight_noise_bound_norm": args.weight_noise_bound_norm,
+            "ss_krea2_depth_anchor_weight": args.depth_anchor_weight,
+            "ss_krea2_depth_anchor_model": args.depth_anchor_model if args.depth_anchor_weight > 0 else "",
+            "ss_krea2_depth_anchor_input_size": args.depth_anchor_input_size,
+            "ss_krea2_depth_anchor_gradient_weight": args.depth_anchor_gradient_weight,
+        }
+
     def call_dit(
         self,
         args: argparse.Namespace,
@@ -521,6 +611,30 @@ class Krea2NetworkTrainer(NetworkTrainer):
 
 
 def krea2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    weight_noise = parser.add_argument_group("Krea 2 adapter regularization")
+    weight_noise.add_argument(
+        "--weight_noise_sigma",
+        type=float,
+        default=0.0,
+        help="Gaussian noise applied to trainable LoRA/LoKr weights after each optimizer update. 0 disables it.",
+    )
+    weight_noise.add_argument(
+        "--weight_noise_mode",
+        choices=["relative", "absolute"],
+        default="relative",
+        help="relative scales noise by each tensor's RMS; absolute uses sigma directly.",
+    )
+    weight_noise.add_argument(
+        "--weight_noise_bound_norm",
+        action="store_true",
+        help="Renormalize each adapter tensor after noise injection to prevent long-run norm drift.",
+    )
+    depth_anchor = parser.add_argument_group("Krea 2 perceptual depth anchor (experimental)")
+    depth_anchor.add_argument("--depth_anchor_weight", type=float, default=0.0, help="Depth consistency loss weight; 0 disables it.")
+    depth_anchor.add_argument("--depth_anchor_model", default="depth-anything/Depth-Anything-V2-Small-hf")
+    depth_anchor.add_argument("--depth_anchor_input_size", type=int, default=518)
+    depth_anchor.add_argument("--depth_anchor_gradient_weight", type=float, default=0.5)
+    depth_anchor.add_argument("--depth_anchor_grad_checkpoint", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--fp8_scaled",
         action="store_true",

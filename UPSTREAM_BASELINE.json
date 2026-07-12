@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/kohya-ss/musubi-tuner.git",
+  "remote": "upstream",
+  "tag": "v0.3.4",
+  "commit": "30c658c",
+  "audited_on": "2026-07-11",
+  "vendored_path": "src/musubi_tuner",
+  "protected_downstream_paths": [
+    "src/musubi_tuner/krea2/krea2_encoder.py",
+    "src/musubi_tuner/krea2/krea2_utils.py",
+    "src/musubi_tuner/krea2_generate_image.py",
+    "src/musubi_tuner/krea2_train_network.py",
+    "src/musubi_tuner/perceptual",
+    "src/musubi_tuner/training/weight_noise.py"
+  ]
+}

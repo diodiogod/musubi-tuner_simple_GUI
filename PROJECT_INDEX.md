@@ -38,7 +38,7 @@
 
 - Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
 - Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection
-- Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults
+- Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, and experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring)
 
 ## Documentation Files
 
@@ -74,6 +74,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 **`musubi_tuner_gui.py`** - Main Tkinter application; the center of GUI behavior
 **`dataset_config_builder.py`** - Visual/raw dataset TOML builder with validation and safe round-tripping
 **`prompt_library.py`** - Global prompt-library persistence, searchable gallery, job migration, and test thumbnails
+**`UPSTREAM_BASELINE.json`** - Machine-readable upstream Musubi baseline and protected downstream paths
 **`README.md`** - Main project docs
 **`LAUNCH_GUI.bat`** - Windows launcher
 **`pyproject.toml`** - Package metadata and Python dependencies
@@ -93,6 +94,8 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - `wan.py` - Wan command construction
 - `flux2.py` - Flux.2 command construction
 - `krea2.py` - Krea 2 command construction
+
+Krea 2 also forwards optional weight-noise and depth-anchor controls. Both are explicit no-ops at their default strength of `0`.
 
 **Backend responsibility split:**
 
@@ -145,6 +148,14 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `training/accelerator_setup.py` - Accelerate setup helpers
 - `training/sampling_prompts.py` - prompt-driven sample support
 - `training/timesteps.py` - timestep logic
+- `training/weight_noise.py` - isolated adapter-only Gaussian weight-noise implementation used by the Krea trainer hook
+
+### Experimental Perceptual Training
+
+- `perceptual/depth_anchor.py` - differentiable Depth Anything V2 anchor, rectified-flow clean-latent reconstruction, and bounded target-depth cache
+- Krea integration stays in `krea2_train_network.py` through existing `process_batch`, `on_post_optimizer_step`, `extra_step_logs`, and `extra_metadata` overrides; the shared upstream trainer remains unchanged
+- Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps
+- Saved LoRAs record effective settings in `ss_krea2_*` metadata
 
 ### Shared Utilities
 
@@ -223,6 +234,18 @@ For this fork, `musubi_tuner_gui.py` is the practical entrypoint users work with
 - `caption_images_by_qwen_vl.py`
 - sample generation wrappers for each model family
 
+### Upstream Sync Tracking
+
+- `UPSTREAM_BASELINE.json` records the audited Musubi release/commit and downstream-protected paths
+- `tools/audit_upstream.py` provides a read-only report of changes since that baseline and flags overlap with protected Krea/perceptual files
+- `docs/downstream_patches.md` documents the selective-sync procedure and maintained integration seams; upstream must not be merged wholesale because this fork imports squashed snapshots
+
+### Focused Regression Tests
+
+- `tests/test_weight_noise.py` - noise behavior, frozen-parameter protection, and norm bounding
+- `tests/test_depth_anchor.py` - clean-latent reconstruction, gradient direction, and target-depth caching
+- `tests/test_krea2_backend_regularization.py` - GUI/backend command forwarding and disabled defaults
+
 ## Typical GUI Workflow
 
 1. User selects a training mode in `musubi_tuner_gui.py`
@@ -239,3 +262,4 @@ This fork is focused on:
 - making musubi-tuner easier to use from a single Windows desktop app
 - supporting several model families from one interface
 - improving staged training, sample management, continuation workflows, monitoring, and local productivity features without drifting too far from upstream backend behavior
+- experimentally improving Krea 2 LoRA generalization on small datasets while keeping the implementation isolated and future upstream syncs auditable
