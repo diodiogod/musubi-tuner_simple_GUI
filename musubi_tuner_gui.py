@@ -2156,7 +2156,11 @@ class MusubiTunerGUI:
             report = config.get("preflight_report") or {}
             if not report:
                 messagebox.showinfo("Reference review", "Run Face Check first.", parent=dialog); return
-            review = tk.Toplevel(dialog); review.title("Review Face References"); review.transient(dialog); review.minsize(900, 560)
+            review = tk.Toplevel(dialog)
+            review.title("Review Face References")
+            review.transient(dialog)
+            review.minsize(900, 560)
+            review.configure(background=self.colors["page"])
             ttk.Label(review, text="Detected identity outliers and unusable face references", style="PageTitle.TLabel").pack(anchor="w", padx=12, pady=(12, 2))
             ttk.Label(
                 review,
