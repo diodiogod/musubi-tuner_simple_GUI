@@ -15,6 +15,8 @@ from safetensors.torch import load_file
 from musubi_tuner.face_refinement import REFERENCE_IMPLEMENTATION, REFERENCE_PAPER
 from musubi_tuner.face_refinement.draft import generate_differentiable, reward_loss, save_preview
 from musubi_tuner.face_refinement.face_reward import FaceSimilarityReward
+from musubi_tuner.face_refinement.pose import parse_pose_prompt
+from musubi_tuner.face_refinement.pose_plan import PoseProgressTracker
 from musubi_tuner.krea2 import krea2_sampling, krea2_utils
 from musubi_tuner.networks import lora_krea2
 from musubi_tuner.modules.custom_offloading_utils import BlockSwapConfig
@@ -69,6 +71,9 @@ def save_network(network, output: Path, args, step: int) -> None:
         "ss_face_refinement_resolution": str(args.resolution),
         "ss_face_refinement_denoise_steps": str(args.denoise_steps),
         "ss_face_refinement_draft_k": str(args.draft_k),
+        "ss_face_refinement_pose_aware": str(bool(args.pose_aware)),
+        "ss_face_refinement_pose_weight": str(args.pose_reward_weight if args.pose_aware else 0.0),
+        "ss_face_refinement_pose_plan": getattr(args, "pose_plan_metadata", ""),
         "ss_face_refinement_reference": REFERENCE_IMPLEMENTATION,
         "ss_face_refinement_paper": REFERENCE_PAPER,
     }
@@ -94,9 +99,17 @@ def train(args) -> None:
     torch.cuda.set_device(gpu_index)
     device = torch.device("cuda", gpu_index)
     logger.info("Using GPU %d: %s", gpu_index, torch.cuda.get_device_name(gpu_index))
+    prompt_payload = json.loads(Path(args.prompts_json).read_text(encoding="utf-8"))
     prompts = load_prompts(args.prompts_json)
+    pose_plan = prompt_payload.get("pose_plan") if isinstance(prompt_payload, dict) else None
+    prompt_records = prompt_payload.get("prompt_records", []) if isinstance(prompt_payload, dict) else []
+    pose_tracker = PoseProgressTracker(pose_plan) if args.pose_aware and pose_plan and pose_plan.get("enabled") else None
+    if pose_tracker:
+        metadata_plan = {"preset": pose_plan.get("preset"), "overall_anchor_weight": pose_plan.get("overall_anchor_weight"), "buckets": {pose: {key: value for key, value in cfg.items() if key != "prompts"} for pose, cfg in pose_plan.get("buckets", {}).items()}}
+        args.pose_plan_metadata = json.dumps(metadata_plan, separators=(",", ":"))
     logger.info("Caching %d face-refinement prompt(s)", len(prompts))
-    embeddings = cache_prompt_embeddings(args.text_encoder, prompts, device)
+    embedding_prompts = [parse_pose_prompt(prompt)[1] for prompt in prompts] if args.pose_aware else prompts
+    embeddings = cache_prompt_embeddings(args.text_encoder, embedding_prompts, device)
 
     vae = qwen_image_utils.load_vae(args.vae, input_channels=3, device="cpu", disable_mmap=True).eval().requires_grad_(False)
     loading_device = "cpu" if args.blocks_to_swap > 0 else device
@@ -125,26 +138,42 @@ def train(args) -> None:
 
     vae.to(device)
     reference_images = args.reference_dir
+    pose_buckets = {}
     if args.reference_manifest:
         manifest = json.loads(Path(args.reference_manifest).read_text(encoding="utf-8"))
         reference_images = manifest.get("reference_images", manifest) if isinstance(manifest, dict) else manifest
+        if reference_images and isinstance(reference_images[0], dict):
+            pose_buckets = {str(item["path"]): str(item.get("pose", "uncertain")) for item in reference_images}
+            reference_images = [str(item["path"]) for item in reference_images if item.get("enabled", True)]
         if not reference_images:
             raise ValueError("The reference manifest contains no enabled face images")
+    pose_weight = args.pose_reward_weight if args.pose_aware else 0.0
+    pose_targets = {}
+    if pose_tracker:
+        pose_weight = min(pose_weight, max(0.0, 1.0 - float(pose_plan.get("overall_anchor_weight", 0.80))))
+        pose_targets = {pose: float(cfg.get("target", args.target_similarity)) for pose, cfg in pose_plan.get("buckets", {}).items()}
     reward = FaceSimilarityReward(
         reference_images=reference_images,
         model_dir=args.face_model_dir,
         target_similarity=args.target_similarity,
         reference_entropy_weight=args.anti_copy_weight,
         expression_diversity_weight=0.0,
+        pose_buckets=pose_buckets if args.pose_aware else None,
+        pose_reward_weight=pose_weight,
+        pose_min_references=args.pose_min_references,
+        pose_targets=pose_targets,
         providers=["CPUExecutionProvider"],
         device=device,
     )
     output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
     consecutive_target = 0
     detected_steps = 0
     randomizer = random.Random(args.seed)
+    prompt_weights = [float(item.get("weight", 1.0)) for item in prompt_records] if len(prompt_records) == len(prompts) else None
+    metrics_path = output.parent / "face_refinement_pose_metrics.jsonl"
     for step in range(1, args.train_steps + 1):
-        prompt_index = randomizer.randrange(len(prompts))
+        prompt_index = randomizer.choices(range(len(prompts)), weights=prompt_weights, k=1)[0] if prompt_weights else randomizer.randrange(len(prompts))
         prompt = prompts[prompt_index]
         text, text_mask, negative, negative_mask = embeddings[prompt_index]
         optimizer.zero_grad(set_to_none=True)
@@ -167,6 +196,20 @@ def train(args) -> None:
             f"face_similarity={similarity:.4f} face_detected={int(metrics.get('face_detected', 0))} "
             f"grad_norm={float(grad_norm):.4f}", flush=True,
         )
+        if pose_tracker:
+            pose_bucket = str(metrics.get("pose_bucket") or parse_pose_prompt(prompt)[0] or "")
+            pose_similarity = float(metrics.get("pose_similarity", 0.0))
+            if pose_bucket:
+                pose_tracker.update(pose_bucket, pose_similarity)
+                status = pose_tracker.pose_status(pose_bucket)
+                record = {"step": step, "pose": pose_bucket, "similarity": pose_similarity, **status}
+                with metrics_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record) + "\n")
+                print(
+                    f"pose_metric={pose_bucket} similarity={pose_similarity:.4f} "
+                    f"evaluations={status['evaluations']} target={pose_plan['buckets'][pose_bucket]['target']}",
+                    flush=True,
+                )
         if args.preview_every > 0 and (step == 1 or step % args.preview_every == 0):
             preview = save_preview(pixels, output.parent, step, prompt)
             print(f"face_preview={preview}", flush=True)
@@ -174,10 +217,21 @@ def train(args) -> None:
             save_network(network, output.with_name(f"{output.stem}-{step:06d}{output.suffix}"), args, step)
         if step >= args.min_steps and detected_steps / step < args.min_detection_rate:
             raise RuntimeError("Face detection rate fell below the configured safety threshold")
-        if consecutive_target >= args.early_stop_patience:
+        pose_stop_reason = pose_tracker.stop_reason() if pose_tracker else None
+        if pose_stop_reason:
+            print(f"early_stop={pose_stop_reason}", flush=True)
+            summary = {pose: pose_tracker.pose_status(pose) for pose, cfg in pose_plan["buckets"].items() if cfg.get("enabled")}
+            (output.parent / "face_refinement_pose_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            save_network(network, output, args, step)
+            return
+        if not pose_tracker and consecutive_target >= args.early_stop_patience:
             print(f"early_stop=target_similarity_reached patience={consecutive_target}", flush=True)
             save_network(network, output, args, step)
             return
+    if pose_tracker:
+        summary = {pose: pose_tracker.pose_status(pose) for pose, cfg in pose_plan["buckets"].items() if cfg.get("enabled")}
+        (output.parent / "face_refinement_pose_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print("pose_stop=max_steps_reached", flush=True)
     save_network(network, output, args, args.train_steps)
 
 
@@ -186,6 +240,9 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("dit", "vae", "text_encoder", "network_weights", "reference_dir", "face_model_dir", "prompts_json", "output"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--reference_manifest")
+    parser.add_argument("--pose_aware", action="store_true")
+    parser.add_argument("--pose_reward_weight", type=float, default=0.20)
+    parser.add_argument("--pose_min_references", type=int, default=2)
     parser.add_argument("--train_steps", type=int, default=30)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--denoise_steps", type=int, default=12)

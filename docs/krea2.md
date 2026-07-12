@@ -398,13 +398,64 @@ DRaFT stage cannot continue Musubi's previous optimizer state. Final-stage refin
 the recommended order.
 
 Use the dedicated settings window to select the starting-LoRA mode, trigger word, reference images, manage prompts, download/select
-AntelopeV2, and run the mandatory Face Check. Defaults are 30 updates, 512px, 12 denoising steps,
+AntelopeV2, and run the mandatory **Analyze Faces & Poses** check. This is read-only and can be rerun whenever the reference folder changes. Defaults are 30 updates, 512px, 12 denoising steps,
 one differentiable final step, Q/K/V/O-only adapter updates, reward saturation, periodic previews,
 minimum detection-rate enforcement, and similarity-based early stopping.
 After the check, **Review Results…** lists detected faces from lowest to highest similarity and
 separates them from skipped images where no complete face was detected. You can preview, open, or
 exclude a suspicious detection; excluded files remain untouched on disk and are omitted through a
 run-local reference manifest.
+
+### Optional pose-aware identity matching
+
+Enable **Use pose-aware identity matching** only after reviewing the automatically estimated
+pose buckets. The existing five AntelopeV2 landmarks estimate broad yaw, pitch, and roll
+categories; no additional pose model or model weights are downloaded. This is deliberately an
+assisted estimate rather than authoritative 3D geometry. Low-confidence faces go to `uncertain`,
+and every detected face can be reassigned manually. Left/right labels follow the detected
+image-space orientation; mirrored selfies and ambiguous profiles should be corrected in review.
+
+One mixed folder is enough. Buckets are virtual and recorded only in the run-local manifest:
+`frontal`, `three_quarter_left/right`, `profile_left/right`, `looking_up/down`, and `uncertain`.
+No source file is moved, renamed, or changed. Preflight warns about uncertain, sparse, and heavily
+imbalanced buckets. A bucket below the configured minimum (two references by default) has no
+separate prototype and falls back to overall identity.
+
+Prefix prompts with an explicit tag such as `[profile_left]`, `[frontal]`, or `[looking_up]`.
+`[auto]` chooses the bucket detected in the generated image. Untagged prompts retain the ordinary
+overall-identity reward, and tags are removed before text encoding. The matching-pose component is
+bounded to at most 0.35 and defaults to 0.20, leaving overall identity as the primary signal. Pose
+matching still rewards identity embeddings, not literal nose or jaw pixel geometry, and should
+complement rather than replace supervised profile images in the LoRA dataset.
+
+### Pose Training Plan
+
+Open **Configure Pose Training Plan…** for a goal-driven workflow. The presets are **Balanced
+Identity**, **Improve Side Profiles**, **Improve Three-Quarter Views**, and **Custom**. Presets only
+initialize an editable plan; they do not hide the final values. Each pose row controls whether it
+trains, its normalized prompt share, target similarity, consecutive target patience, plateau
+patience, and minimum evaluations. Buckets below the reference minimum are disabled before launch,
+including when manual exclusions made a previously valid bucket sparse.
+
+The seven prompt tabs add the correct internal pose tag automatically. **Create Pose Prompt Ideas…**
+uses deterministic local templates with optional natural, studio, cinematic, and expression
+variation. Suggestions are ordinary editable text and require no captioning model or network
+service. **Import Tagged Prompts…** accepts TXT or JSON and routes recognized tags to their tabs;
+untagged lines are not guessed. This is the optional caption-import path—image files are never sent
+to an external service by the GUI.
+
+When a saved Pose Training Plan is active, the main Face Refinement prompt box becomes read-only
+and is preserved but ignored for that run. Disabling pose-aware matching immediately restores the
+main prompt box. This makes the active prompt source visible and prevents two competing lists from
+appearing to run together.
+
+During training, prompt selection follows the normalized shares. Each successful pose evaluation
+is written to `face_refinement_pose_metrics.jsonl` and shown in Monitor with its current target.
+Training stops when every enabled pose has met its target for its configured patience, when the
+remaining poses have plateaued after the minimum evaluation count, or at maximum steps. A summary
+is saved to `face_refinement_pose_summary.json`, and the plan (without prompt text) is embedded in
+LoRA metadata. The overall identity anchor defaults to `0.80` and cannot be set below `0.65`, so a
+profile-focused continuation cannot silently replace the general identity objective.
 
 Completed Krea jobs can be prepared directly from **Jobs → right-click → Refine Face Identity…**.
 This restores the saved Krea model paths, locates and validates the job's complete LoRA (including

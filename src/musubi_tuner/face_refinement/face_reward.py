@@ -26,6 +26,8 @@ import onnxruntime as ort
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from musubi_tuner.face_refinement.pose import estimate_pose, parse_pose_prompt
 from insightface.model_zoo.scrfd import SCRFD
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".avif"}
@@ -315,6 +317,10 @@ class FaceSimilarityReward(nn.Module):
         expression_diversity_margin: float = 0.15,
         duplicate_identity_weight: float = 0.25,
         duplicate_identity_threshold: float = 0.35,
+        pose_buckets: dict[str, str] | None = None,
+        pose_reward_weight: float = 0.0,
+        pose_min_references: int = 2,
+        pose_targets: dict[str, float] | None = None,
         device: str | torch.device | None = None,
     ):
         super().__init__()
@@ -341,6 +347,12 @@ class FaceSimilarityReward(nn.Module):
         self.reference_eot_views = int(reference_eot_views)
         self.expression_diversity_weight = float(expression_diversity_weight)
         self.expression_diversity_margin = float(expression_diversity_margin)
+        self.pose_reward_weight = float(pose_reward_weight)
+        self.pose_min_references = int(pose_min_references)
+        self.pose_bucket_assignments = pose_buckets or {}
+        self.pose_targets = pose_targets or {}
+        if not 0.0 <= self.pose_reward_weight <= 0.35:
+            raise ValueError("pose_reward_weight must be between 0 and 0.35")
         self.duplicate_identity_weight = float(duplicate_identity_weight)
         self.duplicate_identity_threshold = float(duplicate_identity_threshold)
         self.device = torch.device(
@@ -397,6 +409,7 @@ class FaceSimilarityReward(nn.Module):
             ctx_id, input_size=self.det_size, det_thresh=self.det_thresh
         )
         self.valid_reference_images: list[str] = []
+        self.valid_reference_faces: list[dict] = []
         self.skipped_reference_images: list[tuple[str, int]] = []
         reference_crops = self._reference_crops(_reference_paths(reference_images))
         if not reference_crops:
@@ -411,6 +424,17 @@ class FaceSimilarityReward(nn.Module):
         self.register_buffer("reference_embeddings", embeddings)
         prototype = F.normalize(embeddings.float().mean(dim=0, keepdim=True), dim=-1)
         self.register_buffer("reference_prototype", prototype)
+        self.pose_prototypes: dict[str, torch.Tensor] = {}
+        grouped_indices: dict[str, list[int]] = {}
+        for index, path in enumerate(self.valid_reference_images):
+            bucket = self.pose_bucket_assignments.get(path)
+            if bucket and bucket != "uncertain":
+                grouped_indices.setdefault(bucket, []).append(index)
+        for bucket, indices in grouped_indices.items():
+            if len(indices) >= self.pose_min_references:
+                pose_prototype = F.normalize(embeddings[indices].float().mean(dim=0, keepdim=True), dim=-1)
+                self.register_buffer(f"pose_prototype_{bucket}", pose_prototype)
+                self.pose_prototypes[bucket] = pose_prototype
 
     @torch.no_grad()
     def detect_faces(
@@ -603,6 +627,7 @@ class FaceSimilarityReward(nn.Module):
                 image = bgr_to_rgb_tensor(image_bgr).to(self.device)
                 crops.extend(self.crop_tensor(image, face) for face in faces)
                 self.valid_reference_images.append(str(path))
+                self.valid_reference_faces.append(faces[0])
         return crops
 
     def _encode_reference_crops(self, crops: list[torch.Tensor]) -> torch.Tensor:
@@ -643,6 +668,12 @@ class FaceSimilarityReward(nn.Module):
             ).sum(dim=-1)
             reward = reward - self.reference_entropy_weight * kl_uniform
         return reward
+
+    def _prototype_reward(self, embeddings: torch.Tensor, prototype: torch.Tensor, target: float | None = None) -> torch.Tensor:
+        scores = (F.normalize(embeddings.float(), dim=-1) @ prototype.to(embeddings).t()).squeeze(-1)
+        return -self.saturation_temperature * F.softplus(
+            ((self.target_similarity if target is None else target) - scores) / self.saturation_temperature
+        )
 
     def reference_assignment_stats(
         self, embeddings: torch.Tensor
@@ -760,7 +791,8 @@ class FaceSimilarityReward(nn.Module):
         )
 
     def forward(self, image: torch.Tensor, prompt: str | None = None, **kwargs):
-        del prompt, kwargs
+        del kwargs
+        requested_pose = parse_pose_prompt(prompt or "")[0] if self.pose_reward_weight > 0.0 else None
         if image.dim() == 3:
             image = image.unsqueeze(0)
         if image.dim() != 4 or image.shape[1] != 3:
@@ -771,6 +803,8 @@ class FaceSimilarityReward(nn.Module):
         rewards = []
         detected_count = 0
         similarity_values = []
+        pose_similarity_values = []
+        used_pose_values = []
         for idx, img in enumerate(image):
             faces = self.detect_faces(tensor_to_bgr(img))
             if not faces:
@@ -794,6 +828,18 @@ class FaceSimilarityReward(nn.Module):
             primary_embedding = self.encode_reward_faces(crops[0])
             similarity_values.append(self.identity_scores(primary_embedding).detach().mean())
             value = self.identity_reward(primary_embedding).squeeze(0)
+            used_pose = None
+            if self.pose_reward_weight > 0.0:
+                used_pose = requested_pose
+                if requested_pose == "auto":
+                    pose = estimate_pose(faces[0].get("kps"), faces[0].get("bbox"), faces[0].get("score", 0.0))
+                    used_pose = pose["bucket"] if pose["confidence"] >= 0.45 else None
+                prototype = self.pose_prototypes.get(used_pose or "")
+                if prototype is not None:
+                    pose_score = (F.normalize(primary_embedding.float(), dim=-1) @ prototype.to(primary_embedding).t()).squeeze().detach()
+                    pose_similarity_values.append(pose_score); used_pose_values.append(used_pose)
+                    pose_value = self._prototype_reward(primary_embedding, prototype, self.pose_targets.get(used_pose)).squeeze(0)
+                    value = (1.0 - self.pose_reward_weight) * value + self.pose_reward_weight * pose_value
             if len(crops) > 1 and self.duplicate_identity_weight > 0.0:
                 secondary_embedding = self.encode_faces(crops[1])
                 secondary_score = self.identity_scores(secondary_embedding).squeeze(0)
@@ -806,5 +852,7 @@ class FaceSimilarityReward(nn.Module):
             "face_detected": float(detected_count > 0),
             "face_similarity": float(torch.stack(similarity_values).mean().item()) if similarity_values else 0.0,
             "reward": float(result.detach().mean().item()),
+            "pose_similarity": float(torch.stack(pose_similarity_values).mean().item()) if pose_similarity_values else 0.0,
+            "pose_bucket": used_pose_values[0] if used_pose_values else "",
         }
         return result

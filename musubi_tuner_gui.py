@@ -2039,6 +2039,7 @@ class MusubiTunerGUI:
     @staticmethod
     def _default_face_refinement_config():
         from musubi_tuner.face_refinement.face_models import default_model_dir
+        from musubi_tuner.face_refinement.pose_plan import default_pose_plan
 
         return {
             "input_mode": "previous_stage", "input_lora": "", "trigger_word": "", "excluded_reference_images": [],
@@ -2059,6 +2060,8 @@ class MusubiTunerGUI:
             "min_detection_rate": 0.25, "anti_copy_weight": 0.02,
             "preview_every": 5, "save_every": 10, "qkvo_only": True,
             "checkpoint_vae": True, "license_acknowledged": False,
+            "pose_aware": False, "pose_reward_weight": 0.20, "pose_min_references": 2,
+            "pose_plan": default_pose_plan(),
             "blocks_to_swap": 10,
             "gpu_id": "auto",
         }
@@ -2107,7 +2110,7 @@ class MusubiTunerGUI:
         identity = ttk.LabelFrame(host, text="2 · Reference identity"); identity.pack(fill="x", pady=6)
         reference_var = tk.StringVar(value=config["reference_dir"])
         model_var = tk.StringVar(value=config["face_model_dir"])
-        status_var = tk.StringVar(value="Run Face Check before adding this stage.")
+        status_var = tk.StringVar(value="Analyze Faces & Poses before adding this stage.")
         def path_row(parent, label, variable, directory=True):
             row = ttk.Frame(parent); row.pack(fill="x", padx=8, pady=5)
             ttk.Label(row, text=label, width=22).pack(side="left")
@@ -2139,7 +2142,7 @@ class MusubiTunerGUI:
             if not messagebox.askokcancel("Download AntelopeV2", "Download approximately 220 MB of third-party face-analysis model files from Hugging Face?", parent=dialog): return
             status_var.set("Downloading face models…")
             from musubi_tuner.face_refinement.face_models import ensure_models
-            run_background(lambda: ensure_models(model_var.get()), lambda _r: status_var.set("Face models are ready. Run Face Check."))
+            run_background(lambda: ensure_models(model_var.get()), lambda _r: status_var.set("Face models are ready. Click Analyze Faces & Poses."))
         def face_check():
             if not self._check_face_refinement_dependencies(parent=dialog):
                 return
@@ -2155,7 +2158,7 @@ class MusubiTunerGUI:
         def review_references():
             report = config.get("preflight_report") or {}
             if not report:
-                messagebox.showinfo("Reference review", "Run Face Check first.", parent=dialog); return
+                messagebox.showinfo("Reference review", "Click Analyze Faces & Poses first.", parent=dialog); return
             review = tk.Toplevel(dialog)
             review.title("Review Face References")
             review.transient(dialog)
@@ -2171,8 +2174,8 @@ class MusubiTunerGUI:
             table_host = ttk.Frame(split)
             preview_host = tk.Frame(split, bg=self.colors["page"], bd=0, highlightthickness=0)
             split.add(table_host, weight=4); split.add(preview_host, weight=2)
-            tree = ttk.Treeview(table_host, columns=("use", "kind", "score", "file"), show="headings", selectmode="browse")
-            for key, label, width in (("use", "Use", 55), ("kind", "Result", 105), ("score", "Similarity", 85), ("file", "File", 430)):
+            tree = ttk.Treeview(table_host, columns=("use", "kind", "score", "pose", "angles", "confidence", "file"), show="headings", selectmode="browse")
+            for key, label, width in (("use", "Use", 48), ("kind", "Result", 90), ("score", "Identity", 70), ("pose", "Pose bucket", 135), ("angles", "Yaw / Pitch", 95), ("confidence", "Confidence", 75), ("file", "File", 260)):
                 tree.heading(key, text=label); tree.column(key, width=width, stretch=key == "file")
             scroll = ttk.Scrollbar(table_host, orient="vertical", command=tree.yview); tree.configure(yscrollcommand=scroll.set)
             tree.pack(side="left", fill="both", expand=True); scroll.pack(side="right", fill="y")
@@ -2180,11 +2183,11 @@ class MusubiTunerGUI:
             records = {}
             for index, item in enumerate(report.get("scored_images", [])):
                 path = item["path"]; flagged = bool(item.get("outlier")); use = path not in excluded
-                iid = f"face-{index}"; records[iid] = {"path": path, "scored": True}
-                tree.insert("", "end", iid=iid, values=("Yes" if use else "No", "Review" if flagged else "Detected", f"{item['similarity']:.3f}", Path(path).name), tags=("outlier",) if flagged else ())
+                iid = f"face-{index}"; records[iid] = {"path": path, "scored": True, "item": item}
+                tree.insert("", "end", iid=iid, values=("Yes" if use else "No", "Review" if flagged else "Detected", f"{item['similarity']:.3f}", item.get("bucket", "uncertain"), f"{item.get('yaw', 0):.0f}° / {item.get('pitch', 0):.0f}°", f"{item.get('confidence', 0):.2f}", Path(path).name), tags=("outlier",) if flagged else ())
             for index, item in enumerate(report.get("skipped_images", [])):
                 path = item["path"]; iid = f"skip-{index}"; records[iid] = {"path": path, "scored": False}
-                tree.insert("", "end", iid=iid, values=("No", "No usable face", "—", Path(path).name))
+                tree.insert("", "end", iid=iid, values=("No", "No usable face", "—", "no_face", "—", "—", Path(path).name))
             tree.tag_configure("outlier", foreground="#d97706")
             preview_label = tk.Label(
                 preview_host,
@@ -2220,21 +2223,43 @@ class MusubiTunerGUI:
                 else: values[0] = "Yes"; excluded.discard(path)
                 tree.item(iid, values=values)
                 config["excluded_reference_images"] = sorted(excluded)
+            def change_pose():
+                selected = tree.selection()
+                if not selected or not records[selected[0]]["scored"]: return
+                iid = selected[0]; record = records[iid]
+                from musubi_tuner.face_refinement.pose import POSE_BUCKETS
+                picker = tk.Toplevel(review); picker.title("Correct Pose Bucket"); picker.transient(review); picker.grab_set()
+                ttk.Label(picker, text=Path(record["path"]).name, wraplength=420).pack(padx=14, pady=(14, 6))
+                pose_var = tk.StringVar(value=record["item"].get("bucket", "uncertain"))
+                pose_picker = ttk.Combobox(picker, textvariable=pose_var, values=POSE_BUCKETS, state="readonly", width=28); pose_picker.pack(padx=14, pady=6)
+                ToolTip(pose_picker, "Choose the viewing angle you see in the image. Use Uncertain when the face is ambiguous, mirrored, heavily tilted, or hard to classify.")
+                def apply_pose():
+                    record["item"]["bucket"] = pose_var.get(); record["item"]["pose_manual"] = True
+                    values = list(tree.item(iid, "values")); values[3] = pose_var.get(); tree.item(iid, values=values)
+                    picker.destroy()
+                ttk.Button(picker, text="Apply", style="Accent.TButton", command=apply_pose).pack(padx=14, pady=(6, 14))
             tree.bind("<<TreeviewSelect>>", show_preview); tree.bind("<Double-1>", toggle_use)
             buttons = ttk.Frame(review); buttons.pack(fill="x", padx=12, pady=10)
-            ttk.Button(buttons, text="Use / Exclude Selected", command=toggle_use).pack(side="left")
+            use_button = ttk.Button(buttons, text="Use / Exclude Selected", command=toggle_use); use_button.pack(side="left"); ToolTip(use_button, "Switch whether this detected face is used during refinement. Excluding it does not delete, move, or alter the image.")
+            correct_button = ttk.Button(buttons, text="Correct Pose…", command=change_pose); correct_button.pack(side="left", padx=(6, 0)); ToolTip(correct_button, "Fix the automatic angle group when it looks wrong. This changes only the virtual training manifest, not the source folder.")
             ttk.Button(buttons, text="Open Image", command=lambda: self._open_path(selected_record()["path"]) if selected_record() else None).pack(side="left", padx=6)
             ttk.Button(buttons, text="Open Folder", command=lambda: self._open_path(str(Path(selected_record()["path"]).parent)) if selected_record() else None).pack(side="left")
             ttk.Button(buttons, text="Close", command=review.destroy).pack(side="right")
-        ttk.Button(identity_actions, text="Download Face Models…", command=download_models).pack(side="left")
-        ttk.Button(identity_actions, text="Run Face Check", command=face_check).pack(side="left", padx=6)
+        download_button = ttk.Button(identity_actions, text="Download Face Models…", command=download_models); download_button.pack(side="left")
+        ToolTip(download_button, "Downloads the optional face detector and identity model after confirmation. This is needed once; the files remain in the selected model folder.")
+        analyze_button = ttk.Button(identity_actions, text="Analyze Faces & Poses", command=face_check); analyze_button.pack(side="left", padx=6)
+        ToolTip(analyze_button, "Safely reads the selected folder again and recalculates usable faces, identity scores, head angles, confidence, and pose buckets. It does not train, move, rename, or edit any image. Run it again after changing the folder or its images.")
         review_button = ttk.Button(identity_actions, text="Review Results…", command=review_references, state="normal" if config.get("preflight_report") else "disabled")
         review_button.pack(side="left")
+        ToolTip(review_button, "Review low identity matches, skipped detail crops, automatic pose groups, and confidence. You can exclude images or correct a pose group without changing files on disk.")
 
         prompts_frame = ttk.LabelFrame(host, text="3 · Generation prompts"); prompts_frame.pack(fill="both", expand=True, pady=6)
-        ttk.Label(prompts_frame, text="One prompt per line. Use {trigger} for the subject. Vary angles, expressions, and lighting; keep one primary person.", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
+        ttk.Label(prompts_frame, text="One prompt per line. Use {trigger} for the subject. Optional pose tags: [auto], [frontal], [three_quarter_left/right], [profile_left/right], [looking_up/down].", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
         prompts_text = tk.Text(prompts_frame, height=9, wrap="word")
         prompts_text.pack(fill="both", expand=True, padx=8, pady=(0, 8)); prompts_text.insert("1.0", "\n".join(config["prompts"]))
+        prompt_source_var = tk.StringVar(value="These prompts are used by simple face refinement.")
+        prompt_source_label = ttk.Label(prompts_frame, textvariable=prompt_source_var, style="PageHelp.TLabel", wraplength=680)
+        prompt_source_label.pack(anchor="w", padx=8, pady=(0, 8))
 
         settings_frame = ttk.LabelFrame(host, text="4 · Safe starting settings"); settings_frame.pack(fill="x", pady=6)
         variables = {}
@@ -2246,17 +2271,42 @@ class MusubiTunerGUI:
             ("min_detection_rate", "Minimum face detection rate", float), ("preview_every", "Preview every N steps", int),
             ("blocks_to_swap", "DiT blocks moved to CPU", int),
             ("gpu_id", "GPU index (auto recommended)", str),
+            ("pose_reward_weight", "Matching-pose influence", float),
+            ("pose_min_references", "Minimum refs per pose", int),
         ]
+        field_help = {
+            "pose_reward_weight": "How much of each update may focus on the matching viewing angle. 0.20 is a cautious default. The Pose Training Plan's identity anchor may reduce it further for safety.",
+            "pose_min_references": "Minimum number of usable photos required before an angle gets its own identity target. Groups below this number safely fall back or are disabled.",
+        }
         grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
         for index, (key, label, _kind) in enumerate(fields):
             variable = tk.StringVar(value=str(config[key])); variables[key] = variable
             row, column = divmod(index, 2)
             cell = ttk.Frame(grid); cell.grid(row=row, column=column, sticky="ew", padx=5, pady=3)
-            ttk.Label(cell, text=label, width=26).pack(side="left"); ttk.Entry(cell, textvariable=variable, width=12).pack(side="right")
+            field_label = ttk.Label(cell, text=label, width=26); field_label.pack(side="left"); field_entry = ttk.Entry(cell, textvariable=variable, width=12); field_entry.pack(side="right")
+            if key in field_help: ToolTip(field_label, field_help[key]); ToolTip(field_entry, field_help[key])
         grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
-        qkvo_var = tk.BooleanVar(value=config["qkvo_only"]); checkpoint_var = tk.BooleanVar(value=config["checkpoint_vae"])
+        qkvo_var = tk.BooleanVar(value=config["qkvo_only"]); checkpoint_var = tk.BooleanVar(value=config["checkpoint_vae"]); pose_aware_var = tk.BooleanVar(value=config.get("pose_aware", False))
         ttk.Checkbutton(settings_frame, text="Train attention Q/K/V/O adapters only (recommended anti-overfit safeguard)", variable=qkvo_var).pack(anchor="w", padx=12)
         ttk.Checkbutton(settings_frame, text="Checkpoint VAE decode to save VRAM", variable=checkpoint_var).pack(anchor="w", padx=12, pady=(0, 8))
+        pose_checkbox = ttk.Checkbutton(settings_frame, text="Use pose-aware identity matching (experimental; optional)", variable=pose_aware_var); pose_checkbox.pack(anchor="w", padx=12, pady=(0, 8))
+        ToolTip(pose_checkbox, "When enabled, profile prompts can compare against profile references and other angles against their matching groups. Leave it off for the original all-angles identity method.")
+        def save_pose_plan(plan):
+            config["pose_plan"] = plan; pose_aware_var.set(bool(plan.get("enabled")))
+            variables["pose_reward_weight"].set(str(round(min(0.35, 1.0 - float(plan.get("overall_anchor_weight", 0.80))), 3)))
+        plan_button = ttk.Button(settings_frame, text="Configure Pose Training Plan…", command=lambda: self._open_pose_training_plan_dialog(config, trigger_var.get(), save_pose_plan, dialog)); plan_button.pack(anchor="w", padx=12, pady=(0, 8))
+        ToolTip(plan_button, "Opens the guided pose planner: choose an improvement goal, decide how often each angle is practiced, set finish targets, and edit pose-specific prompts. It does not start training.")
+        def sync_prompt_source(*_args):
+            plan_active = bool(pose_aware_var.get() and (config.get("pose_plan") or {}).get("enabled"))
+            prompts_text.configure(state="disabled" if plan_active else "normal")
+            if plan_active:
+                prompt_source_var.set("Pose Training Plan is active. This main prompt list is preserved but not used. Open Configure Pose Training Plan to edit the prompts used for this run.")
+                prompt_source_label.configure(foreground=self.colors["warning"])
+            else:
+                prompt_source_var.set("This main prompt list is active. Enable and save a Pose Training Plan only when you want separate prompts and targets for each viewing angle.")
+                prompt_source_label.configure(foreground=self.colors["muted"])
+        pose_aware_var.trace_add("write", sync_prompt_source); sync_prompt_source()
+        ToolTip(prompt_source_label, "Only one prompt source is used per run. An enabled Pose Training Plan uses its grouped pose tabs; otherwise this main list is used.")
 
         actions = ttk.Frame(host); actions.pack(fill="x", pady=(12, 0))
         def save():
@@ -2266,15 +2316,21 @@ class MusubiTunerGUI:
                 updated["reference_dir"] = reference_var.get().strip(); updated["face_model_dir"] = model_var.get().strip()
                 updated["prompts"] = [line.strip() for line in prompts_text.get("1.0", "end").splitlines() if line.strip()]
                 for key, _label, kind in fields: updated[key] = kind(variables[key].get())
-                updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["license_acknowledged"] = license_var.get()
+                updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["pose_aware"] = pose_aware_var.get(); updated["license_acknowledged"] = license_var.get()
+                updated["pose_plan"] = copy.deepcopy(config.get("pose_plan") or self._default_face_refinement_config()["pose_plan"])
+                updated["pose_plan"]["enabled"] = updated["pose_aware"]
+                if updated["pose_aware"]:
+                    from musubi_tuner.face_refinement.pose import parse_pose_prompt
+                    for prompt in updated["prompts"]: parse_pose_prompt(prompt)
                 if not updated["prompts"] or not os.path.isdir(updated["reference_dir"]): raise ValueError("Choose a reference folder and provide at least one prompt.")
                 if not updated["license_acknowledged"]: raise ValueError("Acknowledge the third-party face-model notice.")
                 if updated["input_mode"] == "existing_lora":
                     from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
                     updated["input_lora_report"] = validate_krea2_lora(updated["input_lora"])
                 if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
-                    raise ValueError("Run Face Check successfully for this reference folder before saving.")
+                    raise ValueError("Run Analyze Faces & Poses successfully for this reference folder before saving.")
                 if updated["steps"] < 1 or updated["resolution"] % 16 or not 1 <= updated["draft_k"] <= updated["denoise_steps"] or not 0 <= updated["blocks_to_swap"] <= 26: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value.")
+                if not 0 <= updated["pose_reward_weight"] <= 0.35 or updated["pose_min_references"] < 2: raise ValueError("Pose influence must be 0–0.35 and each pose bucket must require at least 2 references.")
                 if updated["gpu_id"] != "auto" and (not updated["gpu_id"].isdigit() or int(updated["gpu_id"]) < 0): raise ValueError("GPU index must be 'auto' or a non-negative number.")
             except Exception as exc:
                 messagebox.showerror("Face Refinement", str(exc), parent=dialog); return
@@ -2283,6 +2339,135 @@ class MusubiTunerGUI:
             dialog.destroy()
         ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(actions, text="Save Settings", style="Accent.TButton", command=save).pack(side="right")
+
+    def _open_pose_training_plan_dialog(self, face_config, trigger_word, on_save, parent=None):
+        from musubi_tuner.face_refinement.pose import POSE_LABELS, parse_pose_prompt
+        from musubi_tuner.face_refinement.pose_plan import (
+            TRAINABLE_POSES, apply_preset, default_pose_plan, normalize_pose_plan, suggest_prompts,
+        )
+
+        plan = copy.deepcopy(face_config.get("pose_plan") or default_pose_plan())
+        dialog = tk.Toplevel(parent or self.root); dialog.title("Pose Training Plan"); dialog.transient(parent or self.root); dialog.grab_set(); dialog.minsize(1040, 720)
+        host = ttk.Frame(dialog, padding=14); host.pack(fill="both", expand=True)
+        ttk.Label(host, text="Pose Training Plan", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(host, text="Choose a goal, review its sampling balance, and edit prompts by pose. Overall identity always remains the anchor.", style="PageHelp.TLabel", wraplength=980).pack(anchor="w", pady=(2, 10))
+
+        top = ttk.LabelFrame(host, text="1 · Goal and prompt variations"); top.pack(fill="x", pady=(0, 8))
+        preset_var = tk.StringVar(value=plan.get("preset", "balanced_identity"))
+        preset_names = {"Balanced identity": "balanced_identity", "Improve side profiles": "improve_profiles", "Improve three-quarter views": "improve_three_quarter", "Custom": "custom"}
+        reverse_presets = {value: key for key, value in preset_names.items()}
+        preset_display = tk.StringVar(value=reverse_presets.get(preset_var.get(), "Custom"))
+        row = ttk.Frame(top); row.pack(fill="x", padx=8, pady=7)
+        goal_label = ttk.Label(row, text="Training goal", width=20); goal_label.pack(side="left")
+        preset_box = ttk.Combobox(row, textvariable=preset_display, values=list(preset_names), state="readonly", width=30); preset_box.pack(side="left")
+        ToolTip(goal_label, "Choose what you mainly want to improve. A preset fills in sensible pose percentages; you can still change every value below.")
+        ToolTip(preset_box, "Balanced spreads practice across available angles. Profile and three-quarter presets spend more training steps on those views. Custom keeps your own choices.")
+        anchor_var = tk.StringVar(value=str(plan.get("overall_anchor_weight", 0.80)))
+        anchor_label = ttk.Label(row, text="Overall identity anchor", padding=(18, 0, 6, 0)); anchor_label.pack(side="left")
+        anchor_entry = ttk.Entry(row, textvariable=anchor_var, width=8); anchor_entry.pack(side="left")
+        anchor_tip = "How strongly training must keep the person's general identity while improving one angle. Keep 0.80 unless you have a reason to change it. Higher is safer but makes pose-specific changes gentler."
+        ToolTip(anchor_label, anchor_tip); ToolTip(anchor_entry, anchor_tip)
+        variation_vars = {name: tk.BooleanVar(value=name in plan.get("variations", [])) for name in ("natural", "studio", "cinematic", "expression")}
+        variations_row = ttk.Frame(top); variations_row.pack(fill="x", padx=8, pady=(0, 7)); variation_label = ttk.Label(variations_row, text="Prompt idea styles", width=20); variation_label.pack(side="left")
+        ToolTip(variation_label, "Controls which kinds of editable prompt ideas the ‘Create Prompt Ideas’ button adds. This does not analyze or caption your images.")
+        variation_tips = {"natural": "Adds daylight and realistic-photo ideas.", "studio": "Adds clean-background and soft studio-light ideas.", "cinematic": "Adds dramatic photographic-lighting ideas.", "expression": "Adds natural-expression and candid-photo ideas."}
+        for name, variable in variation_vars.items():
+            checkbox = ttk.Checkbutton(variations_row, text=name.title(), variable=variable); checkbox.pack(side="left", padx=(0, 8)); ToolTip(checkbox, variation_tips[name])
+
+        body = ttk.Panedwindow(host, orient="vertical"); body.pack(fill="both", expand=True)
+        table_frame = ttk.LabelFrame(body, text="2 · Per-pose targets and stopping"); prompts_frame = ttk.LabelFrame(body, text="3 · Prompts by pose")
+        body.add(table_frame, weight=2); body.add(prompts_frame, weight=3)
+        headers = ("Train", "Pose", "References", "Prompt share %", "Target", "Target patience", "Plateau patience", "Min evaluations")
+        header_tips = (
+            "Enable this viewing angle. Disabled rows receive no prompts or pose-specific stopping goal.",
+            "The viewing angle being practiced.",
+            "How many enabled reference photos were placed in this angle bucket. Too few references disables the bucket safely.",
+            "Approximately what percentage of training steps should practice this angle. Enabled shares are automatically adjusted to total 100%.",
+            "The face-similarity score this angle should reach before it can be considered good enough.",
+            "How many successful checks in a row must meet the target before this angle is finished.",
+            "How many checks without meaningful improvement count as being stuck. Training may stop instead of wasting steps.",
+            "Do not make a stop decision for this angle until it has been checked at least this many times.",
+        )
+        for column, label in enumerate(headers):
+            header = ttk.Label(table_frame, text=label); header.grid(row=0, column=column, padx=4, pady=4, sticky="w"); ToolTip(header, header_tips[column])
+        bucket_counts = (face_config.get("preflight_report") or {}).get("pose_bucket_counts", {})
+        row_vars = {}; prompt_boxes = {}
+        prompt_tabs = ttk.Notebook(prompts_frame); prompt_tabs.pack(fill="both", expand=True, padx=6, pady=6)
+        for index, pose in enumerate(TRAINABLE_POSES, start=1):
+            cfg = plan.setdefault("buckets", {}).setdefault(pose, {})
+            variables = {
+                "enabled": tk.BooleanVar(value=cfg.get("enabled", False)), "share": tk.StringVar(value=str(round(float(cfg.get("share", 0)), 2))),
+                "target": tk.StringVar(value=str(cfg.get("target", 0.55))), "patience": tk.StringVar(value=str(cfg.get("patience", 2))),
+                "plateau_patience": tk.StringVar(value=str(cfg.get("plateau_patience", 4))), "min_evaluations": tk.StringVar(value=str(cfg.get("min_evaluations", 2))),
+            }; row_vars[pose] = variables
+            enabled_widget = ttk.Checkbutton(table_frame, variable=variables["enabled"]); enabled_widget.grid(row=index, column=0, padx=4); ToolTip(enabled_widget, f"Include {POSE_LABELS[pose].lower()} images and prompts in this training plan.")
+            pose_label = ttk.Label(table_frame, text=POSE_LABELS[pose]); pose_label.grid(row=index, column=1, padx=4, sticky="w"); ToolTip(pose_label, "This is a virtual group created by Analyze Faces & Poses. Your source images are never moved.")
+            count = int(bucket_counts.get(pose, 0)); count_label = ttk.Label(table_frame, text=str(count), foreground=self.colors["warning"] if count < int(face_config.get("pose_min_references", 2)) else self.colors["success"]); count_label.grid(row=index, column=2, padx=4); ToolTip(count_label, f"{count} detected reference face(s) are currently assigned to this angle. Orange means the group may be too small.")
+            for column, key, width in ((3, "share", 10), (4, "target", 8), (5, "patience", 10), (6, "plateau_patience", 11), (7, "min_evaluations", 10)):
+                entry = ttk.Entry(table_frame, textvariable=variables[key], width=width); entry.grid(row=index, column=column, padx=4, pady=2); ToolTip(entry, header_tips[column])
+            tab = ttk.Frame(prompt_tabs); prompt_tabs.add(tab, text=POSE_LABELS[pose])
+            text = tk.Text(tab, height=6, wrap="word"); text.pack(fill="both", expand=True, padx=6, pady=(6, 3)); text.insert("1.0", "\n".join(cfg.get("prompts") or suggest_prompts(pose)))
+            ToolTip(text, f"One editable {POSE_LABELS[pose].lower()} prompt per line. The [{pose}] label tells the trainer which reference-angle group to compare against; it is removed before Krea reads the prompt.")
+            prompt_boxes[pose] = text
+            actions = ttk.Frame(tab); actions.pack(fill="x", padx=6, pady=(0, 6))
+            def generate(target=pose, box=text):
+                variations = [name for name, variable in variation_vars.items() if variable.get()]
+                suggestions = suggest_prompts(target, trigger_word.strip() or "{trigger}", variations)
+                existing = [line.strip() for line in box.get("1.0", "end").splitlines() if line.strip()]
+                for suggestion in suggestions:
+                    if suggestion not in existing: existing.append(suggestion)
+                box.delete("1.0", "end"); box.insert("1.0", "\n".join(existing))
+            ideas_button = ttk.Button(actions, text="Create Pose Prompt Ideas…", command=generate); ideas_button.pack(side="left")
+            ToolTip(ideas_button, "Adds a few editable prompt ideas for this angle using the styles checked above. It keeps your existing lines and skips exact duplicates. It does not inspect your images, call AI, or replace the trigger word system.")
+
+        def read_rows():
+            for pose, variables in row_vars.items():
+                cfg = plan["buckets"][pose]
+                cfg.update({"enabled": variables["enabled"].get(), "share": float(variables["share"].get()), "target": float(variables["target"].get()), "patience": int(variables["patience"].get()), "plateau_patience": int(variables["plateau_patience"].get()), "min_evaluations": int(variables["min_evaluations"].get())})
+                if cfg["share"] < 0 or not -1.0 <= cfg["target"] <= 1.0 or min(cfg["patience"], cfg["plateau_patience"], cfg["min_evaluations"]) < 1:
+                    raise ValueError(f"{POSE_LABELS[pose]} needs a non-negative share, target from -1 to 1, and stopping counts of at least 1.")
+                cfg["prompts"] = [line.strip() for line in prompt_boxes[pose].get("1.0", "end").splitlines() if line.strip()]
+                for prompt in cfg["prompts"]:
+                    tag, _ = parse_pose_prompt(prompt)
+                    if tag != pose: raise ValueError(f"Every {POSE_LABELS[pose]} prompt must begin with [{pose}].")
+        def apply_selected_preset(_event=None):
+            selected = preset_names[preset_display.get()]; preset_var.set(selected)
+            if selected == "custom": return
+            read_rows(); apply_preset(plan, selected)
+            for pose, variables in row_vars.items():
+                cfg = plan["buckets"][pose]; variables["enabled"].set(cfg["enabled"]); variables["share"].set(str(round(cfg["share"], 2)))
+        preset_box.bind("<<ComboboxSelected>>", apply_selected_preset)
+
+        def import_prompts():
+            path = filedialog.askopenfilename(parent=dialog, filetypes=[("Prompt files", "*.txt *.json"), ("All files", "*.*")])
+            if not path: return
+            try:
+                raw = Path(path).read_text(encoding="utf-8")
+                if Path(path).suffix.lower() == ".json":
+                    payload = json.loads(raw); lines = payload.get("prompts", payload) if isinstance(payload, dict) else payload
+                else: lines = raw.splitlines()
+                imported = 0
+                for line in lines:
+                    prompt = str(line).strip()
+                    if not prompt: continue
+                    pose, _ = parse_pose_prompt(prompt)
+                    if pose in prompt_boxes:
+                        box = prompt_boxes[pose]; current = box.get("1.0", "end").strip().splitlines()
+                        if prompt not in current: box.insert("end", ("\n" if current and current != [""] else "") + prompt); imported += 1
+                messagebox.showinfo("Prompt import", f"Imported {imported} pose-tagged prompt(s). Untagged lines were left unchanged.", parent=dialog)
+            except Exception as exc: messagebox.showerror("Prompt import", str(exc), parent=dialog)
+
+        footer = ttk.Frame(host); footer.pack(fill="x", pady=(8, 0)); import_button = ttk.Button(footer, text="Import Pose-Tagged Prompts…", command=import_prompts); import_button.pack(side="left")
+        ToolTip(import_button, "Imports a TXT or JSON prompt list when its lines already begin with labels such as [profile_left]. Each line goes into the matching tab; unlabelled lines are ignored here.")
+        def save():
+            try:
+                read_rows(); plan["enabled"] = True; plan["preset"] = preset_var.get(); plan["overall_anchor_weight"] = float(anchor_var.get()); plan["variations"] = [name for name, variable in variation_vars.items() if variable.get()]
+                if not 0.65 <= plan["overall_anchor_weight"] <= 1.0: raise ValueError("Overall identity anchor must be between 0.65 and 1.0.")
+                normalized, warnings = normalize_pose_plan(plan, bucket_counts, int(face_config.get("pose_min_references", 2)))
+                if warnings and not messagebox.askyesno("Sparse pose buckets", "\n".join(warnings) + "\n\nSave the safely normalized plan?", parent=dialog): return
+            except Exception as exc: messagebox.showerror("Pose Training Plan", str(exc), parent=dialog); return
+            on_save(normalized); dialog.destroy()
+        ttk.Button(footer, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0)); save_button = ttk.Button(footer, text="Save Plan", style="Accent.TButton", command=save); save_button.pack(side="right"); ToolTip(save_button, "Checks the plan, safely disables pose groups with too few references, adjusts enabled percentages to total 100%, and returns to Face Refinement settings. Training does not start.")
 
     def _open_staged_training_dialog(self):
         dialog = tk.Toplevel(self.root)
@@ -2464,7 +2649,7 @@ class MusubiTunerGUI:
                     messagebox.showerror("Staged Run", f"{label} needs {requirement}at least 1 {limit_name}.", parent=dialog)
                     return
                 if stage_type == "face_refinement" and not self._face_refinement_config.get("preflight_report"):
-                    messagebox.showerror("Staged Run", f"Configure {label} and complete its Face Check first.", parent=dialog)
+                    messagebox.showerror("Staged Run", f"Configure {label} and complete Analyze Faces & Poses first.", parent=dialog)
                     return
                 configured.append({
                     "label": label,
@@ -4514,6 +4699,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             and (self._face_refinement_config or {}).get("input_mode") == "existing_lora"
         )
         self.entries["dataset_config"].is_required = not refinement_only
+        # A first-stage existing-LoRA face refinement has its own step count,
+        # learning rate, and network shape. Standard SFT-only fields must not
+        # block launch even when an older job snapshot left them blank.
+        self.entries["max_train_epochs"].is_required = not refinement_only
+        self.entries["learning_rate"].is_required = not refinement_only
 
         if is_wan:
             train_high = self.entries["train_high_noise"].var.get(); train_low = self.entries["train_low_noise"].var.get()
@@ -4535,8 +4725,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
             self.entries["clip_model"].is_required = False
-            self.entries["network_dim_low"].is_required = True
-            self.entries["network_alpha_low"].is_required = True
+            self.entries["network_dim_low"].is_required = not refinement_only
+            self.entries["network_alpha_low"].is_required = not refinement_only
             train_high = False; train_low = True  # for combined-run logic below
 
         log_with = self.entries["log_with"].get(); self.entries["logging_dir"].is_required = log_with != "none"
@@ -4942,6 +5132,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             self.progress_label_var.set(f"Epoch {current} of {total}" if total > 0 else "Epochs complete")
 
+    def update_face_refinement_progress(self, current, total):
+        self.progress_var.set((current / total) * 100 if total > 0 else 0)
+        self.progress_label_var.set(f"Face refinement step {current} of {total}")
+
     def update_training_counters(self, current_step=None, total_steps=None, current_epoch=None, total_epochs=None):
         if current_step is not None:
             parsed_step = int(current_step)
@@ -5123,15 +5317,26 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 if chunk is not None:
                     self.root.after(0, self.process_console_output, chunk, output_widget)
                     if output_widget == self.output_text:
-                        step_match = re.search(r"(\d+)/\d+ \[", chunk)
                         step_total_match = re.search(r"(\d+)/(\d+) \[", chunk)
                         face_step_match = re.search(r"^step=(\d+)/(\d+)\s", chunk)
+                        face_refinement_active = bool(
+                            self._staged_run
+                            and (self._staged_run.get("previous_settings") or {}).get("stage_type") == "face_refinement"
+                        )
                         if face_step_match:
                             self.root.after(
                                 0, self.update_training_counters,
                                 int(face_step_match.group(1)), int(face_step_match.group(2)), None, None,
                             )
-                        if step_total_match:
+                            self.root.after(0, self.update_face_refinement_progress, int(face_step_match.group(1)), int(face_step_match.group(2)))
+                        pose_metric_match = re.search(r"^pose_metric=([a-z_]+)\s+similarity=([\d.]+)\s+evaluations=(\d+)\s+target=([\d.]+)", chunk)
+                        if pose_metric_match:
+                            pose_label = pose_metric_match.group(1).replace("_", " ").title()
+                            self.root.after(0, self.progress_label_var.set, f"{pose_label}: {float(pose_metric_match.group(2)):.3f} / target {float(pose_metric_match.group(4)):.3f} · {pose_metric_match.group(3)} evaluations")
+                        stop_match = re.search(r"^(?:early_stop|pose_stop)=([a-z_]+)", chunk)
+                        if stop_match:
+                            self.root.after(0, self.progress_label_var.set, f"Face refinement stopping: {stop_match.group(1).replace('_', ' ')}")
+                        if step_total_match and not face_refinement_active:
                             self.root.after(
                                 0,
                                 self.update_training_counters,
@@ -5422,6 +5627,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if stage_type == "face_refinement":
             face_config = dict(self._face_refinement_config)
             face_config["steps"] = int(stage_steps)
+            self.current_step = 0; self.current_total_steps = int(stage_steps)
+            self.current_epoch_num = 0; self.current_epoch_total = 0
+            self.update_training_counters(0, int(stage_steps), 0, 0)
+            self.progress_var.set(0)
             output_path = krea2_face_backend.output_path(run["base_settings"], stage_label)
             if input_lora is None:
                 raise RuntimeError("Face Refinement has no input LoRA. Select an existing LoRA or place it after a standard stage.")
@@ -5430,14 +5639,33 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             output_path.parent.mkdir(parents=True, exist_ok=True)
             prompts_path = output_path.parent / "face_refinement_prompts.json"
             from musubi_tuner.face_refinement.lora_validation import render_trigger_prompts
-            rendered_prompts = render_trigger_prompts(face_config["prompts"], face_config.get("trigger_word", ""))
-            prompts_path.write_text(json.dumps({"prompts": rendered_prompts}, indent=2), encoding="utf-8")
+            pose_plan = copy.deepcopy(face_config.get("pose_plan") or {})
+            if face_config.get("pose_aware") and pose_plan.get("enabled"):
+                from musubi_tuner.face_refinement.pose_plan import normalize_pose_plan, weighted_prompt_records
+                excluded_for_plan = set(face_config.get("excluded_reference_images") or [])
+                effective_counts = {}
+                for item in face_config.get("preflight_report", {}).get("scored_images", []):
+                    if item["path"] not in excluded_for_plan:
+                        bucket = item.get("bucket", "uncertain"); effective_counts[bucket] = effective_counts.get(bucket, 0) + 1
+                pose_plan, plan_warnings = normalize_pose_plan(pose_plan, effective_counts, int(face_config.get("pose_min_references", 2)))
+                prompt_records = weighted_prompt_records(pose_plan)
+                rendered_prompts = render_trigger_prompts([item["prompt"] for item in prompt_records], face_config.get("trigger_word", ""))
+                for item, rendered in zip(prompt_records, rendered_prompts): item["prompt"] = rendered
+                prompt_payload = {"prompts": rendered_prompts, "prompt_records": prompt_records, "pose_plan": pose_plan, "warnings": plan_warnings}
+            else:
+                rendered_prompts = render_trigger_prompts(face_config["prompts"], face_config.get("trigger_word", ""))
+                prompt_payload = {"prompts": rendered_prompts}
+            prompts_path.write_text(json.dumps(prompt_payload, indent=2), encoding="utf-8")
             excluded = set(face_config.get("excluded_reference_images") or [])
-            valid_references = [path for path in face_config.get("preflight_report", {}).get("valid_images", []) if path not in excluded]
-            if not valid_references:
-                raise RuntimeError("No enabled face references remain. Review the Face Check results and enable at least one detected face.")
+            scored_references = face_config.get("preflight_report", {}).get("scored_images", [])
+            reference_entries = [
+                {"path": item["path"], "pose": item.get("bucket", "uncertain"), "pose_confidence": item.get("confidence", 0.0), "enabled": item["path"] not in excluded}
+                for item in scored_references
+            ]
+            if not any(item["enabled"] for item in reference_entries):
+                raise RuntimeError("No enabled face references remain. Review the face-analysis results and enable at least one detected face.")
             manifest_path = output_path.parent / "face_refinement_references.json"
-            manifest_path.write_text(json.dumps({"reference_images": valid_references}, indent=2), encoding="utf-8")
+            manifest_path.write_text(json.dumps({"reference_images": reference_entries}, indent=2), encoding="utf-8")
             face_config["reference_manifest"] = str(manifest_path)
             settings["python_executable"] = sys.executable or "python"
             settings["face_output_path"] = str(output_path)

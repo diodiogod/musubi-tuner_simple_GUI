@@ -30,15 +30,22 @@ def validate_krea2_lora(path: str | Path) -> dict:
 
 
 def render_trigger_prompts(prompts: list[str], trigger_word: str) -> list[str]:
+    from musubi_tuner.face_refinement.pose import POSE_BUCKETS, TAG_PATTERN
+
     trigger = trigger_word.strip()
     rendered = []
     for prompt in prompts:
         text = str(prompt).strip()
         if not text:
             continue
+        tag_prefix = ""
+        tag_match = TAG_PATTERN.match(text)
+        if tag_match and tag_match.group(1).lower() in ("auto", *POSE_BUCKETS):
+            tag_prefix = f"[{tag_match.group(1).lower()}] "
+            text = text[tag_match.end():].strip()
         if "{trigger}" in text:
             text = text.replace("{trigger}", trigger or "the person")
         elif trigger and trigger.casefold() not in text.casefold():
             text = f"{trigger}, {text}"
-        rendered.append(text)
+        rendered.append(tag_prefix + text)
     return rendered

@@ -188,12 +188,22 @@ reference folder, and the similarity reward updates the LoRA through the final d
 - **Review Results…** shows each detected face's similarity score separately from images skipped
   because no complete face was visible. Flagged detections can be previewed and excluded without
   moving or deleting the source image.
+- Optional **pose-aware identity matching** virtually buckets one mixed folder into frontal,
+  three-quarter, profile, looking-up/down, and uncertain groups. Nothing is moved. The review
+  window shows pose confidence and supports manual correction. Tagged prompts such as
+  `[profile_left]` use a bounded matching-pose reward while overall identity stays dominant;
+  `[auto]` uses the generated face's detected pose, with safe fallback for sparse buckets.
+- **Configure Pose Training Plan…** adds Balanced Identity, Improve Side Profiles, Improve
+  Three-Quarter Views, and Custom goals. Its advanced table controls sampling share, target,
+  target patience, plateau patience, and minimum evaluations per pose. Seven grouped prompt
+  editors add tags automatically and can generate editable offline suggestions or import tagged
+  TXT/JSON prompts. Monitor output reports each pose against its target and the final stop reason.
 - It is intended for recognizable human faces, not clothing, body shape, tattoos, or general style.
 - Built-in saturation, Q/K/V/O-only training, face-detection monitoring, previews, and early stopping
   reduce—but cannot eliminate—the risk of overfitting or a pasted-on “face swap” appearance.
 
 Open **Configure Face Refinement…**, choose the starting-LoRA mode and trigger word, acknowledge the third-party face-model notice, download or
-select AntelopeV2, run **Face Check**, then add a `face_refinement` stage in the staged-training
+select AntelopeV2, run **Analyze Faces & Poses**, then add a `face_refinement` stage in the staged-training
 window. The recommended starting point is 30 updates at 512px with 12 denoising steps and
 `draft_k=1`. Optional dependencies are installed with `pip install -e ".[face_refinement]"`.
 For a recorded Krea run, the **Jobs** page also provides **Refine Face Identity…** in the

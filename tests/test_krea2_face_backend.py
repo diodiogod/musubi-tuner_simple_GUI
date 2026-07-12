@@ -22,6 +22,14 @@ class Krea2FaceBackendTests(unittest.TestCase):
         self.assertEqual(command[command.index("--train_steps") + 1], "30")
         self.assertEqual(command[command.index("--reference_manifest") + 1], "enabled_refs.json")
         self.assertIn("--fp8_scaled", command)
+        self.assertNotIn("--pose_aware", command)
+
+    def test_pose_aware_mode_is_explicit(self):
+        settings = {"python_executable": "python", "krea2_dit_model": "raw", "vae_model": "vae", "krea2_text_encoder": "text"}
+        config = {"reference_dir": "refs", "face_model_dir": "faces", "steps": 2, "pose_aware": True, "pose_reward_weight": 0.2, "pose_min_references": 2}
+        command = build_command(settings, config, "input", "output", "prompts")
+        self.assertIn("--pose_aware", command)
+        self.assertEqual(command[command.index("--pose_reward_weight") + 1], "0.2")
 
 
 if __name__ == "__main__":

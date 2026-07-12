@@ -32,6 +32,10 @@ class FaceRefinementLoraTests(unittest.TestCase):
             render_trigger_prompts(["portrait of {trigger}", "cinematic portrait"], "subject_token"),
             ["portrait of subject_token", "subject_token, cinematic portrait"],
         )
+        self.assertEqual(
+            render_trigger_prompts(["[profile_left] cinematic portrait"], "subject_token"),
+            ["[profile_left] subject_token, cinematic portrait"],
+        )
 
     def test_job_resolver_accepts_state_folder_lora(self):
         with tempfile.TemporaryDirectory() as folder:

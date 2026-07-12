@@ -24,6 +24,7 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
         "anti_copy_weight": "anti_copy_weight", "preview_every": "preview_every", "save_every": "save_every",
         "blocks_to_swap": "blocks_to_swap",
         "gpu_id": "gpu_id",
+        "pose_reward_weight": "pose_reward_weight", "pose_min_references": "pose_min_references",
     }
     for argument, key in mapping.items():
         add_arg(command, f"--{argument}", config.get(key))
@@ -34,6 +35,8 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
         command.append("--no-checkpoint_vae")
     if settings.get("fp8_scaled"):
         command.append("--fp8_scaled")
+    if config.get("pose_aware", False):
+        command.append("--pose_aware")
     attention = settings.get("attention_mechanism", "sdpa")
     add_arg(command, "--attn_mode", {"sdpa": "torch", "none": "torch"}.get(attention, attention))
     if settings.get("split_attn"):
