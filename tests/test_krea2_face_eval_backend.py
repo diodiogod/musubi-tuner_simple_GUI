@@ -21,6 +21,7 @@ class Krea2FaceEvaluationBackendTests(unittest.TestCase):
                 "krea2_dit_model": "raw.safetensors", "vae_model": "vae.safetensors",
                 "krea2_text_encoder": "text.safetensors", "output_dir": str(root),
                 "output_name": "generic-run", "attention_mechanism": "sdpa",
+                "krea2_projector_diff_strength": "",
             }
             config = {
                 "pose_aware": True, "pose_plan": plan, "trigger_word": "subject_token",

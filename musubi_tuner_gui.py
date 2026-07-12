@@ -2355,13 +2355,24 @@ class MusubiTunerGUI:
         ttk.Label(host, text="Turbo face and pose baseline", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(host, text="This generates images with the Turbo model users actually render with. It never trains or changes the LoRA. Fixed prompts and seeds make later comparisons fair.", style="PageHelp.TLabel", wraplength=680).pack(anchor="w", pady=(3, 12))
         mode_var = tk.StringVar(value="compare" if config.get("evaluation_baseline_result") and Path(config["evaluation_baseline_result"]).is_file() else "baseline")
-        ttk.Radiobutton(host, text="Create or replace the starting baseline", variable=mode_var, value="baseline").pack(anchor="w")
-        ttk.Radiobutton(host, text="Compare this LoRA with the saved baseline", variable=mode_var, value="compare").pack(anchor="w", pady=(2, 8))
+        create_radio = ttk.Radiobutton(host, text="Create or replace the starting baseline", variable=mode_var, value="baseline"); create_radio.pack(anchor="w")
+        compare_radio = ttk.Radiobutton(host, text="Compare this LoRA with the saved baseline", variable=mode_var, value="compare"); compare_radio.pack(anchor="w", pady=(2, 8))
+        ToolTip(create_radio, "Use this before refinement. The GUI automatically saves the baseline results inside the local evaluation folder and remembers that file for later.")
+        ToolTip(compare_radio, "Use this after refinement or for an intermediate checkpoint. It repeats the baseline's exact prompts, seeds, and Turbo settings and shows the changes.")
         lora_var = tk.StringVar(value=config.get("input_lora", "")); baseline_var = tk.StringVar(value=config.get("evaluation_baseline_result", ""))
         def path_row(label, variable, browse_command):
-            row = ttk.Frame(host); row.pack(fill="x", pady=4); ttk.Label(row, text=label, width=22).pack(side="left"); ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True); ttk.Button(row, text="Browse", command=browse_command).pack(side="right", padx=(6, 0))
-        path_row("LoRA to evaluate", lora_var, lambda: lora_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("LoRA weights", "*.safetensors")]) or lora_var.get()))
-        path_row("Saved baseline result", baseline_var, lambda: baseline_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("Evaluation result", "results.json"), ("JSON", "*.json")]) or baseline_var.get()))
+            row = ttk.Frame(host); row.pack(fill="x", pady=4); label_widget = ttk.Label(row, text=label, width=22); label_widget.pack(side="left"); entry = ttk.Entry(row, textvariable=variable); entry.pack(side="left", fill="x", expand=True); button = ttk.Button(row, text="Browse", command=browse_command); button.pack(side="right", padx=(6, 0)); return label_widget, entry, button
+        lora_label, lora_entry, lora_button = path_row("LoRA to evaluate", lora_var, lambda: lora_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("LoRA weights", "*.safetensors")]) or lora_var.get()))
+        ToolTip(lora_label, "The existing or refined LoRA being tested. Evaluation reads it but never changes it."); ToolTip(lora_entry, "The existing or refined LoRA being tested. Evaluation reads it but never changes it.")
+        baseline_label, baseline_entry, baseline_button = path_row("Baseline result", baseline_var, lambda: baseline_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("Evaluation result", "results.json"), ("JSON", "*.json")]) or baseline_var.get()))
+        baseline_help_var = tk.StringVar(); baseline_help = ttk.Label(host, textvariable=baseline_help_var, style="PageHelp.TLabel", wraplength=680); baseline_help.pack(anchor="w", pady=(0, 5))
+        def sync_baseline_mode(*_args):
+            comparing = mode_var.get() == "compare"
+            baseline_entry.configure(state="normal" if comparing else "disabled"); baseline_button.configure(state="normal" if comparing else "disabled")
+            baseline_help_var.set("Choose the results.json created by the starting baseline." if comparing else "No path is needed. The GUI will automatically create and remember results.json after this baseline finishes.")
+        mode_var.trace_add("write", sync_baseline_mode); sync_baseline_mode()
+        baseline_tip = "This is not an output folder. It is the results.json automatically produced by the original baseline. You only choose it when comparing another LoRA."
+        ToolTip(baseline_label, baseline_tip); ToolTip(baseline_entry, baseline_tip); ToolTip(baseline_button, baseline_tip); ToolTip(baseline_help, baseline_tip)
         settings_frame = ttk.LabelFrame(host, text="Evaluation size"); settings_frame.pack(fill="x", pady=10)
         fields = [("evaluation_prompts_per_pose", "Prompts per enabled pose", int, "How many different prompt descriptions to test for each enabled viewing angle."), ("evaluation_seeds_per_prompt", "Seeds per prompt", int, "How many image variations to generate for each prompt. More seeds give a more trustworthy average but take longer."), ("evaluation_resolution", "Turbo resolution", int, "Square image size used for both baseline and later comparison. Keep it identical between runs."), ("evaluation_steps", "Turbo denoising steps", int, "Turbo normally uses 8 steps. Keep this identical for before/after comparisons."), ("evaluation_seed", "Starting seed", int, "The fixed seed family used to reproduce exactly the same test images after refinement.")]
         variables = {}; grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)

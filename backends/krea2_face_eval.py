@@ -41,12 +41,13 @@ def prepare(settings, config, input_lora, *, baseline_result=None, label="baseli
                 prompt_lines.append(f"{clean} --w {resolution} --h {resolution} --s {steps} --g 1.0 --d {seed}")
             case_index += 1
 
+    projector_strength = float(settings.get("krea2_projector_diff_strength") or 1.0)
     renderer_settings = {
         "turbo_dit": str(Path(settings["krea2_turbo_dit"]).resolve()),
         "vae": str(Path(settings["vae_model"]).resolve()),
         "text_encoder": str(Path(settings["krea2_text_encoder"]).resolve()),
         "projector_diff": str(Path(settings["krea2_projector_diff"]).resolve()) if settings.get("krea2_projector_diff") else "",
-        "projector_strength": float(settings.get("krea2_projector_diff_strength", 1.0)),
+        "projector_strength": projector_strength,
         "resolution": resolution, "steps": steps, "guidance": 1.0,
         "attention": settings.get("attention_mechanism", "sdpa"), "fp8_scaled": bool(settings.get("fp8_scaled")),
         "split_attn": bool(settings.get("split_attn")), "blocks_to_swap": int(settings.get("blocks_to_swap") or 0),
@@ -82,7 +83,7 @@ def prepare(settings, config, input_lora, *, baseline_result=None, label="baseli
     if settings.get("fp8_scaled"): generate.append("--fp8_scaled")
     if settings.get("split_attn"): generate.append("--split_attn")
     if settings.get("blocks_to_swap"): generate.extend(["--blocks_to_swap", str(settings["blocks_to_swap"])])
-    if settings.get("krea2_projector_diff"): generate.extend(["--projector_diff", settings["krea2_projector_diff"], "--projector_diff_strength", str(settings.get("krea2_projector_diff_strength", 1.0))])
+    if settings.get("krea2_projector_diff"): generate.extend(["--projector_diff", settings["krea2_projector_diff"], "--projector_diff_strength", str(projector_strength)])
     evaluate = [python, "src/musubi_tuner/krea2_face_evaluate.py", "--suite", str(suite_path), "--images_dir", str(images_dir), "--reference_manifest", str(refs_path), "--face_model_dir", str(config["face_model_dir"]), "--output", str(result_path)]
     if baseline_result: evaluate.extend(["--baseline", str(baseline_result)])
     return {"commands": [generate, evaluate], "run_dir": run_dir, "result": result_path, "cases": len(cases)}
