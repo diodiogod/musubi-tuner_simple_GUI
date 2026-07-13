@@ -395,6 +395,7 @@ class MusubiTunerGUI:
         self.create_model_paths_tab()
         self.create_training_params_tab()
         self.create_advanced_tab()
+        self.create_face_refinement_tab()
         self.create_samples_tab()
         self.create_run_monitor_tab()
         self.create_jobs_tab()
@@ -432,7 +433,7 @@ class MusubiTunerGUI:
         return tab.content
 
     def _build_navigation(self):
-        labels = ("Models", "Training", "Advanced", "Samples", "Monitor", "Jobs", "Convert", "Setup")
+        labels = ("Models", "Training", "Advanced", "Face Refinement", "Samples", "Monitor", "Jobs", "Convert", "Setup")
         self._nav_buttons = []
         ttk.Label(self.nav_bar, text="WORKSPACE", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
         for index, label in enumerate(labels):
@@ -567,6 +568,26 @@ class MusubiTunerGUI:
         if isinstance(widget, ttk.Entry):
             widget.bind("<FocusOut>", self.update_button_states); widget.bind("<KeyRelease>", self.update_button_states)
         return widget
+
+    def _themed_text(self, parent, **kwargs):
+        """Create a multiline editor using the same palette as themed entry fields."""
+        options = {
+            "bg": self.colors["field"],
+            "fg": self.colors["text"],
+            "insertbackground": self.colors["text"],
+            "selectbackground": self.colors["selection"],
+            "selectforeground": self.colors["text"],
+            "highlightbackground": self.colors["border"],
+            "highlightcolor": self.colors["accent"],
+            "highlightthickness": 1,
+            "relief": tk.FLAT,
+            "bd": 0,
+            "padx": 7,
+            "pady": 6,
+            "font": ("Segoe UI", 10),
+        }
+        options.update(kwargs)
+        return tk.Text(parent, **options)
 
     def _open_dataset_config_builder(self):
         current_path = self.entries["dataset_config"].get().strip()
@@ -993,12 +1014,12 @@ class MusubiTunerGUI:
         face_action = ttk.Frame(self.hidden_frames['krea2_regularization']); face_action.pack(fill="x", padx=10, pady=(8, 10))
         ttk.Label(
             face_action,
-            text="Face Refinement (DRaFT) is configured separately and can be added as a staged-training step.",
+            text="Face Refinement now has its own workspace for references, pose goals, Turbo evaluation, and staged-run setup.",
             wraplength=700,
         ).pack(side="left", fill="x", expand=True)
-        ttk.Button(face_action, text="Configure Face Refinement…", command=self._open_face_refinement_dialog).pack(side="right")
-        eval_button = ttk.Button(face_action, text="Evaluate Starting LoRA…", command=self._open_face_evaluation_dialog); eval_button.pack(side="right", padx=(0, 6))
-        ToolTip(eval_button, "Generates a fixed read-only test suite with Krea Turbo, then measures overall identity, matching-pose identity, face detection, and whether each requested angle was produced. No weights are changed.")
+        open_face_button = ttk.Button(face_action, text="Open Face Refinement", command=lambda: self._select_page(3))
+        open_face_button.pack(side="right")
+        ToolTip(open_face_button, "Opens the dedicated Face Refinement workspace. Nothing starts automatically.")
 
         attention_frame = ttk.LabelFrame(frame, text="Attention Mechanism"); attention_frame.pack(fill="x", padx=10, pady=10)
         self.attention_var = tk.StringVar(value="xformers")
@@ -1041,8 +1062,268 @@ class MusubiTunerGUI:
         self._add_widget(resume_frame, "resume_path", "Resume from State:", "Path to a saved state folder to continue a previous training run.", kind='path_entry', is_dir=True, is_path=True)
         self._add_widget(resume_frame, "network_weights", "Network Weights:", "Load pre-trained LoRA weights to continue training from them (fine-tuning a LoRA).", kind='path_entry', options=[("Weight files", "*.safetensors")], is_path=True)
 
+    @staticmethod
+    def _face_refinement_workspace_state(config):
+        config = config or {}
+        input_mode = config.get("input_mode", "previous_stage")
+        input_lora = str(config.get("input_lora") or "").strip()
+        if input_mode == "existing_lora":
+            source = f"Existing LoRA: {Path(input_lora).name}" if input_lora else "Existing LoRA not selected"
+        else:
+            source = "LoRA from the previous staged-training step"
+
+        report = config.get("preflight_report") or {}
+        if report:
+            valid = int(report.get("valid_faces") or 0)
+            scanned = int(report.get("images_scanned") or 0)
+            flagged = sum(1 for item in report.get("scored_images", []) if item.get("outlier"))
+            references = f"Analyzed: {valid}/{scanned} usable faces; {flagged} flagged for review"
+        elif str(config.get("reference_dir") or "").strip():
+            references = "Reference folder selected, but analysis still needs to run"
+        else:
+            references = "Reference folder not selected"
+
+        plan = config.get("pose_plan") or {}
+        pose_enabled = bool(config.get("pose_aware") and plan.get("enabled"))
+        enabled_poses = sum(1 for item in (plan.get("buckets") or {}).values() if item.get("enabled"))
+        poses = f"Pose-aware plan active for {enabled_poses} angle group(s)" if pose_enabled else "Simple all-angle identity matching"
+
+        baseline = str(config.get("evaluation_baseline_result") or "").strip()
+        evaluation = f"Turbo baseline ready: {Path(baseline).parent.name}" if baseline and Path(baseline).is_file() else "Turbo baseline not created yet"
+        configured = bool(report and str(config.get("trigger_word") or "").strip())
+        return {
+            "source": source,
+            "references": references,
+            "poses": poses,
+            "evaluation": evaluation,
+            "configured": configured,
+        }
+
+    def create_face_refinement_tab(self):
+        frame = self._create_scrollable_tab("4  Face Refinement")
+        self._add_page_intro(
+            frame,
+            "Face Refinement",
+            "Evaluate an existing Krea 2 LoRA, analyze identity references and viewing angles, build a focused refinement plan, then run it as a staged-training step.",
+        )
+        self.face_workspace_mode_var = tk.StringVar()
+        mode_label = ttk.Label(frame, textvariable=self.face_workspace_mode_var, style="PageHelp.TLabel", wraplength=920)
+        mode_label.pack(fill="x", padx=12, pady=(2, 8))
+
+        self.face_workspace_vars = {
+            key: tk.StringVar(value="Not configured")
+            for key in ("source", "references", "poses", "evaluation")
+        }
+        cards = (
+            ("1 · Starting LoRA and identity references", "source", "Choose the LoRA, trigger word, reference folder, and face-analysis models.", "Configure Setup…", self._configure_face_refinement_from_workspace,
+             "Opens all required setup fields. Saving does not start training."),
+            ("2 · Analyze and review references", "references", "Face and pose analysis is run from Setup. Reopen it to rescan changed images or review low-confidence results.", "Analyze / Review…", self._configure_face_refinement_from_workspace,
+             "Opens Setup, where Analyze Faces & Poses can be run again and results can be reviewed without changing source images."),
+            ("3 · Pose training plan", "poses", "Optionally give weak profiles or other angles their own prompts, step shares, targets, and stopping rules.", "Configure Pose Plan…", self._open_pose_plan_from_workspace,
+             "Opens the pose planner directly. Simple all-angle refinement remains available when no pose plan is enabled."),
+            ("4 · Turbo evaluation", "evaluation", "Create a read-only baseline with the Turbo model before refinement, then compare the refined LoRA using identical prompts and seeds.", "Evaluate LoRA…", self._open_face_evaluation_dialog,
+             "Generates and scores test images. It does not update LoRA weights."),
+        )
+        self._face_workspace_buttons = []
+        for title, key, help_text, button_text, command, tooltip in cards:
+            card = ttk.LabelFrame(frame, text=title); card.pack(fill="x", padx=10, pady=6)
+            content = ttk.Frame(card); content.pack(fill="x", padx=10, pady=9)
+            ttk.Label(content, textvariable=self.face_workspace_vars[key], style="Status.TLabel", wraplength=690).pack(anchor="w")
+            ttk.Label(content, text=help_text, style="PageHelp.TLabel", wraplength=690).pack(anchor="w", pady=(3, 0))
+            button = ttk.Button(content, text=button_text, command=command)
+            button.pack(side="right", pady=(4, 0)); ToolTip(button, tooltip)
+            self._face_workspace_buttons.append(button)
+
+        results_card = ttk.LabelFrame(frame, text="Latest Turbo evaluation report")
+        results_card.pack(fill="x", padx=10, pady=6)
+        self.face_results_summary_var = tk.StringVar(value="Run a Turbo evaluation to see identity and pose results here.")
+        ttk.Label(results_card, textvariable=self.face_results_summary_var, style="PageHelp.TLabel", wraplength=880).pack(anchor="w", padx=10, pady=(9, 6))
+        ttk.Label(results_card, text="Double-click a pose row to inspect all generated images for that angle.", style="PageHelp.TLabel").pack(anchor="w", padx=10, pady=(0, 6))
+        columns = ("pose", "samples", "identity", "pose_identity", "pose_success", "detection", "delta")
+        self.face_results_tree = ttk.Treeview(results_card, columns=columns, show="headings", height=6)
+        labels = {"pose": "Requested pose", "samples": "Samples", "identity": "Overall identity", "pose_identity": "Matching-pose identity", "pose_success": "Pose success", "detection": "Face detected", "delta": "Identity change"}
+        for key in columns:
+            self.face_results_tree.heading(key, text=labels[key])
+            self.face_results_tree.column(key, width=125, stretch=key == "pose")
+        self.face_results_tree.pack(fill="x", padx=10, pady=(0, 6))
+        self.face_results_tree.bind("<Double-1>", self._open_selected_face_evaluation_pose_gallery)
+        result_actions = ttk.Frame(results_card); result_actions.pack(fill="x", padx=10, pady=(0, 10))
+        self.face_open_results_button = ttk.Button(result_actions, text="Open Generated Images", command=self._open_latest_face_evaluation_folder, state="disabled")
+        self.face_open_results_button.pack(side="left")
+        ToolTip(self.face_open_results_button, "Opens the local evaluation folder so you can visually inspect the generated Turbo images. Numbers should support visual judgment, not replace it.")
+        self.face_build_plan_button = ttk.Button(result_actions, text="Build Plan from Weak Poses", command=self._build_plan_from_latest_face_evaluation, state="disabled")
+        self.face_build_plan_button.pack(side="left", padx=(6, 0))
+        ToolTip(self.face_build_plan_button, "Uses below-target pose scores to create an editable pose plan. It does not start training.")
+        self._face_latest_evaluation_path = ""
+        self._face_latest_evaluation_payload = None
+
+        run_card = ttk.LabelFrame(frame, text="5 · Add to a run"); run_card.pack(fill="x", padx=10, pady=(6, 14))
+        ttk.Label(
+            run_card,
+            text="Face refinement runs through Staged Progression so it can safely receive a LoRA from an earlier training stage or start from an existing LoRA.",
+            style="PageHelp.TLabel", wraplength=880,
+        ).pack(anchor="w", padx=10, pady=(9, 5))
+        run_actions = ttk.Frame(run_card); run_actions.pack(fill="x", padx=10, pady=(0, 10))
+        add_button = ttk.Button(run_actions, text="Add as Final Stage", style="Accent.TButton", command=self._add_face_refinement_final_stage)
+        add_button.pack(side="left"); ToolTip(add_button, "Adds or updates one Face Refinement step at the end of the staged plan and enables Staged Progression. It does not start the run.")
+        stages_button = ttk.Button(run_actions, text="Review Staged Plan…", command=self._open_staged_training_dialog)
+        stages_button.pack(side="left", padx=(6, 0)); ToolTip(stages_button, "Opens the full stage editor so you can review ordering, resolutions, datasets, and step limits.")
+        monitor_button = ttk.Button(run_actions, text="Open Monitor", command=lambda: self._select_page(5))
+        monitor_button.pack(side="right"); ToolTip(monitor_button, "Opens the Monitor, where the staged run is started and refinement progress is shown.")
+        self._face_workspace_buttons.extend((add_button, stages_button))
+        self._refresh_face_refinement_workspace()
+
+    def _refresh_face_refinement_workspace(self):
+        if not hasattr(self, "face_workspace_vars"):
+            return
+        state = self._face_refinement_workspace_state(self._face_refinement_config)
+        for key, variable in self.face_workspace_vars.items():
+            variable.set(state[key])
+        is_krea = self.training_mode_var.get() == "Krea 2"
+        self.face_workspace_mode_var.set(
+            "Ready for Krea 2. Configure and evaluate here; start the actual staged run from Monitor."
+            if is_krea else "Face Refinement currently supports Krea 2 only. Switch Training mode to Krea 2 to configure or run it."
+        )
+        for button in getattr(self, "_face_workspace_buttons", []):
+            button.configure(state="normal" if is_krea else "disabled")
+        latest = str(
+            (self._face_refinement_config or {}).get("evaluation_last_result")
+            or (self._face_refinement_config or {}).get("evaluation_baseline_result")
+            or ""
+        )
+        if latest and Path(latest).is_file() and latest != getattr(self, "_face_latest_evaluation_path", ""):
+            self._display_face_evaluation_result(latest)
+
+    def _display_face_evaluation_result(self, result_path):
+        if not hasattr(self, "face_results_tree"):
+            return
+        payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
+        self.face_results_tree.delete(*self.face_results_tree.get_children())
+        fmt = lambda value: "—" if value is None else f"{value:.3f}"
+        for pose, metrics in payload.get("poses", {}).items():
+            delta = payload.get("deltas", {}).get(pose, {}).get("overall_similarity")
+            self.face_results_tree.insert("", "end", iid=f"pose::{pose}", values=(
+                pose.replace("_", " ").title(), metrics.get("samples", 0),
+                fmt(metrics.get("overall_similarity")), fmt(metrics.get("pose_similarity")),
+                f"{metrics.get('pose_success_rate', 0.0):.0%}", f"{metrics.get('detection_rate', 0.0):.0%}", fmt(delta),
+            ))
+        mode_text = "Comparison complete" if payload.get("baseline") else "Starting baseline created"
+        self.face_results_summary_var.set(
+            f"{mode_text}. Identity says who the face resembles; pose success says whether Turbo followed the requested angle. Review the generated images before deciding what to refine."
+        )
+        self._face_latest_evaluation_path = str(result_path)
+        self._face_latest_evaluation_payload = payload
+        self.face_open_results_button.configure(state="normal")
+        self.face_build_plan_button.configure(state="normal" if payload.get("poses") else "disabled")
+
+    def _open_latest_face_evaluation_folder(self):
+        if self._face_latest_evaluation_path:
+            self._open_path(str(Path(self._face_latest_evaluation_path).parent))
+
+    def _build_plan_from_latest_face_evaluation(self):
+        if self._face_latest_evaluation_payload:
+            self._apply_turbo_evaluation_to_pose_plan(self._face_latest_evaluation_payload)
+
+    def _open_selected_face_evaluation_pose_gallery(self, _event=None):
+        if _event is not None:
+            row = self.face_results_tree.identify_row(_event.y)
+            if row:
+                self.face_results_tree.selection_set(row)
+        selected = self.face_results_tree.selection()
+        if not selected or not self._face_latest_evaluation_payload:
+            return
+        pose = selected[0].removeprefix("pose::")
+        cases = [case for case in self._face_latest_evaluation_payload.get("cases", []) if case.get("pose") == pose]
+        images = [case for case in cases if case.get("image") and Path(case["image"]).is_file()]
+        if not images:
+            messagebox.showinfo("Evaluation images", "No generated image files were found for this pose.", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Evaluation Images · {pose.replace('_', ' ').title()}")
+        dialog.geometry("1040x760"); dialog.minsize(720, 520)
+        dialog.configure(background=self.colors["page"])
+        header = ttk.Frame(dialog, padding=(14, 12)); header.pack(fill="x")
+        ttk.Label(header, text=pose.replace("_", " ").title(), style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text=f"{len(images)} generated image(s). Click an image for a larger preview. Identity is resemblance; detected pose is what the analyzer saw.",
+            style="PageHelp.TLabel", wraplength=940,
+        ).pack(anchor="w", pady=(3, 0))
+
+        body = ttk.Frame(dialog); body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        canvas = tk.Canvas(body, bg=self.colors["page"], highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        grid = ttk.Frame(canvas, style="Page.TFrame")
+        window = canvas.create_window((0, 0), window=grid, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        grid.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+        dialog._evaluation_photos = []
+        columns = 3
+        for column in range(columns):
+            grid.grid_columnconfigure(column, weight=1, uniform="evaluation-gallery")
+        for index, case in enumerate(images):
+            card = ttk.Frame(grid, style="Surface.TFrame", padding=8)
+            card.grid(row=index // columns, column=index % columns, sticky="nsew", padx=6, pady=6)
+            image_path = str(case["image"])
+            try:
+                with Image.open(image_path) as source:
+                    preview = source.copy()
+                preview.thumbnail((280, 250))
+                photo = ImageTk.PhotoImage(preview)
+                dialog._evaluation_photos.append(photo)
+                image_label = tk.Label(card, image=photo, bg=self.colors["surface_alt"], cursor="hand2", bd=0)
+                image_label.pack(fill="x")
+                image_label.bind("<Button-1>", lambda _e, path=image_path: self._open_sample_preview(path))
+            except Exception as exc:
+                tk.Label(card, text=f"Preview unavailable\n{exc}", bg=self.colors["surface_alt"], fg=self.colors["muted"], height=8).pack(fill="x")
+            identity = case.get("overall_similarity")
+            identity_text = "Not detected" if identity is None else f"Identity: {identity:.3f}"
+            detected_pose = str(case.get("actual_pose") or "not detected").replace("_", " ").title()
+            ttk.Label(card, text=f"{identity_text} · Detected: {detected_pose}", style="Muted.TLabel", wraplength=280).pack(anchor="w", pady=(7, 2))
+            ttk.Label(card, text=str(case.get("prompt") or ""), wraplength=280, justify="left").pack(anchor="w")
+
+        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(-int(event.delta / 120) * 3, "units"))
+
+    def _configure_face_refinement_from_workspace(self):
+        self._open_face_refinement_dialog(on_save=lambda _config: self._refresh_face_refinement_workspace())
+
+    def _open_pose_plan_from_workspace(self):
+        config = self._default_face_refinement_config()
+        config.update(copy.deepcopy(self._face_refinement_config or {}))
+
+        def save(plan):
+            config["pose_plan"] = plan
+            config["pose_aware"] = bool(plan.get("enabled"))
+            config["pose_reward_weight"] = round(min(0.35, 1.0 - float(plan.get("overall_anchor_weight", 0.80))), 3)
+            self._face_refinement_config = config
+            self._refresh_face_refinement_workspace()
+
+        self._open_pose_training_plan_dialog(config, config.get("trigger_word", ""), save, self.root)
+
+    def _add_face_refinement_final_stage(self):
+        if self.training_mode_var.get() != "Krea 2":
+            messagebox.showerror("Face Refinement", "Switch Training mode to Krea 2 first.")
+            return
+        config = self._face_refinement_config or {}
+        if not config.get("preflight_report"):
+            messagebox.showerror("Face Refinement", "Configure the reference folder and complete Analyze Faces & Poses first.")
+            return
+        stages = [copy.deepcopy(item) for item in self._staged_training_config if item.get("type") != "face_refinement"]
+        stages.append({
+            "label": "face-refinement", "enabled": True, "type": "face_refinement",
+            "dataset_config": "", "epochs": "", "steps": str(config.get("steps") or 30),
+        })
+        self._staged_training_config = stages
+        self.entries["use_staged_training"].var.set(True)
+        self._update_staged_summary()
+        self._update_run_mode_controls()
+        messagebox.showinfo("Face Refinement", "Face Refinement is now the final staged step. Review the staged plan or open Monitor when you are ready; nothing has started yet.")
+
     def create_samples_tab(self):
-        tab_frame = self._create_scrollable_tab("4  Samples")
+        tab_frame = self._create_scrollable_tab("5  Samples")
         self._add_page_intro(tab_frame, "Sample previews", "Choose when previews run, manage reusable prompts, and inspect generated samples without deleting inactive prompts.")
 
         # --- Frequency controls ---
@@ -1883,7 +2164,7 @@ class MusubiTunerGUI:
         self.sample_watcher_active = False
 
     def create_run_monitor_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="5  Monitor")
+        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="6  Monitor")
         layout_toolbar = ttk.Frame(tab_frame)
         layout_toolbar.pack(fill="x", padx=10, pady=(8, 2))
         ttk.Label(
@@ -2067,7 +2348,8 @@ class MusubiTunerGUI:
             "pose_plan": default_pose_plan(),
             "evaluation_prompts_per_pose": 1, "evaluation_seeds_per_prompt": 2,
             "evaluation_seed": 42000, "evaluation_resolution": 512, "evaluation_steps": 8,
-            "evaluation_baseline_result": "",
+            "evaluation_lora_strength": 1.0,
+            "evaluation_baseline_result": "", "evaluation_last_result": "",
             "blocks_to_swap": 10,
             "gpu_id": "auto",
         }
@@ -2233,17 +2515,33 @@ class MusubiTunerGUI:
                 selected = tree.selection()
                 if not selected or not records[selected[0]]["scored"]: return
                 iid = selected[0]; record = records[iid]
-                from musubi_tuner.face_refinement.pose import POSE_BUCKETS
-                picker = tk.Toplevel(review); picker.title("Correct Pose Bucket"); picker.transient(review); picker.grab_set()
-                ttk.Label(picker, text=Path(record["path"]).name, wraplength=420).pack(padx=14, pady=(14, 6))
-                pose_var = tk.StringVar(value=record["item"].get("bucket", "uncertain"))
-                pose_picker = ttk.Combobox(picker, textvariable=pose_var, values=POSE_BUCKETS, state="readonly", width=28); pose_picker.pack(padx=14, pady=6)
+                from musubi_tuner.face_refinement.pose import POSE_BUCKETS, POSE_LABELS
+                picker = tk.Toplevel(review)
+                picker.title("Correct Viewing Angle")
+                picker.transient(review); picker.grab_set(); picker.resizable(False, False)
+                picker.configure(background=self.colors["page"])
+                panel = ttk.Frame(picker, padding=16); panel.pack(fill="both", expand=True)
+                ttk.Label(panel, text="Correct viewing angle", style="PageTitle.TLabel").pack(anchor="w")
+                ttk.Label(
+                    panel,
+                    text="Choose the angle you see. This changes only the analysis label; it does not edit or move the image.",
+                    style="PageHelp.TLabel", wraplength=430, justify="left",
+                ).pack(anchor="w", pady=(3, 10))
+                ttk.Label(panel, text=Path(record["path"]).name, style="Muted.TLabel", wraplength=430).pack(anchor="w", pady=(0, 8))
+                display_to_pose = {POSE_LABELS.get(pose, pose.replace("_", " ").title()): pose for pose in POSE_BUCKETS}
+                pose_to_display = {pose: label for label, pose in display_to_pose.items()}
+                pose_display_var = tk.StringVar(value=pose_to_display.get(record["item"].get("bucket", "uncertain"), "Uncertain"))
+                pose_picker = ttk.Combobox(panel, textvariable=pose_display_var, values=list(display_to_pose), state="readonly", width=34)
+                pose_picker.pack(fill="x", pady=(0, 12))
                 ToolTip(pose_picker, "Choose the viewing angle you see in the image. Use Uncertain when the face is ambiguous, mirrored, heavily tilted, or hard to classify.")
                 def apply_pose():
-                    record["item"]["bucket"] = pose_var.get(); record["item"]["pose_manual"] = True
-                    values = list(tree.item(iid, "values")); values[3] = pose_var.get(); tree.item(iid, values=values)
+                    pose = display_to_pose[pose_display_var.get()]
+                    record["item"]["bucket"] = pose; record["item"]["pose_manual"] = True
+                    values = list(tree.item(iid, "values")); values[3] = POSE_LABELS.get(pose, pose); tree.item(iid, values=values)
                     picker.destroy()
-                ttk.Button(picker, text="Apply", style="Accent.TButton", command=apply_pose).pack(padx=14, pady=(6, 14))
+                actions = ttk.Frame(panel); actions.pack(fill="x")
+                ttk.Button(actions, text="Cancel", command=picker.destroy).pack(side="right", padx=(6, 0))
+                ttk.Button(actions, text="Apply Angle", style="Accent.TButton", command=apply_pose).pack(side="right")
             tree.bind("<<TreeviewSelect>>", show_preview); tree.bind("<Double-1>", toggle_use)
             buttons = ttk.Frame(review); buttons.pack(fill="x", padx=12, pady=10)
             use_button = ttk.Button(buttons, text="Use / Exclude Selected", command=toggle_use); use_button.pack(side="left"); ToolTip(use_button, "Switch whether this detected face is used during refinement. Excluding it does not delete, move, or alter the image.")
@@ -2261,7 +2559,7 @@ class MusubiTunerGUI:
 
         prompts_frame = ttk.LabelFrame(host, text="3 · Generation prompts"); prompts_frame.pack(fill="both", expand=True, pady=6)
         ttk.Label(prompts_frame, text="One prompt per line. Use {trigger} for the subject. Optional pose tags: [auto], [frontal], [three_quarter_left/right], [profile_left/right], [looking_up/down].", wraplength=680).pack(anchor="w", padx=8, pady=(7, 3))
-        prompts_text = tk.Text(prompts_frame, height=9, wrap="word")
+        prompts_text = self._themed_text(prompts_frame, height=9, wrap="word")
         prompts_text.pack(fill="both", expand=True, padx=8, pady=(0, 8)); prompts_text.insert("1.0", "\n".join(config["prompts"]))
         prompt_source_var = tk.StringVar(value="These prompts are used by simple face refinement.")
         prompt_source_label = ttk.Label(prompts_frame, textvariable=prompt_source_var, style="PageHelp.TLabel", wraplength=680)
@@ -2275,6 +2573,7 @@ class MusubiTunerGUI:
             ("learning_rate", "Learning rate", float), ("target_similarity", "Reward saturation", float),
             ("stop_similarity", "Early-stop similarity", float), ("early_stop_patience", "Early-stop patience", int),
             ("min_detection_rate", "Minimum face detection rate", float), ("preview_every", "Preview every N steps", int),
+            ("save_every", "Save LoRA every N steps", int),
             ("blocks_to_swap", "DiT blocks moved to CPU", int),
             ("gpu_id", "GPU index (auto recommended)", str),
             ("pose_reward_weight", "Matching-pose influence", float),
@@ -2283,6 +2582,7 @@ class MusubiTunerGUI:
         field_help = {
             "pose_reward_weight": "How much of each update may focus on the matching viewing angle. 0.20 is a cautious default. The Pose Training Plan's identity anchor may reduce it further for safety.",
             "pose_min_references": "Minimum number of usable photos required before an angle gets its own identity target. Groups below this number safely fall back or are disabled.",
+            "save_every": "Saves an intermediate LoRA after this many refinement steps. For example, 10 saves at steps 10, 20, and 30. Use 0 to disable intermediate checkpoints. The final LoRA is always saved.",
         }
         grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
         for index, (key, label, _kind) in enumerate(fields):
@@ -2304,7 +2604,10 @@ class MusubiTunerGUI:
         ToolTip(plan_button, "Opens the guided pose planner: choose an improvement goal, decide how often each angle is practiced, set finish targets, and edit pose-specific prompts. It does not start training.")
         def sync_prompt_source(*_args):
             plan_active = bool(pose_aware_var.get() and (config.get("pose_plan") or {}).get("enabled"))
-            prompts_text.configure(state="disabled" if plan_active else "normal")
+            prompts_text.configure(
+                state="disabled" if plan_active else "normal",
+                foreground=self.colors["muted"] if plan_active else self.colors["text"],
+            )
             if plan_active:
                 prompt_source_var.set("Pose Training Plan is active. This main prompt list is preserved but not used. Open Configure Pose Training Plan to edit the prompts used for this run.")
                 prompt_source_label.configure(foreground=self.colors["warning"])
@@ -2336,6 +2639,7 @@ class MusubiTunerGUI:
                 if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
                     raise ValueError("Run Analyze Faces & Poses successfully for this reference folder before saving.")
                 if updated["steps"] < 1 or updated["resolution"] % 16 or not 1 <= updated["draft_k"] <= updated["denoise_steps"] or not 0 <= updated["blocks_to_swap"] <= 26: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value.")
+                if updated["save_every"] < 0: raise ValueError("Save LoRA every N steps must be 0 or greater.")
                 if not 0 <= updated["pose_reward_weight"] <= 0.35 or updated["pose_min_references"] < 2: raise ValueError("Pose influence must be 0–0.35 and each pose bucket must require at least 2 references.")
                 if updated["gpu_id"] != "auto" and (not updated["gpu_id"].isdigit() or int(updated["gpu_id"]) < 0): raise ValueError("GPU index must be 'auto' or a non-negative number.")
             except Exception as exc:
@@ -2364,6 +2668,10 @@ class MusubiTunerGUI:
             row = ttk.Frame(host); row.pack(fill="x", pady=4); label_widget = ttk.Label(row, text=label, width=22); label_widget.pack(side="left"); entry = ttk.Entry(row, textvariable=variable); entry.pack(side="left", fill="x", expand=True); button = ttk.Button(row, text="Browse", command=browse_command); button.pack(side="right", padx=(6, 0)); return label_widget, entry, button
         lora_label, lora_entry, lora_button = path_row("LoRA to evaluate", lora_var, lambda: lora_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("LoRA weights", "*.safetensors")]) or lora_var.get()))
         ToolTip(lora_label, "The existing or refined LoRA being tested. Evaluation reads it but never changes it."); ToolTip(lora_entry, "The existing or refined LoRA being tested. Evaluation reads it but never changes it.")
+        trigger_text = str(config.get("trigger_word") or "").strip()
+        trigger_label = ttk.Label(host, text=f"Trigger used in evaluation prompts: {trigger_text or '(none configured)'}", style="PageHelp.TLabel", wraplength=680)
+        trigger_label.pack(anchor="w", pady=(0, 4))
+        ToolTip(trigger_label, "The GUI replaces {trigger} with this text before generation. If a prompt has no {trigger}, it prefixes the trigger automatically. Check Configure Setup to change it.")
         baseline_label, baseline_entry, baseline_button = path_row("Baseline result", baseline_var, lambda: baseline_var.set(filedialog.askopenfilename(parent=dialog, filetypes=[("Evaluation result", "results.json"), ("JSON", "*.json")]) or baseline_var.get()))
         baseline_help_var = tk.StringVar(); baseline_help = ttk.Label(host, textvariable=baseline_help_var, style="PageHelp.TLabel", wraplength=680); baseline_help.pack(anchor="w", pady=(0, 5))
         def sync_baseline_mode(*_args):
@@ -2374,7 +2682,7 @@ class MusubiTunerGUI:
         baseline_tip = "This is not an output folder. It is the results.json automatically produced by the original baseline. You only choose it when comparing another LoRA."
         ToolTip(baseline_label, baseline_tip); ToolTip(baseline_entry, baseline_tip); ToolTip(baseline_button, baseline_tip); ToolTip(baseline_help, baseline_tip)
         settings_frame = ttk.LabelFrame(host, text="Evaluation size"); settings_frame.pack(fill="x", pady=10)
-        fields = [("evaluation_prompts_per_pose", "Prompts per enabled pose", int, "How many different prompt descriptions to test for each enabled viewing angle."), ("evaluation_seeds_per_prompt", "Seeds per prompt", int, "How many image variations to generate for each prompt. More seeds give a more trustworthy average but take longer."), ("evaluation_resolution", "Turbo resolution", int, "Square image size used for both baseline and later comparison. Keep it identical between runs."), ("evaluation_steps", "Turbo denoising steps", int, "Turbo normally uses 8 steps. Keep this identical for before/after comparisons."), ("evaluation_seed", "Starting seed", int, "The fixed seed family used to reproduce exactly the same test images after refinement.")]
+        fields = [("evaluation_prompts_per_pose", "Prompts per enabled pose", int, "How many different prompt descriptions to test for each enabled viewing angle."), ("evaluation_seeds_per_prompt", "Seeds per prompt", int, "How many image variations to generate for each prompt. More seeds give a more trustworthy average but take longer."), ("evaluation_resolution", "Turbo resolution", int, "Square image size used for both baseline and later comparison. Keep it identical between runs."), ("evaluation_steps", "Turbo denoising steps", int, "Turbo normally uses 8 steps. Keep this identical for before/after comparisons."), ("evaluation_seed", "Starting seed", int, "The fixed seed family used to reproduce exactly the same test images after refinement."), ("evaluation_lora_strength", "LoRA strength", float, "How strongly the selected LoRA is applied to Turbo. 1.0 is the normal full strength. Use the same value you normally render with; comparisons keep it fixed." )]
         variables = {}; grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
         for index, (key, label, kind, tip) in enumerate(fields):
             variable = tk.StringVar(value=str(config.get(key))); variables[key] = variable
@@ -2390,6 +2698,7 @@ class MusubiTunerGUI:
                 if not config.get("preflight_report"): raise ValueError("Run Analyze Faces & Poses and save Face Refinement settings first.")
                 for key, _label, kind, _tip in fields: config[key] = kind(variables[key].get())
                 if min(config["evaluation_prompts_per_pose"], config["evaluation_seeds_per_prompt"], config["evaluation_resolution"], config["evaluation_steps"]) < 1: raise ValueError("Evaluation counts, resolution, and steps must be positive.")
+                if config["evaluation_lora_strength"] <= 0: raise ValueError("LoRA strength must be greater than zero.")
                 baseline = baseline_var.get().strip() if mode_var.get() == "compare" else None
                 if mode_var.get() == "compare" and (not baseline or not Path(baseline).is_file()): raise ValueError("Choose an existing baseline results.json before comparing.")
                 settings = self.get_settings(); settings["python_executable"] = sys.executable or "python"
@@ -2399,7 +2708,7 @@ class MusubiTunerGUI:
             self._face_refinement_config = config
             settings["face_refinement_config"] = copy.deepcopy(config)
             self._face_eval_context = {**prepared, "mode": mode_var.get(), "config": config, "commands": list(prepared["commands"])}
-            self.output_text.delete("1.0", tk.END); self._select_page(4); self.run_status_var.set("🧪 Turbo face baseline evaluation")
+            self.output_text.delete("1.0", tk.END); self._select_page(5); self.run_status_var.set("🧪 Turbo face baseline evaluation")
             self.progress_label_var.set(f"Generating {prepared['cases']} fixed Turbo evaluation image(s)…")
             self._begin_job("sample_test", "Krea Turbo face evaluation", settings=settings, note=f"{mode_var.get()} · {prepared['cases']} fixed cases")
             dialog.destroy(); self.run_process(prepared["commands"][0], on_complete=self._on_face_eval_generation_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
@@ -2418,23 +2727,14 @@ class MusubiTunerGUI:
             self._finalize_active_job("failed", return_code); self.stop_all_activity(); return
         if context["mode"] == "baseline":
             self._face_refinement_config["evaluation_baseline_result"] = str(context["result"])
+        self._face_refinement_config["evaluation_last_result"] = str(context["result"])
         self._finalize_active_job("completed", 0); self.stop_all_activity(); self._show_face_evaluation_results(context["result"])
 
     def _show_face_evaluation_results(self, result_path):
-        payload = json.loads(Path(result_path).read_text(encoding="utf-8")); dialog = tk.Toplevel(self.root); dialog.title("Krea Turbo Face Evaluation Results"); dialog.minsize(920, 480)
-        host = ttk.Frame(dialog, padding=14); host.pack(fill="both", expand=True); ttk.Label(host, text="Turbo evaluation results", style="PageTitle.TLabel").pack(anchor="w")
-        ttk.Label(host, text="Identity measures who the face resembles. Pose success measures whether Turbo actually followed the requested angle. Review the images as well as the numbers.", style="PageHelp.TLabel", wraplength=870).pack(anchor="w", pady=(2, 10))
-        columns = ("pose", "samples", "identity", "pose_identity", "pose_success", "detection", "delta")
-        tree = ttk.Treeview(host, columns=columns, show="headings"); tree.pack(fill="both", expand=True)
-        labels = {"pose": "Requested pose", "samples": "Samples", "identity": "Overall identity", "pose_identity": "Matching-pose identity", "pose_success": "Pose success", "detection": "Face detected", "delta": "Identity change"}
-        for key in columns: tree.heading(key, text=labels[key]); tree.column(key, width=135)
-        for pose, metrics in payload.get("poses", {}).items():
-            delta = payload.get("deltas", {}).get(pose, {}).get("overall_similarity")
-            fmt = lambda value: "—" if value is None else f"{value:.3f}"
-            tree.insert("", "end", values=(pose.replace("_", " ").title(), metrics["samples"], fmt(metrics.get("overall_similarity")), fmt(metrics.get("pose_similarity")), f"{metrics['pose_success_rate']:.0%}", f"{metrics['detection_rate']:.0%}", fmt(delta)))
-        actions = ttk.Frame(host); actions.pack(fill="x", pady=(10, 0)); ttk.Button(actions, text="Open Evaluation Folder", command=lambda: self._open_path(str(Path(result_path).parent))).pack(side="left")
-        focus_button = ttk.Button(actions, text="Build Plan from Weak Poses", command=lambda: self._apply_turbo_evaluation_to_pose_plan(payload, dialog)); focus_button.pack(side="left", padx=(6, 0)); ToolTip(focus_button, "Creates an editable Pose Training Plan that spends more steps on angles below their target or often ignored by Turbo. It never starts training and does not overwrite your reference analysis.")
-        ttk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
+        self._display_face_evaluation_result(result_path)
+        self._refresh_face_refinement_workspace()
+        self._select_page(3)
+        self.run_status_var.set("✅ Turbo face evaluation complete — review the report in Face Refinement")
 
     def _apply_turbo_evaluation_to_pose_plan(self, payload, results_dialog=None):
         from musubi_tuner.face_refinement.pose_plan import TRAINABLE_POSES, default_pose_plan, normalize_pose_plan
@@ -2457,7 +2757,9 @@ class MusubiTunerGUI:
         config["pose_plan"] = plan; config["pose_aware"] = True; config["evaluation_baseline_result"] = str(payload.get("baseline") or config.get("evaluation_baseline_result") or "")
         self._face_refinement_config = config
         if results_dialog: results_dialog.destroy()
-        self._open_face_refinement_dialog()
+        self._refresh_face_refinement_workspace()
+        self._select_page(3)
+        messagebox.showinfo("Pose plan created", "A pose-aware plan was built from the weak evaluation results. Review or edit it with Configure Pose Plan before training.", parent=self.root)
         if warnings: messagebox.showwarning("Pose plan safeguards", "\n".join(warnings), parent=self.root)
 
     def _open_pose_training_plan_dialog(self, face_config, trigger_word, on_save, parent=None):
@@ -2526,7 +2828,7 @@ class MusubiTunerGUI:
             for column, key, width in ((3, "share", 10), (4, "target", 8), (5, "patience", 10), (6, "plateau_patience", 11), (7, "min_evaluations", 10)):
                 entry = ttk.Entry(table_frame, textvariable=variables[key], width=width); entry.grid(row=index, column=column, padx=4, pady=2); ToolTip(entry, header_tips[column])
             tab = ttk.Frame(prompt_tabs); prompt_tabs.add(tab, text=POSE_LABELS[pose])
-            text = tk.Text(tab, height=6, wrap="word"); text.pack(fill="both", expand=True, padx=6, pady=(6, 3)); text.insert("1.0", "\n".join(cfg.get("prompts") or suggest_prompts(pose)))
+            text = self._themed_text(tab, height=6, wrap="word"); text.pack(fill="both", expand=True, padx=6, pady=(6, 3)); text.insert("1.0", "\n".join(cfg.get("prompts") or suggest_prompts(pose)))
             ToolTip(text, f"One editable {POSE_LABELS[pose].lower()} prompt per line. The [{pose}] label tells the trainer which reference-angle group to compare against; it is removed before Krea reads the prompt.")
             prompt_boxes[pose] = text
             actions = ttk.Frame(tab); actions.pack(fill="x", padx=6, pady=(0, 6))
@@ -2828,7 +3130,7 @@ class MusubiTunerGUI:
 
     def create_jobs_tab(self):
         tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(tab_frame, text="6  Jobs")
+        self.notebook.add(tab_frame, text="7  Jobs")
         tab_frame.grid_columnconfigure(0, weight=1)
         tab_frame.grid_rowconfigure(2, weight=1)
 
@@ -3747,7 +4049,7 @@ class MusubiTunerGUI:
         self._sample_prompts_data.extend(additions)
         self._rebuild_prompt_list()
         self.update_button_states()
-        self._select_page(3)
+        self._select_page(4)
         self.run_status_var.set(f"⚪ Imported {len(additions)} sample prompt(s) from {source_title}")
         messagebox.showinfo(
             "Sample prompts imported",
@@ -4794,6 +5096,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._update_dynamic_widgets()
             self._update_run_mode_controls()
             self._update_lora_size_estimate()
+            self._refresh_face_refinement_workspace()
             if self.entries["resume_path"].get(): self.run_status_var.set("🟢 Resuming Training RUN")
             else: self.run_status_var.set("⚪ New Training RUN")
         except (KeyError, AttributeError): pass

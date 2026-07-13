@@ -14,6 +14,7 @@ class Krea2FaceBackendTests(unittest.TestCase):
             "reference_dir": "refs", "face_model_dir": "faces", "steps": 30,
             "reference_manifest": "enabled_refs.json",
             "resolution": 512, "denoise_steps": 12, "draft_k": 1,
+            "save_every": 7,
         }
         command = build_command(settings, config, "input.safetensors", "output.safetensors", "prompts.json")
         self.assertEqual(command[:2], ["python", "src/musubi_tuner/krea2_face_refinement.py"])
@@ -21,6 +22,7 @@ class Krea2FaceBackendTests(unittest.TestCase):
         self.assertEqual(command[command.index("--network_weights") + 1], "input.safetensors")
         self.assertEqual(command[command.index("--train_steps") + 1], "30")
         self.assertEqual(command[command.index("--reference_manifest") + 1], "enabled_refs.json")
+        self.assertEqual(command[command.index("--save_every") + 1], "7")
         self.assertIn("--fp8_scaled", command)
         self.assertNotIn("--pose_aware", command)
 

@@ -151,7 +151,40 @@ def build_pipeline(
     return mmdit, ae
 
 
-def generate(args: argparse.Namespace, dit, ae, encoder, device: str, dtype: torch.dtype, te_device: str):
+def _prompt_embedding_key(args: argparse.Namespace):
+    return (args.prompt, args.negative_prompt, args.guidance_scale > 1.0)
+
+
+def _repeat_prompt_embeddings(embeds, count: int):
+    if count == 1:
+        return embeds
+    return tuple(value.repeat((count,) + (1,) * (value.ndim - 1)) if value is not None else None for value in embeds)
+
+
+def preencode_prompt_args(encoder, prompt_args_list, te_device: str):
+    """Encode every unique file prompt up front and keep the small embeddings on CPU."""
+    cache = {}
+    unique = {}
+    for prompt_args in prompt_args_list:
+        unique.setdefault(_prompt_embedding_key(prompt_args), prompt_args)
+
+    for cfg in (False, True):
+        group = [(key, item) for key, item in unique.items() if key[2] is cfg]
+        if not group:
+            continue
+        logger.info("Pre-encoding %s unique prompt(s) with Qwen3-VL", len(group))
+        prompts = [item.prompt for _key, item in group]
+        negatives = [item.negative_prompt for _key, item in group]
+        batched = encode(encoder, prompts, negatives, cfg, te_device)
+        for index, (key, _item) in enumerate(group):
+            cache[key] = tuple(
+                value[index:index + 1].detach().to("cpu") if value is not None else None
+                for value in batched
+            )
+    return cache
+
+
+def generate(args: argparse.Namespace, dit, ae, encoder, device: str, dtype: torch.dtype, te_device: str, embeds=None):
     """Run one prompt end to end: encode -> denoise -> decode, returning a list of PIL images.
 
     The DiT (``dit``) and VAE (``ae``) are reused across calls. Per call the encoder is shuttled
@@ -179,7 +212,10 @@ def generate(args: argparse.Namespace, dit, ae, encoder, device: str, dtype: tor
         args.seed,
     )
 
-    txt, txtmask, untxt, untxtmask = encode(encoder, prompts, negative_prompts, cfg, te_device)
+    if embeds is None:
+        txt, txtmask, untxt, untxtmask = encode(encoder, prompts, negative_prompts, cfg, te_device)
+    else:
+        txt, txtmask, untxt, untxtmask = _repeat_prompt_embeddings(embeds, args.num_images)
 
     # Re-arm the block-swap offloader before each forward (no-op when block swap is off).
     if args.blocks_to_swap > 0:
@@ -360,6 +396,11 @@ def parse_args() -> argparse.Namespace:
 
     # batch / interactive modes
     parser.add_argument("--from_file", type=str, default=None, help="Read prompts (one per line) from a file")
+    parser.add_argument(
+        "--preencode_prompts",
+        action="store_true",
+        help="With --from_file, encode every unique prompt before loading the DiT, then generate all images from cached CPU embeddings.",
+    )
     parser.add_argument("--interactive", action="store_true", help="Interactive mode: read prompts from the console")
     parser.add_argument(
         "--bell",
@@ -418,9 +459,27 @@ def main():
         args.projector_diff_strength,
     )
 
-    # Load all three models up front and keep them: the encoder and VAE live on CPU, the DiT
-    # lives on the GPU (with block swap as needed). Encoder/VAE shuttle to the GPU per prompt.
+    prompt_args_list = None
+    if args.from_file:
+        with open(args.from_file, "r", encoding="utf-8") as f:
+            prompt_args_list = [
+                apply_overrides(args, parse_prompt_line(line.strip()))
+                for line in f
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+
     encoder = load_text_encoder(args.text_encoder, dtype)
+    prompt_embedding_cache = None
+    if args.preencode_prompts:
+        if not args.from_file:
+            raise ValueError("--preencode_prompts requires --from_file")
+        prompt_embedding_cache = preencode_prompt_args(encoder, prompt_args_list, te_device)
+        del encoder
+        encoder = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("All unique prompts encoded; loading the image model and generating sequentially")
 
     swap_config = None
     if args.blocks_to_swap > 0:
@@ -444,18 +503,11 @@ def main():
     )
 
     if args.from_file:
-        with open(args.from_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        index = 0
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):  # skip blank lines and comments
-                continue
-            prompt_args = apply_overrides(args, parse_prompt_line(line))
+        for index, prompt_args in enumerate(prompt_args_list):
             logger.info(f"[{index}] Prompt: {prompt_args.prompt}")
-            images = generate(prompt_args, dit, ae, encoder, device, dtype, te_device)
+            cached = prompt_embedding_cache.get(_prompt_embedding_key(prompt_args)) if prompt_embedding_cache is not None else None
+            images = generate(prompt_args, dit, ae, encoder, device, dtype, te_device, embeds=cached)
             save_images(images, args.save_path, prompt_args.seed)
-            index += 1
         if args.bell:
             print("\a")
 

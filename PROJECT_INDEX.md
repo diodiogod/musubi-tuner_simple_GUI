@@ -166,6 +166,8 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `krea2_face_evaluate.py` + `face_refinement/evaluation.py` - read-only fixed-suite Turbo scoring for identity, matching pose, requested-pose success, detection, and baseline deltas
 - `backends/krea2_face.py` - command construction for typed face-refinement stages
 - `backends/krea2_face_eval.py` - fixed prompt/seed Turbo suite preparation plus generation/scoring command construction
+- The main GUI has a dedicated Face Refinement workspace with persistent setup/status cards, an embedded latest-evaluation report, per-pose image galleries, configurable intermediate saves, weak-pose plan actions, and staged-run shortcuts
+- Turbo evaluation batch-encodes unique prompts before loading the DiT, reuses embeddings across seeds, and correctly dequantizes pre-scaled FP8 weights before merging a LoRA
 - Face settings and prompts are persisted in GUI/job JSON snapshots; no second dataset TOML is exposed
 - Staged handoff remains type-aware: standard→standard uses state directories, standard↔face uses LoRA files, and a first-stage face run uses an explicitly validated existing LoRA
 

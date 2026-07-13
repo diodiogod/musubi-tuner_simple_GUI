@@ -80,6 +80,29 @@ def _make_krea2_comfy_fp8_split_hook(compute_dtype: torch.dtype):
     return split_hook
 
 
+def _make_krea2_prequant_lora_merge_hook(compute_dtype: torch.dtype, scales: dict[str, torch.Tensor]):
+    """Dequantize pre-scaled FP8 weights before the streaming LoRA merge.
+
+    The generic merge hook operates on real model weights. A Comfy-style FP8 checkpoint stores
+    ``quantized_weight`` and ``weight_scale`` separately, so merging directly into the former
+    makes the LoRA delta use the wrong numerical scale. This adapter reconstructs each real
+    weight first; the normal loader then merges the LoRA and creates a fresh FP8 weight/scale.
+    """
+
+    def split_hook(key: str, value: Optional[torch.Tensor]):
+        if key.endswith(COMFY_FP8_MARKER_SUFFIX) or key.endswith(FP8_SCALE_SUFFIX):
+            return [], None
+        scale = scales.get(key + "_scale")
+        if scale is None:
+            return None, None
+        if value is None:
+            return [key], None
+        real_weight = value.to(compute_dtype) * _reshape_prequant_fp8_scale(scale).to(compute_dtype)
+        return [key], [real_weight]
+
+    return split_hook
+
+
 def load_krea2_projector_diff(
     path: str,
     strength: float = 1.0,
@@ -151,9 +174,14 @@ def load_krea2_dit(
 
     with MemoryEfficientSafeOpen(dit_path) as f:
         keys = f.keys()
+        prequant_scales = {key: f.get_tensor(key) for key in keys if key.endswith(FP8_SCALE_SUFFIX)} if has_lora else {}
     is_prequant_fp8 = any(k.endswith(FP8_SCALE_SUFFIX) for k in keys)
     if is_prequant_fp8:
-        prequant_hooks = WeightTransformHooks(split_hook=_make_krea2_comfy_fp8_split_hook(dtype))
+        split_hook = (
+            _make_krea2_prequant_lora_merge_hook(dtype, prequant_scales)
+            if has_lora else _make_krea2_comfy_fp8_split_hook(dtype)
+        )
+        prequant_hooks = WeightTransformHooks(split_hook=split_hook)
 
     logger.info(
         f"Loading Krea 2 DiT weights from {dit_path}"
@@ -176,10 +204,13 @@ def load_krea2_dit(
             calc_device=device,
             move_to_device=(loading_device == device),
             dit_weight_dtype=None if fp8_scaled else dtype,
-            target_keys=KREA2_FP8_OPTIMIZATION_TARGET_KEYS if fp8_scaled else None,
-            exclude_keys=KREA2_FP8_OPTIMIZATION_EXCLUDE_KEYS if fp8_scaled else None,
+            target_keys=(
+                [key[: -len(FP8_SCALE_SUFFIX)] for key in prequant_scales]
+                if is_prequant_fp8 and has_lora else KREA2_FP8_OPTIMIZATION_TARGET_KEYS if fp8_scaled else None
+            ),
+            exclude_keys=None if is_prequant_fp8 and has_lora else KREA2_FP8_OPTIMIZATION_EXCLUDE_KEYS if fp8_scaled else None,
             weight_transform_hooks=prequant_hooks,
-            allow_prequantized_fp8=is_prequant_fp8,
+            allow_prequantized_fp8=is_prequant_fp8 and not has_lora,
         )
         if fp8_scaled or is_prequant_fp8:
             apply_fp8_monkey_patch(dit, sd, use_scaled_mm=False)

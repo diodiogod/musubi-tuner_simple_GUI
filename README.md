@@ -198,15 +198,23 @@ reference folder, and the similarity reward updates the LoRA through the final d
   target patience, plateau patience, and minimum evaluations per pose. Seven grouped prompt
   editors add tags automatically and can generate editable offline suggestions or import tagged
   TXT/JSON prompts. Monitor output reports each pose against its target and the final stop reason.
-- **Evaluate Starting LoRA…** performs a read-only fixed-seed baseline with Krea Turbo—the
+- The dedicated **Face Refinement** page keeps setup, reference-analysis status, pose planning,
+  Turbo evaluation, the latest report, and staged-run actions together. Evaluation returns to
+  this page automatically instead of leaving its report only in a pop-up.
+- **Evaluate LoRA…** performs a read-only fixed-seed baseline with Krea Turbo—the
   renderer users actually see, not RAW. It reports overall and matching-pose identity, requested
   pose success, detection, worst cases, and before/after deltas. Any saved LoRA checkpoint can be
   compared against the baseline, then **Build Plan from Weak Poses** prepares an editable plan.
+  The UI shows the trigger and LoRA strength used. Unique prompts are encoded once before the
+  image model loads, then reused while seed variants generate sequentially.
+- Double-click a pose in the embedded evaluation report to inspect all generated images for that
+  angle in a thumbnail gallery. Refinement setup also exposes the intermediate LoRA save interval;
+  `0` disables intermediate checkpoints, while the final LoRA is always saved.
 - It is intended for recognizable human faces, not clothing, body shape, tattoos, or general style.
 - Built-in saturation, Q/K/V/O-only training, face-detection monitoring, previews, and early stopping
   reduce—but cannot eliminate—the risk of overfitting or a pasted-on “face swap” appearance.
 
-Open **Configure Face Refinement…**, choose the starting-LoRA mode and trigger word, acknowledge the third-party face-model notice, download or
+Open **Face Refinement**, choose the starting-LoRA mode and trigger word in **Configure Setup…**, acknowledge the third-party face-model notice, download or
 select AntelopeV2, run **Analyze Faces & Poses**, then add a `face_refinement` stage in the staged-training
 window. The recommended starting point is 30 updates at 512px with 12 denoising steps and
 `draft_k=1`. Optional dependencies are installed with `pip install -e ".[face_refinement]"`.

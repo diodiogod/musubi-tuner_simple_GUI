@@ -28,6 +28,7 @@ class Krea2FaceEvaluationBackendTests(unittest.TestCase):
                 "face_model_dir": "face-models", "pose_min_references": 2,
                 "evaluation_prompts_per_pose": 1, "evaluation_seeds_per_prompt": 2,
                 "evaluation_seed": 1000, "evaluation_resolution": 512, "evaluation_steps": 8,
+                "evaluation_lora_strength": 0.85,
                 "preflight_report": {"scored_images": [
                     {"path": "left.jpg", "bucket": "profile_left"},
                     {"path": "right.jpg", "bucket": "profile_right"},
@@ -36,6 +37,8 @@ class Krea2FaceEvaluationBackendTests(unittest.TestCase):
             result = prepare(settings, config, root / "input.safetensors")
             generate, evaluate = result["commands"]
             self.assertIn("--turbo", generate)
+            self.assertIn("--preencode_prompts", generate)
+            self.assertEqual(generate[generate.index("--lora_multiplier") + 1], "0.85")
             self.assertEqual(generate[generate.index("--dit") + 1], str(root / "turbo.safetensors"))
             self.assertEqual(result["cases"], 4)
             self.assertIn("krea2_face_evaluate.py", evaluate[1])

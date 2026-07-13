@@ -42,12 +42,14 @@ def prepare(settings, config, input_lora, *, baseline_result=None, label="baseli
             case_index += 1
 
     projector_strength = float(settings.get("krea2_projector_diff_strength") or 1.0)
+    lora_strength = float(config.get("evaluation_lora_strength") or 1.0)
     renderer_settings = {
         "turbo_dit": str(Path(settings["krea2_turbo_dit"]).resolve()),
         "vae": str(Path(settings["vae_model"]).resolve()),
         "text_encoder": str(Path(settings["krea2_text_encoder"]).resolve()),
         "projector_diff": str(Path(settings["krea2_projector_diff"]).resolve()) if settings.get("krea2_projector_diff") else "",
         "projector_strength": projector_strength,
+        "lora_strength": lora_strength,
         "resolution": resolution, "steps": steps, "guidance": 1.0,
         "attention": settings.get("attention_mechanism", "sdpa"), "fp8_scaled": bool(settings.get("fp8_scaled")),
         "split_attn": bool(settings.get("split_attn")), "blocks_to_swap": int(settings.get("blocks_to_swap") or 0),
@@ -58,7 +60,7 @@ def prepare(settings, config, input_lora, *, baseline_result=None, label="baseli
         if not baseline_suite_path.is_file(): raise ValueError("The baseline result does not point to its original fixed evaluation suite.")
         baseline_suite = json.loads(baseline_suite_path.read_text(encoding="utf-8"))
         expected = baseline_suite.get("renderer_settings", {})
-        for key in ("turbo_dit", "vae", "text_encoder", "projector_diff", "projector_strength", "attention", "fp8_scaled", "split_attn", "blocks_to_swap"):
+        for key in ("turbo_dit", "vae", "text_encoder", "projector_diff", "projector_strength", "lora_strength", "attention", "fp8_scaled", "split_attn", "blocks_to_swap"):
             if expected.get(key) != renderer_settings.get(key):
                 raise ValueError(f"Comparison setting '{key}' differs from the baseline. Restore the baseline Turbo/projector settings for a fair comparison.")
         cases = baseline_suite["cases"]; resolution = int(expected.get("resolution", resolution)); steps = int(expected.get("steps", steps))
@@ -79,7 +81,8 @@ def prepare(settings, config, input_lora, *, baseline_result=None, label="baseli
 
     python = settings.get("python_executable") or "python"
     attention = {"sdpa": "torch", "none": "torch", "flash_attn": "flash", "sage_attn": "sageattn"}.get(settings.get("attention_mechanism"), settings.get("attention_mechanism", "torch"))
-    generate = [python, "src/musubi_tuner/krea2_generate_image.py", "--dit", settings["krea2_turbo_dit"], "--vae", settings["vae_model"], "--text_encoder", settings["krea2_text_encoder"], "--save_path", str(images_dir), "--attn_mode", attention, "--turbo", "--from_file", str(prompts_path), "--lora_weight", str(input_lora)]
+    generate = [python, "src/musubi_tuner/krea2_generate_image.py", "--dit", settings["krea2_turbo_dit"], "--vae", settings["vae_model"], "--text_encoder", settings["krea2_text_encoder"], "--save_path", str(images_dir), "--attn_mode", attention, "--turbo", "--from_file", str(prompts_path), "--preencode_prompts", "--lora_weight", str(input_lora)]
+    generate.extend(["--lora_multiplier", str(lora_strength)])
     if settings.get("fp8_scaled"): generate.append("--fp8_scaled")
     if settings.get("split_attn"): generate.append("--split_attn")
     if settings.get("blocks_to_swap"): generate.extend(["--blocks_to_swap", str(settings["blocks_to_swap"])])
