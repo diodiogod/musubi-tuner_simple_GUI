@@ -5,6 +5,7 @@ import io
 import threading
 import copy
 import json
+import math
 import os
 import re
 import signal
@@ -157,6 +158,8 @@ class MusubiTunerGUI:
         self.current_prior_steps = 0
         self.current_prior_epochs = 0
         self._pending_continuation = None
+        self._pending_recovery = None
+        self._preserve_loss_on_next_command = False
         self._last_loss_step = 0
         self.sample_watcher_active = False
         self._sample_watcher_thread = None
@@ -687,7 +690,7 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_dit_model", "RAW DiT Model:", "Path to the Krea 2 RAW DiT model (.safetensors). Required for training.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_text_encoder", "Text Encoder (Qwen3-VL-4B):", "Path to the Qwen3-VL-4B-Instruct safetensors file. Required for text re-caching and sample generation during training.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit", "Turbo DiT (Optional):", "Optional distilled Turbo DiT safetensors path. Used only for sample generation during training to preview Turbo inference behavior.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_path=True)
-        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps the optional Turbo DiT weights resident in CPU RAM for faster sampling. Only relevant when Turbo DiT is set.", kind='checkbox')
+        self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps only the optional Turbo weights in CPU RAM so entering each preview is faster. The RAW training model is safely restored from disk afterward. Uses roughly one extra model's worth of system RAM and is only relevant when Turbo DiT is set.", kind='checkbox')
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff", "Projector Patch (Optional):", "Optional tiny Krea 2 projector diff safetensors patch. Applied to the RAW training base model and also to optional Turbo sample generation so previews stay consistent.", kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff_strength", "Patch Strength:", "Multiplier for the optional projector patch. Example: 2.5", validate_num=True)
 
@@ -3465,7 +3468,7 @@ class MusubiTunerGUI:
         ttk.Label(intro, text="Recent jobs", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(
             intro,
-            text="Track completed, failed, and stopped runs locally. Run name identifies what was produced; Job type explains what operation was run. Right-click a job to repeat/edit its settings or load its latest state as a continuation.",
+            text="Track completed, failed, and stopped runs locally. Run name identifies what was produced; Job type explains the operation. Failed normal training jobs can be recovered as a verified true state resume when a complete checkpoint exists.",
             style="PageHelp.TLabel",
             wraplength=920,
             justify="left",
@@ -3532,6 +3535,10 @@ class MusubiTunerGUI:
             command=self._load_selected_job_as_continuation,
         )
         self._jobs_context_menu.add_command(
+            label="Recover Failed Run (True Resume)…",
+            command=self._recover_selected_failed_job,
+        )
+        self._jobs_context_menu.add_command(
             label="Refine Face Identity…",
             command=self._load_selected_job_for_face_refinement,
         )
@@ -3569,6 +3576,12 @@ class MusubiTunerGUI:
         ToolTip(
             import_prompts_button,
             "Merges saved sample prompts from this job into the current prompt list and skips duplicates.",
+        )
+        recover_button = ttk.Button(details_toolbar, text="Recover Failed…", command=self._recover_selected_failed_job)
+        recover_button.pack(side="left", padx=(6, 0))
+        ToolTip(
+            recover_button,
+            "For a failed or stopped normal training job, finds the newest complete Accelerate state and loads a true resume using the same run name and output folder. Nothing starts automatically.",
         )
         refine_face_button = ttk.Button(details_toolbar, text="Refine Face…", command=self._load_selected_job_for_face_refinement)
         refine_face_button.pack(side="left", padx=(6, 0))
@@ -3620,6 +3633,26 @@ class MusubiTunerGUI:
             return max(0, int(job.get(key) or 0))
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _compact_loss_history(points, limit=2000):
+        """Return bounded JSON-safe monitor points while preserving both endpoints."""
+        limit = max(2, int(limit))
+        cleaned = []
+        for point in points or []:
+            try:
+                step, loss = int(point[0]), float(point[1])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if step >= 0 and math.isfinite(loss):
+                cleaned.append([step, loss])
+        if len(cleaned) <= limit:
+            return cleaned
+        stride = max(1, math.ceil((len(cleaned) - 1) / (limit - 1)))
+        compact = cleaned[:-1:stride]
+        if not compact or compact[-1] != cleaned[-1]:
+            compact.append(cleaned[-1])
+        return compact[:limit - 1] + [cleaned[-1]] if len(compact) > limit else compact
 
     @classmethod
     def _job_cumulative_progress(cls, job):
@@ -3899,6 +3932,11 @@ class MusubiTunerGUI:
             and isinstance(job.get("settings_snapshot"), dict)
             and job.get("settings_snapshot")
         )
+        can_recover = bool(
+            can_continue
+            and job.get("kind") == "training"
+            and job.get("status") in ("failed", "stopped")
+        )
         can_import_prompts = bool(
             job
             and isinstance(job.get("settings_snapshot"), dict)
@@ -3928,7 +3966,8 @@ class MusubiTunerGUI:
             3,
             state="normal" if can_continue else "disabled",
         )
-        self._jobs_context_menu.entryconfigure(4, state="normal" if can_refine_face else "disabled")
+        self._jobs_context_menu.entryconfigure(4, state="normal" if can_recover else "disabled")
+        self._jobs_context_menu.entryconfigure(5, state="normal" if can_refine_face else "disabled")
         try:
             self._jobs_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -3956,6 +3995,11 @@ class MusubiTunerGUI:
     @staticmethod
     def _state_epoch_from_path(state_path):
         match = re.search(r"-(\d+)-state$", Path(state_path).name, re.IGNORECASE)
+        return int(match.group(1)) if match else 0
+
+    @staticmethod
+    def _state_step_from_path(state_path):
+        match = re.search(r"-step(\d+)-state$", Path(state_path).name, re.IGNORECASE)
         return int(match.group(1)) if match else 0
 
     def _continuation_state_candidates(self, job):
@@ -4046,6 +4090,86 @@ class MusubiTunerGUI:
         if original_resume and Path(original_resume).is_dir():
             return Path(original_resume)
         return None
+
+    @staticmethod
+    def _validate_accelerate_state(state_path):
+        """Validate the state pieces required to honestly call an operation a true resume."""
+        path = Path(state_path)
+        if not path.is_dir():
+            return False, ["state folder"]
+
+        patterns = {
+            "model state": ("model*.safetensors", "pytorch_model*.bin"),
+            "optimizer state": ("optimizer*.bin", "optimizer*.pt"),
+            "scheduler state": ("scheduler*.bin", "scheduler*.pt"),
+            "random-number state": ("random_states*.pkl",),
+        }
+        missing = []
+        for label, globs in patterns.items():
+            matches = [candidate for pattern in globs for candidate in path.glob(pattern)]
+            usable = []
+            for candidate in matches:
+                try:
+                    if candidate.is_file() and candidate.stat().st_size > 0:
+                        usable.append(candidate)
+                except OSError:
+                    pass
+            if not usable:
+                missing.append(label)
+        if not MusubiTunerGUI._state_epoch_from_path(path) and not MusubiTunerGUI._state_step_from_path(path):
+            missing.append("epoch/step position marker in the state-folder name")
+        return not missing, missing
+
+    def _resolve_job_recovery_state(self, job):
+        """Choose the newest complete state that existed when this job stopped."""
+        candidates = list(self._continuation_state_candidates(job))
+        original_resume = str(job.get("resume_path") or "").strip()
+        if original_resume and Path(original_resume).is_dir():
+            candidates.append(Path(original_resume))
+
+        unique = []
+        seen = set()
+        for candidate in candidates:
+            key = self._normalise_history_path(candidate)
+            if key and key not in seen:
+                seen.add(key)
+                unique.append(Path(candidate))
+
+        finished_timestamp = None
+        try:
+            finished_timestamp = datetime.fromisoformat(str(job.get("finished_at") or "")).timestamp()
+        except ValueError:
+            pass
+        def modified_time(path):
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return -1
+
+        unique = [path for path in unique if modified_time(path) >= 0]
+        if finished_timestamp is not None:
+            unique = [path for path in unique if modified_time(path) <= finished_timestamp + 300]
+
+        recorded_epoch = self._job_metric(job, "current_epoch")
+        if recorded_epoch:
+            at_or_before_failure = [
+                path for path in unique
+                if not self._state_epoch_from_path(path) or self._state_epoch_from_path(path) <= recorded_epoch
+            ]
+            if at_or_before_failure:
+                unique = at_or_before_failure
+
+        unique.sort(
+            key=lambda path: (self._state_epoch_from_path(path), modified_time(path)),
+            reverse=True,
+        )
+        rejected = []
+        for candidate in unique:
+            valid, missing = self._validate_accelerate_state(candidate)
+            if valid:
+                return candidate, []
+            rejected.append(f"{candidate.name}: missing {', '.join(missing)}")
+        return None, rejected
 
     def _resolve_job_face_lora(self, job):
         """Find a complete Krea LoRA produced by a recorded job."""
@@ -4435,6 +4559,7 @@ class MusubiTunerGUI:
             settings["training_comment"] = f"{cleaned_comment}\n{repeat_note}".strip()
 
         self._pending_continuation = None
+        self._pending_recovery = None
         self.set_values(settings)
         self._select_page(0)
         self.run_status_var.set("⚪ Repeated job settings loaded for editing")
@@ -4484,10 +4609,168 @@ class MusubiTunerGUI:
         }]
         settings["face_refinement_config"] = face_config
         self._pending_continuation = None
+        self._pending_recovery = None
         self.set_values(settings)
         self._select_page(1)
         self.run_status_var.set("⚪ Face-refinement continuation loaded for review")
         self._open_face_refinement_dialog()
+
+    def _recover_selected_failed_job(self):
+        if self.current_process:
+            messagebox.showwarning("Recover run", "Stop the active process before loading a recovery.")
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        if job.get("kind") != "training" or job.get("status") not in ("failed", "stopped"):
+            messagebox.showinfo(
+                "True recovery unavailable",
+                "Select a failed or stopped normal training job. Staged jobs need stage-specific reconstruction and are not labelled as a true resume.",
+            )
+            return
+        snapshot = job.get("settings_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            messagebox.showerror(
+                "True recovery unavailable",
+                "This job has no complete GUI settings snapshot, so its original run identity and training configuration cannot be restored safely.",
+            )
+            return
+
+        state_path, rejected = self._resolve_job_recovery_state(job)
+        if state_path is None:
+            detail = "\n".join(rejected[:4]) or "No state folders associated with this job were found."
+            messagebox.showerror(
+                "Complete training state not found",
+                "A true resume needs model, optimizer, scheduler, and random-number state files.\n\n" + detail
+                + "\n\nThe ordinary Continuation action may still be used when only LoRA weights are available, but that is not an exact resume.",
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Recover Failed Run — True Resume")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(True, False)
+        dialog.configure(bg=self.colors["page"])
+
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Complete training state found", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            body,
+            text="This is a true Accelerate resume: LoRA, optimizer, scheduler, epoch/step, and random state will be restored.",
+            style="PageHelp.TLabel",
+            wraplength=680,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 12))
+
+        summary = ttk.LabelFrame(body, text="Recovery summary")
+        summary.pack(fill="x")
+        source_name = self._job_display_name(job)
+        state_epoch = self._state_epoch_from_path(state_path)
+        state_step = self._state_step_from_path(state_path)
+        checkpoint_position = f"Epoch {state_epoch} completed; resume at epoch {state_epoch + 1}" if state_epoch else f"Step {state_step} completed"
+        rows = (
+            ("Run", source_name),
+            ("Checkpoint", state_path.name),
+            ("Resume position", checkpoint_position),
+            ("Training target", str(snapshot.get("max_train_epochs") or job.get("total_epochs") or "Unchanged")),
+            ("Output behavior", "Keep the same output folder and LoRA name"),
+        )
+        for row, (label, value) in enumerate(rows):
+            ttk.Label(summary, text=label + ":").grid(row=row, column=0, sticky="nw", padx=(10, 8), pady=4)
+            ttk.Label(summary, text=value, style="PageHelp.TLabel", wraplength=520).grid(row=row, column=1, sticky="nw", padx=(0, 10), pady=4)
+        summary.grid_columnconfigure(1, weight=1)
+
+        saved_history = self._compact_loss_history(job.get("loss_history") or [])
+        history_text = (
+            f"The previous graph has {len(saved_history)} saved point(s) and will continue in the monitor."
+            if saved_history
+            else "This older job has no saved graph series. Its last known loss will be used as a starting marker when available."
+        )
+        ttk.Label(body, text=history_text, style="PageHelp.TLabel", wraplength=680, justify="left").pack(anchor="w", pady=(10, 2))
+        ttk.Label(
+            body,
+            text="Nothing starts automatically. The settings are loaded for review first; recaching and staged mode are disabled.",
+            style="PageHelp.TLabel",
+            wraplength=680,
+            justify="left",
+        ).pack(anchor="w", pady=(2, 12))
+
+        actions = ttk.Frame(body)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Load True Resume",
+            style="Accent.TButton",
+            command=lambda: self._load_true_recovery(job, state_path, dialog),
+        ).pack(side="right", padx=(0, 8))
+        dialog.update_idletasks()
+        dialog.geometry(f"{max(720, dialog.winfo_reqwidth())}x{dialog.winfo_reqheight()}")
+
+    def _load_true_recovery(self, job, state_path, dialog=None):
+        settings = copy.deepcopy(job["settings_snapshot"])
+        training_command = self._job_training_command(job)
+        command_dataset = self._command_option(training_command, "--dataset_config")
+        command_epochs = self._command_option(training_command, "--max_train_epochs")
+        if command_dataset:
+            settings["dataset_config"] = command_dataset
+        if command_epochs:
+            settings["max_train_epochs"] = command_epochs
+
+        # Unlike Continuation, recovery intentionally retains the original run identity.
+        settings["output_name"] = str(settings.get("output_name") or job.get("output_name") or "training")
+        settings["resume_path"] = str(state_path)
+        settings["network_weights"] = ""
+        settings["save_state"] = True
+        settings["recache_latents"] = False
+        settings["recache_text"] = False
+        settings["use_staged_training"] = False
+
+        history = self._compact_loss_history(job.get("loss_history") or [])
+        if not history:
+            try:
+                last_step = int(job.get("current_step") or 0)
+                last_loss = float(job.get("last_loss"))
+                if last_step > 0 and math.isfinite(last_loss):
+                    history = [[last_step, last_loss]]
+            except (TypeError, ValueError):
+                pass
+        lineage_keys = (
+            "continuation_parent_id", "continuation_parent_title", "continuation_prior_epochs",
+            "continuation_prior_steps", "continuation_depth", "continuation_resume_state",
+        )
+        self._pending_recovery = {
+            "source_job_id": job.get("job_id", ""),
+            "source_title": self._job_display_name(job),
+            "state_path": str(state_path),
+            "loss_history": history,
+            "checkpoint_step": self._state_step_from_path(state_path) or self._job_metric(job, "current_step"),
+            "checkpoint_epoch": self._state_epoch_from_path(state_path) or self._job_metric(job, "current_epoch"),
+            "total_steps": self._job_metric(job, "total_steps"),
+            "total_epochs": self._job_metric(job, "total_epochs"),
+            "lineage": {key: job.get(key) for key in lineage_keys if job.get(key) not in (None, "")},
+        }
+        self._pending_continuation = None
+        self.set_values(settings)
+        self.loss_data = [(int(step), float(loss)) for step, loss in history]
+        self._last_loss_step = self.loss_data[-1][0] if self.loss_data else 0
+        self.update_loss_graph()
+        self.update_training_counters(
+            self._pending_recovery["checkpoint_step"], self._pending_recovery["total_steps"],
+            self._pending_recovery["checkpoint_epoch"], self._pending_recovery["total_epochs"],
+        )
+        self._select_page(1)
+        self.run_status_var.set(f"🛟 True resume ready from {Path(state_path).name}")
+        if dialog is not None:
+            dialog.destroy()
+        messagebox.showinfo(
+            "True resume loaded",
+            f"Complete state: {state_path.name}\n\n"
+            f"Output name remains: {settings['output_name']}\n\n"
+            "Review the settings, then click Run Training. The recovered job will continue the saved monitor history.",
+        )
 
     def _load_selected_job_as_continuation(self):
         if self.current_process:
@@ -4515,6 +4798,7 @@ class MusubiTunerGUI:
             state_path,
             source_job=job,
         )
+        self._pending_recovery = None
 
         settings = copy.deepcopy(settings_snapshot)
         training_command = self._job_training_command(job)
@@ -4595,6 +4879,8 @@ class MusubiTunerGUI:
             f"Overall Step: {cumulative['current_step']} / {cumulative['total_steps']}",
             f"Run Epoch: {job.get('current_epoch', 'N/A')} / {job.get('total_epochs', 'N/A')}",
             f"Overall Epoch: {cumulative['current_epoch']} / {cumulative['total_epochs']}",
+            f"True State Resume: {'Yes' if job.get('true_state_resume') else 'No'}",
+            f"Recovery State: {job.get('recovery_state', '') or 'N/A'}",
             "",
             "Prompt / note:",
             job.get("note", "") or "(none)",
@@ -4762,6 +5048,7 @@ class MusubiTunerGUI:
             "total_steps": job.get("total_steps", 0),
             "current_epoch": job.get("current_epoch", 0),
             "total_epochs": job.get("total_epochs", 0),
+            "loss_history": self._compact_loss_history(job.get("loss_history") or []),
             "settings_snapshot": dict(job.get("settings_snapshot", {})) if isinstance(job.get("settings_snapshot"), dict) else {},
             "job_id": job.get("job_id", ""),
             "continuation_parent_id": job.get("continuation_parent_id", ""),
@@ -4770,6 +5057,10 @@ class MusubiTunerGUI:
             "continuation_prior_steps": job.get("continuation_prior_steps", 0),
             "continuation_depth": job.get("continuation_depth", 0),
             "continuation_resume_state": job.get("continuation_resume_state", ""),
+            "recovery_source_job_id": job.get("recovery_source_job_id", ""),
+            "recovery_source_title": job.get("recovery_source_title", ""),
+            "recovery_state": job.get("recovery_state", ""),
+            "true_state_resume": bool(job.get("true_state_resume")),
         }
         return normalised
 
@@ -4998,22 +5289,27 @@ class MusubiTunerGUI:
         self._last_loss_value = None
         resume_path = str(settings.get("resume_path") or "").strip()
         continuation = {}
+        recovery = None
         if kind in ("training", "staged_training") and resume_path:
-            pending_resume = self._normalise_history_path(
-                (self._pending_continuation or {}).get("continuation_resume_state", "")
-            )
-            if pending_resume and pending_resume == self._normalise_history_path(resume_path):
+            normalized_resume = self._normalise_history_path(resume_path)
+            recovery_resume = self._normalise_history_path((self._pending_recovery or {}).get("state_path", ""))
+            pending_resume = self._normalise_history_path((self._pending_continuation or {}).get("continuation_resume_state", ""))
+            if recovery_resume and recovery_resume == normalized_resume:
+                recovery = dict(self._pending_recovery)
+                continuation = dict(recovery.get("lineage") or {})
+            elif pending_resume and pending_resume == normalized_resume:
                 continuation = dict(self._pending_continuation)
             else:
                 continuation = self._continuation_metadata(resume_path)
         self._pending_continuation = None
+        self._pending_recovery = None
         self.current_prior_epochs = self._job_metric(continuation, "continuation_prior_epochs")
         self.current_prior_steps = self._job_metric(continuation, "continuation_prior_steps")
         if kind in ("training", "staged_training"):
-            self.current_step = 0
-            self.current_total_steps = 0
-            self.current_epoch_num = 0
-            self.current_epoch_total = 0
+            self.current_step = self._job_metric(recovery or {}, "checkpoint_step")
+            self.current_total_steps = self._job_metric(recovery or {}, "total_steps")
+            self.current_epoch_num = self._job_metric(recovery or {}, "checkpoint_epoch")
+            self.current_epoch_total = self._job_metric(recovery or {}, "total_epochs")
         training_comment = str(settings.get("training_comment") or "").strip()
         if training_comment:
             note = f"{note}\n\n{training_comment}".strip()
@@ -5039,6 +5335,15 @@ class MusubiTunerGUI:
             "settings_snapshot": dict(settings),
         }
         self._active_job.update(continuation)
+        if recovery:
+            self._active_job.update(
+                {
+                    "recovery_source_job_id": recovery.get("source_job_id", ""),
+                    "recovery_source_title": recovery.get("source_title", ""),
+                    "recovery_state": recovery.get("state_path", ""),
+                    "true_state_resume": True,
+                }
+            )
         self.update_training_counters()
 
     @staticmethod
@@ -5124,6 +5429,7 @@ class MusubiTunerGUI:
                 "total_steps": self.current_total_steps,
                 "current_epoch": self.current_epoch_num,
                 "total_epochs": self.current_epoch_total,
+                "loss_history": self._compact_loss_history(self.loss_data),
             }
         )
         self._job_history.insert(0, self._active_job)
@@ -6192,11 +6498,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._staged_run = None
             self.stop_all_activity(); return
         if self.command_sequence:
-            self.loss_data.clear()
-            self.current_step = 0
-            self._last_loss_step = 0
-            self.update_loss_graph()
             next_command = self.command_sequence.pop(0)
+            preserve_recovery_history = self._preserve_loss_on_next_command
+            if preserve_recovery_history and self._is_training_command(" ".join(map(str, next_command))):
+                self._preserve_loss_on_next_command = False
+            elif not preserve_recovery_history:
+                self.loss_data.clear()
+                self.current_step = 0
+                self._last_loss_step = 0
+                self.update_loss_graph()
             self.run_process(next_command, self._run_next_command_in_sequence, self.output_text, job_context={"attach_to_active": True})
         elif self._staged_run:
             previous = self._staged_run.get("previous_settings")
@@ -6573,13 +6883,24 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if wants_samples and self._count_enabled_sample_prompts() == 0:
             messagebox.showwarning("No Active Sample Prompts", "You set a sample frequency but have no enabled prompts in the Samples tab.\nNo samples will be generated.\n\nEnable at least one saved prompt or add a new one.")
 
-        self.loss_data.clear(); self.current_step = 0; self._last_loss_step = 0
+        recovery = self._pending_recovery
+        if recovery and self._normalise_history_path(recovery.get("state_path")) != self._normalise_history_path(settings.get("resume_path")):
+            recovery = None
+            self._pending_recovery = None
+        restored_history = self._compact_loss_history((recovery or {}).get("loss_history") or [])
+        self.loss_data = [(int(step), float(loss)) for step, loss in restored_history]
+        self.current_step = self._job_metric(recovery or {}, "checkpoint_step")
+        self.current_total_steps = self._job_metric(recovery or {}, "total_steps")
+        self.current_epoch_num = self._job_metric(recovery or {}, "checkpoint_epoch")
+        self.current_epoch_total = self._job_metric(recovery or {}, "total_epochs")
+        self._last_loss_step = self.loss_data[-1][0] if self.loss_data else 0
+        self._preserve_loss_on_next_command = bool(recovery)
         self.update_loss_graph(); self.start_vram_monitor(); self._start_sample_watcher()
         self.progress_var.set(0); self.progress_label_var.set("Starting sequence...")
         self.output_text.delete("1.0", tk.END); self.command_sequence = []
         self._begin_job(
             "training",
-            "Resumed training" if self.entries["resume_path"].get().strip() else "Training run",
+            "Recovered training" if recovery else "Resumed training" if self.entries["resume_path"].get().strip() else "Training run",
             settings=settings,
             note=f"Output: {settings.get('output_name', '')}",
         )
@@ -6655,9 +6976,23 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.root.after(0, messagebox.showerror, "Stop Training Failed", message)
                 self.root.after(0, self.stop_btn.config, {"state": "normal"})
 
+    @classmethod
+    def _should_use_exact_resume(cls, settings, pending_recovery=None, active_job=None):
+        resume_path = cls._normalise_history_path(settings.get("resume_path"))
+        pending_recovery_path = cls._normalise_history_path((pending_recovery or {}).get("state_path"))
+        active_exact_recovery = bool(
+            active_job
+            and active_job.get("true_state_resume")
+            and cls._normalise_history_path(active_job.get("recovery_state")) == resume_path
+        )
+        return bool(resume_path and (pending_recovery_path == resume_path or active_exact_recovery))
+
     def build_training_commands(self):
         settings = self.get_settings()
         settings["sample_prompts"] = self._build_sample_prompts_txt()
+        settings["resume_exact_position"] = self._should_use_exact_resume(
+            settings, self._pending_recovery, self._active_job
+        )
         mode = settings.get("training_mode", "Wan 2.2")
         if mode == "Wan 2.2":
             return wan_backend.build_commands(settings)

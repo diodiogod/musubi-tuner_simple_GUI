@@ -85,6 +85,14 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 ### Main Desktop App
 
 - `musubi_tuner_gui.py` - everything GUI-side: tab layout, validation, process launch, output parsing, monitoring, sample gallery, job history, staged training, conversion, setup helpers
+- Recent Jobs separates ordinary continuation from failed-run recovery: recovery validates complete Accelerate model/optimizer/scheduler/RNG state plus a numbered epoch/step position, keeps the original output identity, and carries bounded loss history into the resumed monitor
+- The shared trainer reconstructs `global_step`, starts an epoch checkpoint at the following epoch, and skips already-consumed batches for a step checkpoint; unnumbered end-state folders are not advertised as exact positional recovery
+
+### Resume Semantics — Preserve This Invariant
+
+- **Continuation is additive:** the existing **Load as Continuation / Resume** workflow branches to a new output name and trains the configured number of epochs as additional work. It must never pass `--resume_exact_position`.
+- **Failed-run recovery is positional:** only the verified **Recover Failed Run (True Resume)** workflow keeps the original run identity and passes `--resume_exact_position`; an epoch-4 state must continue at epoch 5 toward the original total (for example 5/16), not start another 1/16 block.
+- Do not infer these two workflows from `--resume` alone. Preserve the explicit opt-in flag, state-folder validation, and tests when importing upstream trainer/parser changes.
 - `dataset_config_builder.py` - standalone dataset-config editor used from the Models page
 - `prompt_library.py` - user-level prompt gallery stored outside the repo; prompts remain copied into run snapshots for reproducibility
 
@@ -155,7 +163,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `perceptual/depth_anchor.py` - differentiable Depth Anything V2 anchor, rectified-flow clean-latent reconstruction, and bounded target-depth cache
 - Krea integration stays in `krea2_train_network.py` through existing `process_batch`, `on_post_optimizer_step`, `extra_step_logs`, and `extra_metadata` overrides; the shared upstream trainer remains unchanged
 - Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps
-- The live monitor distinguishes the main `steps:` bar from model-loading bars, graphs combined loss, and shows depth loss/contribution; Krea sampling offloads the depth helper, falls back from RAM-cached Turbo swaps when headroom is unsafe, and uses tiled VAE preview decoding to control VRAM
+- The live monitor distinguishes the main `steps:` bar from model-loading bars, graphs combined loss, and shows depth loss/contribution; Krea sampling offloads the depth helper, caches only Turbo (RAW restores from disk), falls back to full streaming when RAM headroom is unsafe, and uses tiled VAE decoding only as an OOM fallback
 - Saved LoRAs record effective settings in `ss_krea2_*` metadata
 
 ### Experimental Face Refinement

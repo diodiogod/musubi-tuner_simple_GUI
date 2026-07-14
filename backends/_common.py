@@ -104,6 +104,7 @@ def build_common_train_args(cmd, settings):
     add_arg(cmd, "--seed", settings.get("seed"))
     add_arg(cmd, "--save_state", settings.get("save_state"))
     add_arg(cmd, "--resume", settings.get("resume_path"), is_path=True)
+    add_arg(cmd, "--resume_exact_position", settings.get("resume_exact_position"))
     add_arg(cmd, "--network_weights", settings.get("network_weights"), is_path=True)
     add_arg(cmd, "--training_comment", settings.get("training_comment"))
 

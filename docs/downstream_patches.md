@@ -78,3 +78,18 @@ not contain the GUI files.
   `THIRD_PARTY_NOTICES.md`, the source header, and `licenses/Apache-2.0.txt`.
 - AntelopeV2 artifacts are optional, user-initiated downloads and must never be committed or
   silently bundled.
+
+### Exact failed-run recovery
+
+- Isolated position parser: `training/resume_position.py`.
+- Shared upstream seams: the opt-in `--resume_exact_position` definition in
+  `training/parser_common.py`, plus the blocks marked `DOWNSTREAM: exact resume` in
+  `training/trainer_base.py`.
+- Disabled invariant: ordinary `--resume` keeps upstream/additive continuation behavior. Exact
+  epoch/global-step reconstruction and dataloader skipping occur only with
+  `--resume_exact_position`, which the GUI adds only for a validated **Recover Failed Run** job.
+- Epoch states start at the following epoch; step states restore `global_step` and skip already
+  consumed batches in the current epoch. Unnumbered state folders are never presented as exact.
+- GUI integration and bounded loss-history restoration remain in `musubi_tuner_gui.py` and
+  `backends/_common.py`.
+- Tests: `tests/test_true_resume_position.py` and `tests/test_gui_job_history.py`.

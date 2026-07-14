@@ -389,9 +389,10 @@ value confirms that the depth model is participating; the ordinary live-loss gra
 show the combined training loss. Before an epoch sample, the frozen depth model is temporarily
 offloaded so it does not compete with Turbo generation for VRAM.
 
-**Cache Turbo DiT in RAM** requires complete CPU copies of both RAW and Turbo weights during the
-first sample. The trainer checks available system RAM and automatically falls back to the slower
-streaming swap when keeping both copies would be unsafe.
+**Cache Turbo DiT in RAM** keeps only the Turbo weights resident in CPU memory. After a preview,
+the frozen RAW base is restored directly from its checkpoint instead of creating another complete
+RAW snapshot in RAM. The trainer checks available system RAM and automatically falls back to the
+slower fully streaming swap when the single Turbo cache would still be unsafe.
 
 Epoch previews keep the DiT resident while decoding. Krea releases denoising-only tensors and
 first uses the same normal VAE decode as ordinary Turbo previews. If that decode runs out of VRAM,

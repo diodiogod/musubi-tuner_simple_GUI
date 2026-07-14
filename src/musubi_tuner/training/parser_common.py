@@ -613,6 +613,12 @@ def _add_save_load_args(parser: argparse.ArgumentParser) -> None:
         help="base name of trained model file / 学習後のモデルの拡張子を除くファイル名",
     )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
+    # DOWNSTREAM: exact resume. Disabled unless the GUI's verified recovery flow requests it.
+    parser.add_argument(
+        "--resume_exact_position",
+        action="store_true",
+        help="Treat a numbered epoch/step state as an interrupted run: restore its loop position and train only the remaining target steps.",
+    )
 
     parser.add_argument(
         "--save_every_n_epochs",

@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass, field
 from multiprocessing import Value
 from typing import Any, List, Optional
+
+from musubi_tuner.training.resume_position import resume_training_position
 import accelerate
 import numpy as np
 
@@ -1764,6 +1766,12 @@ class NetworkTrainer:
         # resume from local or huggingface. accelerator.step is set
         self.resume_from_local_or_hf_if_specified(accelerator, args)  # accelerator.load_state(args.resume)
 
+    @staticmethod
+    def _resume_training_position(resume_path, num_update_steps_per_epoch, gradient_accumulation_steps, batches_per_epoch):
+        return resume_training_position(
+            resume_path, num_update_steps_per_epoch, gradient_accumulation_steps, batches_per_epoch
+        )
+
     def _run_training_loop(
         self,
         args,
@@ -1916,11 +1924,41 @@ class NetworkTrainer:
                 init_kwargs=init_kwargs,
             )
 
-        # TODO skip until initial step
-        progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
-
-        epoch_to_start = 0
-        global_step = 0
+        # DOWNSTREAM: exact resume (opt-in). Ordinary upstream/additive --resume is unchanged.
+        resume_position = (
+            self._resume_training_position(
+                args.resume,
+                num_update_steps_per_epoch=num_update_steps_per_epoch,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                batches_per_epoch=len(train_dataloader),
+            )
+            if args.resume_exact_position
+            else {"known": False, "epoch": 0, "global_step": 0, "batches_to_skip": 0}
+        )
+        epoch_to_start = resume_position["epoch"]
+        global_step = resume_position["global_step"]
+        batches_to_skip = resume_position["batches_to_skip"]
+        if args.resume and resume_position["known"]:
+            logger.info(
+                "True resume position: completed step %d, starting epoch %d/%d%s",
+                global_step,
+                epoch_to_start + 1,
+                num_train_epochs,
+                f" after skipping {batches_to_skip} already-consumed batch(es)" if batches_to_skip else "",
+            )
+        elif args.resume and args.resume_exact_position:
+            logger.warning(
+                "Resume state loaded, but its folder name has no epoch/step marker; progress cannot be "
+                "reconstructed exactly and the loop will start at epoch 1. Use a '*-000004-state' or "
+                "'*-step00000123-state' checkpoint for a true positional resume."
+            )
+        progress_bar = tqdm(
+            total=args.max_train_steps,
+            initial=min(global_step, args.max_train_steps),
+            smoothing=0,
+            disable=not accelerator.is_local_main_process,
+            desc="steps",
+        )
         noise_scheduler = FlowMatchDiscreteScheduler(shift=args.discrete_flow_shift, reverse=True, solver="euler")
 
         loss_recorder = train_utils.LossRecorder()
@@ -1996,7 +2034,7 @@ class NetworkTrainer:
                 )
 
         # For --sample_at_first
-        if should_sample_images(args, global_step, epoch=0):
+        if global_step == 0 and should_sample_images(args, global_step, epoch=0):
             optimizer_eval_fn()
             _do_sample(0, global_step)
             optimizer_train_fn()
@@ -2025,7 +2063,13 @@ class NetworkTrainer:
 
             accelerator.unwrap_model(network).on_epoch_start(transformer)
 
-            for step, batch in enumerate(train_dataloader):
+            epoch_dataloader = train_dataloader
+            step_offset = 0
+            # DOWNSTREAM: exact resume. Skip only batches consumed by a numbered step state.
+            if epoch == epoch_to_start and batches_to_skip:
+                epoch_dataloader = accelerator.skip_first_batches(train_dataloader, batches_to_skip)
+                step_offset = batches_to_skip
+            for step, batch in enumerate(epoch_dataloader, start=step_offset):
                 # torch.compiler.cudagraph_mark_step_begin() # for cudagraphs
 
                 latents = batch["latents"]
@@ -2112,7 +2156,9 @@ class NetworkTrainer:
                         optimizer_train_fn()
 
                 current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+                # DOWNSTREAM: exact resume. A step state may begin partway through the epoch. The recorder only
+                # tracks losses observed in this process, so do not pad it with skipped batches.
+                loss_recorder.add(epoch=epoch, step=step - step_offset, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_logs = dict(logs)

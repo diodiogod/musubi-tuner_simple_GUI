@@ -45,13 +45,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
     def __init__(self):
         super().__init__()
         self.vae_frame_stride = 1  # single image
-        # M1 (resident) weight stashes for RAW-train / Turbo-sample. Both None when unused or
-        # in M2 (per-validation streaming) mode; built lazily on the first sample step.
-        # _turbo_stash holds the (fp8-quantized) Turbo weights; _raw_stash a one-time snapshot
-        # of the RAW base weights to restore after sampling (the fp8 base is frozen for LoRA,
-        # so a single snapshot stays valid for the whole run).
+        # M1 keeps only the fp8-quantized Turbo weights in CPU RAM. RAW is restored from its
+        # checkpoint after each preview so cache mode never needs a second full CPU snapshot.
         self._turbo_stash = None
-        self._raw_stash = None
         self._sample_projector_backup = None
         self._sample_projector_diff = None
         self._depth_anchor = None
@@ -298,21 +294,13 @@ class Krea2NetworkTrainer(NetworkTrainer):
             live[k.replace("._orig_mod.", ".")] = t
         return live
 
-    def _snapshot_weights(self, model) -> dict:
-        """Take an independent CPU snapshot of the model's current base weights (key by key).
-
-        Used once to capture RAW before the first Turbo swap-in. Each entry is a fresh CPU
-        tensor (``copy=True``), so later in-place writes to the live weights never touch it.
-        """
-        return {k: t.detach().to("cpu", copy=True) for k, t in self._named_live_tensors(model).items()}
-
     def _turbo_cache_has_headroom(self, model) -> bool:
-        """M1 needs complete Turbo and RAW CPU copies plus working headroom."""
+        """M1 needs one complete Turbo CPU copy plus quantization working headroom."""
         try:
             import psutil
 
             model_bytes = sum(t.numel() * t.element_size() for t in self._named_live_tensors(model).values())
-            required = int(model_bytes * 2.25) + 4 * 1024**3
+            required = int(model_bytes * 1.25) + 4 * 1024**3
             available = int(psutil.virtual_memory().available)
             if available < required:
                 logger.warning(
@@ -401,9 +389,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
             self._turbo_cache_fallback = not self._turbo_cache_has_headroom(model)
         use_turbo_cache = args.turbo_dit_cache and not self._turbo_cache_fallback
         if use_turbo_cache:
-            # M1: build the resident (fp8-quantized at startup) Turbo stash once and snapshot the
-            # RAW base once, then copy Turbo into the live weights (storage preserved, see
-            # _overwrite_weights). The snapshot must be taken before the first overwrite.
+            # M1: build the resident (fp8-quantized) Turbo stash once, then copy it into the
+            # live weights. RAW is deliberately not duplicated in CPU RAM; it is restored from
+            # disk after the preview, avoiding a large and failure-prone host-memory peak.
             if self._turbo_stash is None:
                 logger.info(f"Krea 2: caching Turbo weights for sampling (M1) from {args.turbo_dit}")
                 self._turbo_stash = krea2_utils.load_krea2_dit_state_dict(
@@ -414,9 +402,6 @@ class Krea2NetworkTrainer(NetworkTrainer):
                     projector_diff_path=args.projector_diff,
                     projector_diff_strength=args.projector_diff_strength,
                 )
-            if self._raw_stash is None:
-                logger.info("Krea 2: snapshotting RAW weights for restore (M1)")
-                self._raw_stash = self._snapshot_weights(model)
             logger.info("Krea 2: swapping in Turbo weights for sampling (M1)")
             self._overwrite_weights(model, self._turbo_stash)
         else:
@@ -444,29 +429,23 @@ class Krea2NetworkTrainer(NetworkTrainer):
         if not args.turbo_dit:
             return
         model = accelerator.unwrap_model(transformer)
-        use_turbo_cache = args.turbo_dit_cache and not self._turbo_cache_fallback
-        if use_turbo_cache:
-            logger.info("Krea 2: restoring RAW weights after sampling (M1)")
-            self._overwrite_weights(model, self._raw_stash)  # copy RAW back in place (storage preserved)
-        else:
-            # M2: free the Turbo base weights, then reload RAW (re-quantized if fp8) straight
-            # onto the GPU and reassign — same GPU-direct, CPU-peak-~1-tensor path as swap-in.
-            # RAW is frozen during training, so reloading it from disk reproduces it exactly.
-            logger.info(f"Krea 2: restoring RAW weights after sampling (M2, GPU-direct) from {args.dit}")
-            self._free_base_weights(model)
-            clean_memory_on_device(accelerator.device)
-            raw_sd = krea2_utils.load_krea2_dit_state_dict(
-                args.dit,
-                fp8_scaled=args.fp8_scaled,
-                calc_device=accelerator.device,
-                result_device=accelerator.device,
-                projector_diff_path=args.projector_diff,
-                projector_diff_strength=args.projector_diff_strength,
-            )
-            self._assign_weights(model, raw_sd)
-            del raw_sd
-            gc.collect()
-            clean_memory_on_device(accelerator.device)
+        # RAW is frozen during LoRA training, so restoring it from disk is exact. This is used
+        # for both modes: M1 caches only Turbo (one extra CPU copy), while M2 caches neither.
+        logger.info(f"Krea 2: restoring RAW weights after sampling (GPU-direct) from {args.dit}")
+        self._free_base_weights(model)
+        clean_memory_on_device(accelerator.device)
+        raw_sd = krea2_utils.load_krea2_dit_state_dict(
+            args.dit,
+            fp8_scaled=args.fp8_scaled,
+            calc_device=accelerator.device,
+            result_device=accelerator.device,
+            projector_diff_path=args.projector_diff,
+            projector_diff_strength=args.projector_diff_strength,
+        )
+        self._assign_weights(model, raw_sd)
+        del raw_sd
+        gc.collect()
+        clean_memory_on_device(accelerator.device)
         logger.info("Krea 2: RAW weights restored")
 
     # endregion RAW-train / Turbo-sample
@@ -726,7 +705,7 @@ def krea2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         "--turbo_dit_cache",
         action="store_true",
         help="M1 memory mode for --turbo_dit: keep the (fp8-quantized at startup) Turbo weights resident in "
-        "CPU RAM and ping-pong-swap them in (~1x extra CPU, faster). Default (M2) streams Turbo from disk each "
+        "CPU RAM (~1x extra CPU, faster Turbo swap-in); RAW is restored from disk after previews. Default (M2) streams Turbo from disk each "
         "sample step (re-quantizing if fp8) for ~0x steady CPU at the cost of per-validation load time.",
     )
     parser.add_argument(

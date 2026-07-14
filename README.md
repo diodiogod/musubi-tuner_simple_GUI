@@ -21,7 +21,7 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - Built-in sample prompt editor with enable/disable, duplicate, and test generation support
 - Sample gallery with thumbnail previews inside the app
 - Live monitor with console, loss graph, VRAM usage, epoch/step counters, and next-epoch progress
-- Local job history workspace for finished, failed, and stopped runs
+- Local job history workspace for finished, failed, and stopped runs, including verified true-state recovery with preserved monitoring history
 - Save/load settings and auto-restore of your last session
 - LoRA conversion tools
 - Accelerate setup tab for first-time installation
