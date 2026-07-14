@@ -20,6 +20,8 @@ from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
+from sample_gallery import parse_training_sample_path
+from continuation_names import continuation_name, dynamic_suffix_name, split_continuation_name, split_dynamic_suffix
 
 # --- Dependency Check ---
 try:
@@ -44,7 +46,7 @@ except Exception:
     PSUTIL_AVAILABLE = False
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageOps
     PIL_AVAILABLE = True
 except Exception:
     PIL_AVAILABLE = False
@@ -168,6 +170,16 @@ class MusubiTunerGUI:
         self._sample_thumbnail_refs = {}
         self._sample_preview_images = {}
         self._sample_gallery_columns = 3
+        self._sample_comparison_groups = []
+        self._sample_view_mode = tk.StringVar(value="compare")
+        self._sample_compare_state = {
+            "left_sequence": None,
+            "right_sequence": None,
+            "left_index": None,
+            "right_index": None,
+            "mode": "Wipe slider",
+            "wipe": 50.0,
+        }
         self._lora_shape_cache = {}
         self._job_history_path = "job_history_local.json"
         self._job_history = []
@@ -1389,6 +1401,18 @@ class MusubiTunerGUI:
 
         btn_row = ttk.Frame(outputs_frame); btn_row.pack(fill="x", padx=5, pady=5)
         ttk.Button(btn_row, text="Open Output Folder", command=self._open_output_folder).pack(side="left", padx=(0, 5))
+        ttk.Label(btn_row, text="View:").pack(side="left", padx=(12, 4))
+        view_picker = ttk.Combobox(
+            btn_row,
+            textvariable=self._sample_view_mode,
+            values=("compare", "gallery"),
+            state="readonly",
+            width=17,
+        )
+        view_picker.pack(side="left")
+        view_picker.set("compare")
+        view_picker.bind("<<ComboboxSelected>>", lambda _e: self._refresh_sample_list(force=True))
+        ToolTip(view_picker, "Compare by prompt groups the same prompt and seed across epochs or steps. Gallery shows all files newest first.")
         ttk.Button(btn_row, text="Refresh", command=self._refresh_sample_list).pack(side="right")
 
         list_container = ttk.Frame(outputs_frame); list_container.pack(fill="both", expand=True, padx=5, pady=(0, 5))
@@ -2013,9 +2037,9 @@ class MusubiTunerGUI:
         results.sort(key=lambda x: x[0])
         return results
 
-    def _refresh_sample_list(self):
+    def _refresh_sample_list(self, force=False):
         files = self._get_sample_files()
-        if files == self._last_sample_files:
+        if not force and files == self._last_sample_files:
             return
         self._last_sample_files = files
         self._sample_thumbnail_refs = {}
@@ -2026,6 +2050,10 @@ class MusubiTunerGUI:
         if not files:
             ttk.Label(self._sample_list_frame, text="No samples yet. Start training to generate samples.",
                       foreground=self.colors["muted"]).pack(padx=10, pady=10)
+            return
+
+        if self._sample_view_mode.get() == "compare":
+            self._build_sample_comparison_groups(files)
             return
 
         columns = self._sample_gallery_columns
@@ -2039,7 +2067,275 @@ class MusubiTunerGUI:
             card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
             self._build_sample_card(card, mtime, fpath)
 
-    def _build_sample_card(self, parent, mtime, fpath):
+    def _build_sample_comparison_groups(self, files):
+        groups = defaultdict(list)
+        other_files = []
+        for mtime, fpath in files:
+            metadata = parse_training_sample_path(fpath)
+            if metadata is None:
+                other_files.append((mtime, fpath))
+            else:
+                groups[metadata["group_key"]].append((mtime, fpath, metadata))
+
+        ordered_groups = sorted(
+            groups.values(),
+            key=lambda items: max(item[0] for item in items),
+            reverse=True,
+        )
+        self._sample_comparison_groups = ordered_groups
+        comparison_grid = ttk.Frame(self._sample_list_frame)
+        comparison_grid.pack(fill="x", padx=6, pady=6)
+        for col in range(self._sample_gallery_columns):
+            comparison_grid.grid_columnconfigure(col, weight=1, uniform="samplegroups")
+        for group_index, items in enumerate(ordered_groups):
+            items.sort(key=lambda item: (item[2]["sequence_kind"] != "epoch", item[2]["sequence"], item[0]))
+            card = ttk.Frame(comparison_grid, style="Surface.TFrame", padding=8)
+            card.grid(row=group_index // self._sample_gallery_columns,
+                      column=group_index % self._sample_gallery_columns,
+                      sticky="nsew", padx=6, pady=6)
+            self._build_sample_stack_card(card, items)
+
+        if other_files:
+            group = ttk.LabelFrame(self._sample_list_frame, text="Other outputs")
+            group.pack(fill="x", padx=6, pady=6)
+            for col in range(self._sample_gallery_columns):
+                group.grid_columnconfigure(col, weight=1, uniform="sampleother")
+            for index, (mtime, fpath) in enumerate(reversed(other_files)):
+                card = ttk.Frame(group, style="Surface.TFrame", padding=8)
+                card.grid(row=index // self._sample_gallery_columns, column=index % self._sample_gallery_columns,
+                          sticky="nsew", padx=6, pady=6)
+                self._build_sample_card(card, mtime, fpath)
+
+    def _build_sample_stack_card(self, parent, items):
+        latest_mtime, latest_path, metadata = items[-1]
+        title_parts = [f"Prompt {metadata['prompt_index']:02d}"]
+        if metadata["prefix"]:
+            title_parts.insert(0, metadata["prefix"])
+        if metadata["seed"] is not None:
+            title_parts.append(f"seed {metadata['seed']}")
+        ttk.Label(parent, text="  ·  ".join(title_parts), font=("Segoe UI Semibold", 10),
+                  anchor="w").pack(fill="x", pady=(0, 6))
+
+        thumb_frame = tk.Frame(parent, bg=self.colors["surface_alt"], width=180, height=140,
+                               cursor="hand2", highlightthickness=0, bd=0)
+        thumb_frame.pack(fill="x")
+        thumb_frame.pack_propagate(False)
+        thumbnail = self._load_thumbnail_image(latest_path) if PIL_AVAILABLE else None
+        if thumbnail is not None:
+            image_label = tk.Label(thumb_frame, image=thumbnail, bg=self.colors["surface_alt"],
+                                   cursor="hand2", bd=0)
+            image_label.image = thumbnail
+            image_label.pack(expand=True)
+            image_label.bind("<Button-1>", lambda _e, versions=items: self._open_sample_comparison(versions))
+        else:
+            self._build_sample_placeholder(thumb_frame, "Comparison stack")
+        thumb_frame.bind("<Button-1>", lambda _e, versions=items: self._open_sample_comparison(versions))
+
+        first_label = items[0][2]["sequence_label"]
+        latest_label = metadata["sequence_label"]
+        ttk.Label(parent, text=f"{len(items)} version{'s' if len(items) != 1 else ''}  ·  {first_label} → {latest_label}",
+                  style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Button(parent, text="Compare versions" if len(items) > 1 else "Preview",
+                   command=lambda versions=items: self._open_sample_comparison(versions)).pack(fill="x", pady=(8, 0))
+
+    def _open_sample_comparison(self, items):
+        image_items = [item for item in items if Path(item[1]).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")]
+        if not PIL_AVAILABLE or len(image_items) < 2:
+            self._open_sample_preview(items[-1][1])
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Compare sample versions")
+        dialog.geometry("1120x820")
+        dialog.minsize(700, 500)
+        dialog.configure(bg=self.colors["page"])
+
+        current_group_key = items[0][2]["group_key"]
+        group_index = next(
+            (index for index, group_items in enumerate(self._sample_comparison_groups)
+             if group_items and group_items[0][2]["group_key"] == current_group_key),
+            0,
+        )
+
+        labels = [f"{item[2]['sequence_label']}  ·  {Path(item[1]).name}" for item in image_items]
+        state = self._sample_compare_state
+
+        def restored_index(sequence_key, index_key, default_index):
+            saved_sequence = state.get(sequence_key)
+            if saved_sequence is not None:
+                for index, item in enumerate(image_items):
+                    metadata = item[2]
+                    if (metadata["sequence_kind"], metadata["sequence"]) == tuple(saved_sequence):
+                        return index
+            saved_index = state.get(index_key)
+            if saved_index is not None:
+                return max(0, min(len(labels) - 1, int(saved_index)))
+            return default_index
+
+        left_index = restored_index("left_sequence", "left_index", len(labels) - 2)
+        right_index = restored_index("right_sequence", "right_index", len(labels) - 1)
+        left_var = tk.StringVar(value=labels[left_index])
+        right_var = tk.StringVar(value=labels[right_index])
+        mode_var = tk.StringVar(value=state.get("mode", "Wipe slider"))
+        toolbar = ttk.Frame(dialog); toolbar.pack(fill="x", padx=10, pady=10)
+        ttk.Label(toolbar, text="A:").grid(row=0, column=0, padx=(0, 4))
+        left_picker = ttk.Combobox(toolbar, textvariable=left_var, values=labels, state="readonly", width=38)
+        left_picker.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(toolbar, text="B:").grid(row=0, column=2, padx=(0, 4))
+        right_picker = ttk.Combobox(toolbar, textvariable=right_var, values=labels, state="readonly", width=38)
+        right_picker.grid(row=0, column=3, sticky="ew", padx=(0, 10))
+        mode_picker = ttk.Combobox(toolbar, textvariable=mode_var, values=("Wipe slider", "Side by side"),
+                                  state="readonly", width=14)
+        mode_picker.grid(row=0, column=4)
+        toolbar.grid_columnconfigure(1, weight=1); toolbar.grid_columnconfigure(3, weight=1)
+
+        nav = ttk.Frame(dialog); nav.pack(fill="x", padx=10, pady=(0, 6))
+        ttk.Button(nav, text="← Previous prompt", command=lambda: move_prompt(-1)).pack(side="left")
+        prompt_position = ttk.Label(nav, text="", width=18, anchor="center")
+        prompt_position.pack(side="left", padx=6)
+        ttk.Button(nav, text="Next prompt →", command=lambda: move_prompt(1)).pack(side="left", padx=(0, 16))
+        wipe_var = tk.DoubleVar(value=float(state.get("wipe", 50.0)))
+        ttk.Label(nav, text="A").pack(side="left")
+        wipe_scale = ttk.Scale(nav, from_=0, to=100, variable=wipe_var)
+        wipe_scale.pack(side="left", fill="x", expand=True, padx=8)
+        ttk.Label(nav, text="B").pack(side="left")
+        position_label = ttk.Label(nav, text="50%", width=5, anchor="e")
+        position_label.pack(side="left", padx=(8, 0))
+
+        viewport = tk.Canvas(dialog, bg=self.colors["field"], highlightthickness=0, bd=0)
+        viewport.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        photo_ref = {"image": None, "left": 0, "width": 1}
+        fitted_image_cache = {}
+
+        def selected_item(value):
+            return image_items[labels.index(value)]
+
+        def fit_image(path, max_width, max_height):
+            cache_key = (str(path), max_width, max_height)
+            cached = fitted_image_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            fitted_image_cache[cache_key] = image
+            return image
+
+        def render(_event=None):
+            try:
+                width = max(200, viewport.winfo_width() - 20)
+                height = max(160, viewport.winfo_height() - 20)
+                left_item = selected_item(left_var.get())
+                right_item = selected_item(right_var.get())
+                left_metadata = left_item[2]
+                right_metadata = right_item[2]
+                state.update({
+                    "left_sequence": (left_metadata["sequence_kind"], left_metadata["sequence"]),
+                    "right_sequence": (right_metadata["sequence_kind"], right_metadata["sequence"]),
+                    "left_index": labels.index(left_var.get()),
+                    "right_index": labels.index(right_var.get()),
+                    "mode": mode_var.get(),
+                    "wipe": float(wipe_var.get()),
+                })
+                metadata = image_items[0][2]
+                prompt_position.configure(
+                    text=f"Prompt {metadata['prompt_index']:02d}  ·  "
+                         f"{group_index + 1}/{len(self._sample_comparison_groups)}"
+                )
+                if mode_var.get() == "Side by side":
+                    half = max(100, (width - 12) // 2)
+                    left_image = fit_image(left_item[1], half, height)
+                    right_image = fit_image(right_item[1], half, height)
+                    composed = Image.new("RGB", (width, height), self.colors["field"])
+                    composed.paste(left_image, ((half - left_image.width) // 2, (height - left_image.height) // 2))
+                    composed.paste(right_image, (half + 12 + (half - right_image.width) // 2,
+                                                 (height - right_image.height) // 2))
+                    split_x = half + 6
+                else:
+                    left_image = fit_image(left_item[1], width, height)
+                    right_image = fit_image(right_item[1], width, height)
+                    canvas_size = (max(left_image.width, right_image.width), max(left_image.height, right_image.height))
+                    left_layer = Image.new("RGB", canvas_size, self.colors["field"])
+                    right_layer = Image.new("RGB", canvas_size, self.colors["field"])
+                    left_layer.paste(left_image, ((canvas_size[0] - left_image.width) // 2, (canvas_size[1] - left_image.height) // 2))
+                    right_layer.paste(right_image, ((canvas_size[0] - right_image.width) // 2, (canvas_size[1] - right_image.height) // 2))
+                    split_x = int(canvas_size[0] * wipe_var.get() / 100)
+                    composed = right_layer
+                    composed.paste(left_layer.crop((0, 0, split_x, canvas_size[1])), (0, 0))
+                photo_ref["image"] = ImageTk.PhotoImage(composed)
+                photo_ref["left"] = (viewport.winfo_width() - composed.width) // 2
+                photo_ref["width"] = composed.width
+                viewport.delete("all")
+                viewport.create_image(viewport.winfo_width() // 2, viewport.winfo_height() // 2,
+                                      image=photo_ref["image"], anchor="center")
+                if mode_var.get() == "Wipe slider":
+                    image_left = (viewport.winfo_width() - composed.width) // 2
+                    viewport.create_line(image_left + split_x, (viewport.winfo_height() - composed.height) // 2,
+                                         image_left + split_x, (viewport.winfo_height() + composed.height) // 2,
+                                         fill=self.colors["accent"], width=2)
+                position_label.configure(text=f"{int(wipe_var.get())}%")
+            except Exception as exc:
+                viewport.delete("all")
+                viewport.create_text(20, 20, anchor="nw", text=f"Could not compare samples:\n{exc}",
+                                     fill=self.colors["muted"])
+
+        def move_right(delta):
+            index = max(0, min(len(labels) - 1, labels.index(right_var.get()) + delta))
+            right_var.set(labels[index])
+            left_var.set(labels[max(0, index - 1)])
+            render()
+
+        def move_prompt(delta):
+            nonlocal image_items, labels, group_index
+            groups = self._sample_comparison_groups
+            if len(groups) < 2:
+                return
+            candidate_index = group_index
+            candidate_images = None
+            for _attempt in range(len(groups) - 1):
+                candidate_index = (candidate_index + delta) % len(groups)
+                candidate_images = [
+                    item for item in groups[candidate_index]
+                    if Path(item[1]).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+                ]
+                if len(candidate_images) >= 2:
+                    break
+            if not candidate_images or len(candidate_images) < 2:
+                return
+
+            group_index = candidate_index
+            image_items = candidate_images
+            labels = [f"{item[2]['sequence_label']}  ·  {Path(item[1]).name}" for item in image_items]
+            left_index = restored_index("left_sequence", "left_index", len(labels) - 2)
+            right_index = restored_index("right_sequence", "right_index", len(labels) - 1)
+            left_picker.configure(values=labels)
+            right_picker.configure(values=labels)
+            left_var.set(labels[left_index])
+            right_var.set(labels[right_index])
+            render()
+
+        def drag_wipe(event):
+            if mode_var.get() != "Wipe slider":
+                return
+            position = (event.x - photo_ref["left"]) / max(1, photo_ref["width"])
+            wipe_var.set(max(0, min(100, position * 100)))
+            render()
+
+        ttk.Button(nav, text="← Previous", command=lambda: move_right(-1)).pack(side="left", padx=(12, 4))
+        ttk.Button(nav, text="Next →", command=lambda: move_right(1)).pack(side="left")
+        left_picker.bind("<<ComboboxSelected>>", render)
+        right_picker.bind("<<ComboboxSelected>>", render)
+        mode_picker.bind("<<ComboboxSelected>>", render)
+        wipe_scale.configure(command=lambda _value: render())
+        viewport.bind("<Configure>", render)
+        viewport.bind("<Motion>", drag_wipe)
+        viewport.bind("<Button-1>", drag_wipe)
+        viewport.bind("<B1-Motion>", drag_wipe)
+        dialog.bind("<Left>", lambda _e: move_right(-1))
+        dialog.bind("<Right>", lambda _e: move_right(1))
+        render()
+
+    def _build_sample_card(self, parent, mtime, fpath, show_name=True):
         ext = Path(fpath).suffix.lower()
         is_image = ext in (".png", ".jpg", ".jpeg", ".webp")
         thumb_frame = tk.Frame(parent, bg=self.colors["surface_alt"], highlightthickness=0, bd=0, width=180, height=140)
@@ -2069,7 +2365,8 @@ class MusubiTunerGUI:
 
         name = Path(fpath).name
         short_name = name if len(name) <= 38 else name[:18] + "..." + name[-16:]
-        ttk.Label(parent, text=short_name, anchor="w").pack(fill="x", pady=(8, 0))
+        if show_name:
+            ttk.Label(parent, text=short_name, anchor="w").pack(fill="x", pady=(8, 0))
         ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
         ttk.Label(parent, text=ts, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
 
@@ -3771,13 +4068,13 @@ class MusubiTunerGUI:
         return ", ".join(parts) if parts else f"state {Path(state_path).name}"
 
     def _next_continuation_output_name(self, settings, source_name):
-        base_name = f"{source_name}-cont"
+        base_name, current_generation = split_continuation_name(source_name)
+        generation = current_generation + 1
         output_dir = Path(str(settings.get("output_dir") or "")).expanduser()
-        candidate = base_name
-        suffix = 2
+        candidate = continuation_name(base_name, generation)
         while output_dir and (output_dir / candidate).exists():
-            candidate = f"{base_name}{suffix}"
-            suffix += 1
+            generation += 1
+            candidate = continuation_name(base_name, generation)
         return candidate
 
     def _repeat_output_name_exists(self, settings, output_name):
@@ -3798,12 +4095,12 @@ class MusubiTunerGUI:
         return any((output_dir / run_name).exists() for run_name in run_names)
 
     def _next_repeat_output_name(self, settings, source_name):
-        base_name = f"{source_name}-rerun"
-        candidate = base_name
-        suffix = 2
+        base_name, current_generation = split_dynamic_suffix(source_name, "rerun")
+        generation = current_generation + 1
+        candidate = dynamic_suffix_name(base_name, "rerun", generation)
         while self._repeat_output_name_exists(settings, candidate):
-            candidate = f"{base_name}{suffix}"
-            suffix += 1
+            generation += 1
+            candidate = dynamic_suffix_name(base_name, "rerun", generation)
         return candidate
 
     def _recover_partial_job_settings(self, job):
