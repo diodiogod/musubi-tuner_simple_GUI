@@ -383,6 +383,20 @@ The target-depth cache is held in CPU RAM for the current run and is bounded to
 256 samples. The depth model downloads from Hugging Face on first use unless it
 is already cached.
 
+The GUI monitor shows **Depth anchor: active** after the first anchored step, including the raw
+depth loss and its weighted contribution (`depth loss × configured strength`). A changing finite
+value confirms that the depth model is participating; the ordinary live-loss graph continues to
+show the combined training loss. Before an epoch sample, the frozen depth model is temporarily
+offloaded so it does not compete with Turbo generation for VRAM.
+
+**Cache Turbo DiT in RAM** requires complete CPU copies of both RAW and Turbo weights during the
+first sample. The trainer checks available system RAM and automatically falls back to the slower
+streaming swap when keeping both copies would be unsafe.
+
+Epoch previews keep the DiT resident while decoding. Krea releases denoising-only tensors and
+first uses the same normal VAE decode as ordinary Turbo previews. If that decode runs out of VRAM,
+it clears temporary memory and retries with tiled decoding at the requested resolution.
+
 ## Experimental DRaFT face refinement
 
 The GUI can add `face_refinement` as a distinct staged-training step after standard Krea LoRA

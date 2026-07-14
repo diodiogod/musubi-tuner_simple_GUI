@@ -29,6 +29,14 @@ class DepthAnchor:
         self.target_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.target_cache_limit = 256
 
+    def to(self, device: torch.device | str):
+        """Move only live inference tensors; cached target depths intentionally stay on CPU."""
+        self.device = torch.device(device)
+        self.model.to(self.device)
+        self.mean = self.mean.to(self.device)
+        self.std = self.std.to(self.device)
+        return self
+
     def _predict(self, pixels: torch.Tensor) -> torch.Tensor:
         pixels = F.interpolate(pixels.float(), (self.input_size, self.input_size), mode="bicubic", align_corners=False)
         values = (pixels.clamp(0, 1) - self.mean) / self.std

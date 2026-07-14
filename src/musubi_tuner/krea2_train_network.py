@@ -55,6 +55,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         self._sample_projector_backup = None
         self._sample_projector_diff = None
         self._depth_anchor = None
+        self._turbo_cache_fallback = False
         self._weight_noise = None
         self._weight_noise_logs = {}
 
@@ -241,12 +242,37 @@ class Krea2NetworkTrainer(NetworkTrainer):
         latent = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", ph=patch, pw=patch, h=lat_h // patch, w=lat_w // patch)
         latent = latent.unsqueeze(2)  # (1, C, 1, H, W)
 
+        # The DiT remains resident while the VAE decodes. Release denoising-only tensors first.
+        # Keep the normal decode used by ordinary Turbo previews; depth training can leave the
+        # CUDA allocator fragmented, so retry with tiling only if that normal decode runs OOM.
+        del img, pos, mask, txt, txtmask, noise
+        if do_cfg:
+            del untxt, untxtmask, unpos, unmask
+        clean_memory_on_device(device)
+
         vae.to(device)
         vae.eval()
-        with torch.no_grad():
-            pixels = vae.decode_to_pixels(latent.to(vae.dtype))  # (1, C, H, W) in [0, 1]
-        vae.to("cpu")
-        clean_memory_on_device(device)
+        tiling_was_enabled = bool(getattr(vae, "use_tiling", False))
+        try:
+            try:
+                with torch.no_grad():
+                    pixels = vae.decode_to_pixels(latent.to(vae.dtype))  # (1, C, H, W) in [0, 1]
+            except torch.OutOfMemoryError:
+                if tiling_was_enabled or not hasattr(vae, "enable_tiling"):
+                    raise
+                logger.warning(
+                    "Krea 2: normal VAE preview decode ran out of VRAM; clearing temporary memory "
+                    "and retrying with tiled decode"
+                )
+                clean_memory_on_device(device)
+                vae.enable_tiling()
+                with torch.no_grad():
+                    pixels = vae.decode_to_pixels(latent.to(vae.dtype))
+        finally:
+            if not tiling_was_enabled and hasattr(vae, "disable_tiling"):
+                vae.disable_tiling()
+            vae.to("cpu")
+            clean_memory_on_device(device)
 
         pixels = pixels.unsqueeze(2).to(torch.float32).cpu()  # (1, C, 1, H, W) for the grid saver
         return pixels
@@ -279,6 +305,26 @@ class Krea2NetworkTrainer(NetworkTrainer):
         tensor (``copy=True``), so later in-place writes to the live weights never touch it.
         """
         return {k: t.detach().to("cpu", copy=True) for k, t in self._named_live_tensors(model).items()}
+
+    def _turbo_cache_has_headroom(self, model) -> bool:
+        """M1 needs complete Turbo and RAW CPU copies plus working headroom."""
+        try:
+            import psutil
+
+            model_bytes = sum(t.numel() * t.element_size() for t in self._named_live_tensors(model).values())
+            required = int(model_bytes * 2.25) + 4 * 1024**3
+            available = int(psutil.virtual_memory().available)
+            if available < required:
+                logger.warning(
+                    "Krea 2: Cache Turbo DiT needs about %.1f GB free RAM but only %.1f GB is available; "
+                    "falling back to memory-safe streaming Turbo sampling (M2).",
+                    required / 1024**3,
+                    available / 1024**3,
+                )
+                return False
+        except (ImportError, OSError):
+            logger.warning("Krea 2: could not check free system RAM for Turbo caching; using the requested cache mode.")
+        return True
 
     def _overwrite_weights(self, model, src: dict):
         """Copy ``src`` into the model's base weights in place (used by BOTH M1 and M2).
@@ -342,8 +388,19 @@ class Krea2NetworkTrainer(NetworkTrainer):
         # Swap RAW -> Turbo base weights for sample generation (LoRA stays hooked and applies on top).
         if not args.turbo_dit:
             return
+        # Depth training leaves the VAE and frozen depth model on the GPU between steps. They are
+        # not needed while swapping base weights and can leave almost no allocator headroom.
+        vae.to("cpu")
+        if self._depth_anchor is not None:
+            logger.info("Krea 2: offloading depth perceptor for sample generation")
+            self._depth_anchor.to("cpu")
+        gc.collect()
+        clean_memory_on_device(accelerator.device)
         model = accelerator.unwrap_model(transformer)
-        if args.turbo_dit and args.turbo_dit_cache:
+        if args.turbo_dit_cache and self._turbo_stash is None and not self._turbo_cache_fallback:
+            self._turbo_cache_fallback = not self._turbo_cache_has_headroom(model)
+        use_turbo_cache = args.turbo_dit_cache and not self._turbo_cache_fallback
+        if use_turbo_cache:
             # M1: build the resident (fp8-quantized at startup) Turbo stash once and snapshot the
             # RAW base once, then copy Turbo into the live weights (storage preserved, see
             # _overwrite_weights). The snapshot must be taken before the first overwrite.
@@ -362,7 +419,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
                 self._raw_stash = self._snapshot_weights(model)
             logger.info("Krea 2: swapping in Turbo weights for sampling (M1)")
             self._overwrite_weights(model, self._turbo_stash)
-        elif args.turbo_dit:
+        else:
             # M2: free the RAW base weights, then load the Turbo weights (re-quantized if fp8)
             # straight onto the GPU and reassign them. Freeing first keeps the GPU at ~1x the
             # model size; loading directly to the GPU keeps the CPU peak at ~1 tensor (no full
@@ -387,10 +444,11 @@ class Krea2NetworkTrainer(NetworkTrainer):
         if not args.turbo_dit:
             return
         model = accelerator.unwrap_model(transformer)
-        if args.turbo_dit and args.turbo_dit_cache:
+        use_turbo_cache = args.turbo_dit_cache and not self._turbo_cache_fallback
+        if use_turbo_cache:
             logger.info("Krea 2: restoring RAW weights after sampling (M1)")
             self._overwrite_weights(model, self._raw_stash)  # copy RAW back in place (storage preserved)
-        elif args.turbo_dit:
+        else:
             # M2: free the Turbo base weights, then reload RAW (re-quantized if fp8) straight
             # onto the GPU and reassign — same GPU-direct, CPU-peak-~1-tensor path as swap-in.
             # RAW is frozen during training, so reloading it from disk reproduces it exactly.
@@ -493,6 +551,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
                 input_size=args.depth_anchor_input_size,
                 grad_checkpoint=args.depth_anchor_grad_checkpoint,
             )
+        else:
+            self._depth_anchor.to(accelerator.device)
         target_depths = []
         for sample in latents:
             key = self._depth_anchor.cache_key(sample)

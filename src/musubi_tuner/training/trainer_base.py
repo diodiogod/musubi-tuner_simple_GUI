@@ -2115,10 +2115,16 @@ class NetworkTrainer:
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
+                progress_logs = dict(logs)
+                for key, value in loss_metrics.items():
+                    try:
+                        progress_logs[key] = float(value.detach().item() if torch.is_tensor(value) else value)
+                    except (TypeError, ValueError, RuntimeError):
+                        continue
+                progress_bar.set_postfix(**progress_logs)
 
                 if args.scale_weight_norms:
-                    progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                    progress_bar.set_postfix(**{**max_mean_logs, **progress_logs})
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
@@ -2133,7 +2139,7 @@ class NetworkTrainer:
 
             if len(accelerator.trackers) > 0:
                 logs = {"loss/epoch": loss_recorder.moving_average}
-                accelerator.log(logs, step=epoch + 1)
+                accelerator.log(logs, step=global_step)
 
             accelerator.wait_for_everyone()
 

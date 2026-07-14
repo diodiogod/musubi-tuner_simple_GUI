@@ -155,6 +155,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `perceptual/depth_anchor.py` - differentiable Depth Anything V2 anchor, rectified-flow clean-latent reconstruction, and bounded target-depth cache
 - Krea integration stays in `krea2_train_network.py` through existing `process_batch`, `on_post_optimizer_step`, `extra_step_logs`, and `extra_metadata` overrides; the shared upstream trainer remains unchanged
 - Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps
+- The live monitor distinguishes the main `steps:` bar from model-loading bars, graphs combined loss, and shows depth loss/contribution; Krea sampling offloads the depth helper, falls back from RAM-cached Turbo swaps when headroom is unsafe, and uses tiled VAE preview decoding to control VRAM
 - Saved LoRAs record effective settings in `ss_krea2_*` metadata
 
 ### Experimental Face Refinement

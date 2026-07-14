@@ -2238,6 +2238,10 @@ class MusubiTunerGUI:
         ttk.Label(monitor_frame, textvariable=self.step_counter_var).pack(anchor='w', padx=10, pady=(2, 0))
         self.next_epoch_var = tk.StringVar(value="To next epoch: N/A")
         ttk.Label(monitor_frame, textvariable=self.next_epoch_var).pack(anchor='w', padx=10, pady=(2, 0))
+        self.depth_anchor_status_var = tk.StringVar(value="Depth anchor: Off")
+        self.depth_anchor_status_label = ttk.Label(monitor_frame, textvariable=self.depth_anchor_status_var, style="PageHelp.TLabel")
+        self.depth_anchor_status_label.pack(anchor="w", padx=10, pady=(4, 0))
+        ToolTip(self.depth_anchor_status_label, "When enabled, this shows the raw depth-consistency loss and its weighted contribution to the training objective. A changing finite value confirms the depth checker is participating in training.")
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
 
         bottom_pane_host = ttk.Frame(self.monitor_bottom_pane)
@@ -5613,6 +5617,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
         self.last_line_was_progress = False
+        if output_widget == self.output_text:
+            try:
+                depth_strength = float(self.entries["krea2_depth_anchor_weight"].get() or 0)
+            except (KeyError, ValueError):
+                depth_strength = 0.0
+            self.depth_anchor_status_var.set(
+                f"Depth anchor: waiting for first training step · strength {depth_strength:g}"
+                if self.training_mode_var.get() == "Krea 2" and depth_strength > 0 else "Depth anchor: Off"
+            )
         self.last_progress_milestone = 0
         command_display = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
@@ -5723,6 +5736,24 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if is_at_bottom:
             output_widget.see(tk.END)
 
+    @staticmethod
+    def _parse_main_training_progress(text):
+        """Parse only the trainer's named `steps:` bar, never model-loading tqdm bars."""
+        match = re.search(r"steps:\s*\d{1,3}%.*?(\d+)\s*/\s*(\d+)\s*\[", text)
+        if not match:
+            return None
+        number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+        def metric(name):
+            found = re.search(rf"{re.escape(name)}=({number})", text)
+            return float(found.group(1)) if found else None
+        return {
+            "step": int(match.group(1)),
+            "total": int(match.group(2)),
+            "loss": metric("avr_loss"),
+            "depth_loss": metric("loss/depth_anchor"),
+            "diffusion_loss": metric("loss/diffusion"),
+        }
+
     def read_output(self, on_complete, output_widget):
         if not self.current_process:
             if on_complete: self.root.after(0, on_complete, -1); return
@@ -5744,7 +5775,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 if chunk is not None:
                     self.root.after(0, self.process_console_output, chunk, output_widget)
                     if output_widget == self.output_text:
-                        step_total_match = re.search(r"(\d+)/(\d+) \[", chunk)
+                        training_progress = self._parse_main_training_progress(chunk)
                         face_step_match = re.search(r"^step=(\d+)/(\d+)\s", chunk)
                         face_refinement_active = bool(
                             self._staged_run
@@ -5768,22 +5799,35 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                         stop_match = re.search(r"^(?:early_stop|pose_stop)=([a-z_]+)", chunk)
                         if stop_match:
                             self.root.after(0, self.progress_label_var.set, f"Face refinement stopping: {stop_match.group(1).replace('_', ' ')}")
-                        if step_total_match and not face_refinement_active and not face_evaluation_active:
+                        if training_progress and not face_refinement_active and not face_evaluation_active:
                             self.root.after(
                                 0,
                                 self.update_training_counters,
-                                int(step_total_match.group(1)),
-                                int(step_total_match.group(2)),
+                                training_progress["step"],
+                                training_progress["total"],
                                 None,
                                 None,
                             )
 
-                        loss_match = re.search(r"(?:avr_loss|loss)=([\d\.]+)", chunk)
-                        graph_step = int(face_step_match.group(1)) if face_step_match else self.current_step
-                        if loss_match and graph_step > 0:
-                            loss_value = float(loss_match.group(1))
+                        face_loss_match = re.search(r"(?:avr_loss|loss)=([-+\d.eE]+)", chunk) if face_step_match else None
+                        loss_value = training_progress["loss"] if training_progress else float(face_loss_match.group(1)) if face_loss_match else None
+                        graph_step = training_progress["step"] if training_progress else int(face_step_match.group(1)) if face_step_match else 0
+                        if loss_value is not None and graph_step > 0:
                             self._last_loss_value = loss_value
                             self.root.after(0, self.update_loss_graph, graph_step, loss_value)
+                        if "Loading frozen depth perceptor:" in chunk:
+                            self.root.after(0, self.depth_anchor_status_var.set, "Depth anchor: loading model and first target…")
+                        if training_progress and training_progress["depth_loss"] is not None:
+                            try:
+                                strength = float(self.entries["krea2_depth_anchor_weight"].get() or 0)
+                            except (KeyError, ValueError):
+                                strength = 0.0
+                            depth_loss = training_progress["depth_loss"]
+                            self.root.after(
+                                0,
+                                self.depth_anchor_status_var.set,
+                                f"Depth anchor: active · loss {depth_loss:.4f} · weighted {depth_loss * strength:.5f}",
+                            )
 
                         epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", chunk, re.IGNORECASE)
                         if epoch_match:
