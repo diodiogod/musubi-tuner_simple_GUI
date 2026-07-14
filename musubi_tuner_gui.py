@@ -179,6 +179,7 @@ class MusubiTunerGUI:
             "right_index": None,
             "mode": "Wipe slider",
             "wipe": 50.0,
+            "wipe_locked": False,
         }
         self._lora_shape_cache = {}
         self._job_history_path = "job_history_local.json"
@@ -2201,6 +2202,9 @@ class MusubiTunerGUI:
         ttk.Label(nav, text="B").pack(side="left")
         position_label = ttk.Label(nav, text="50%", width=5, anchor="e")
         position_label.pack(side="left", padx=(8, 0))
+        wipe_locked = tk.BooleanVar(value=bool(state.get("wipe_locked", False)))
+        lock_button = ttk.Button(nav, text="", width=11)
+        lock_button.pack(side="left", padx=(6, 0))
 
         viewport = tk.Canvas(dialog, bg=self.colors["field"], highlightthickness=0, bd=0)
         viewport.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -2236,6 +2240,7 @@ class MusubiTunerGUI:
                     "right_index": labels.index(right_var.get()),
                     "mode": mode_var.get(),
                     "wipe": float(wipe_var.get()),
+                    "wipe_locked": bool(wipe_locked.get()),
                 })
                 metadata = image_items[0][2]
                 prompt_position.configure(
@@ -2273,6 +2278,13 @@ class MusubiTunerGUI:
                     viewport.create_line(image_left + split_x, (viewport.winfo_height() - composed.height) // 2,
                                          image_left + split_x, (viewport.winfo_height() + composed.height) // 2,
                                          fill=self.colors["accent"], width=2)
+                    if wipe_locked.get():
+                        viewport.create_text(
+                            image_left + split_x,
+                            (viewport.winfo_height() - composed.height) // 2 + 16,
+                            text="🔒",
+                            font=("Segoe UI Emoji", 12),
+                        )
                 position_label.configure(text=f"{int(wipe_var.get())}%")
             except Exception as exc:
                 viewport.delete("all")
@@ -2315,11 +2327,21 @@ class MusubiTunerGUI:
             render()
 
         def drag_wipe(event):
-            if mode_var.get() != "Wipe slider":
+            if mode_var.get() != "Wipe slider" or wipe_locked.get():
                 return
             position = (event.x - photo_ref["left"]) / max(1, photo_ref["width"])
             wipe_var.set(max(0, min(100, position * 100)))
             render()
+
+        def update_lock_button():
+            lock_button.configure(text="🔒 Locked" if wipe_locked.get() else "🔓 Hover")
+
+        def toggle_wipe_lock(_event=None):
+            wipe_locked.set(not wipe_locked.get())
+            state["wipe_locked"] = bool(wipe_locked.get())
+            update_lock_button()
+            render()
+            return "break"
 
         ttk.Button(nav, text="← Previous", command=lambda: move_right(-1)).pack(side="left", padx=(12, 4))
         ttk.Button(nav, text="Next →", command=lambda: move_right(1)).pack(side="left")
@@ -2327,10 +2349,13 @@ class MusubiTunerGUI:
         right_picker.bind("<<ComboboxSelected>>", render)
         mode_picker.bind("<<ComboboxSelected>>", render)
         wipe_scale.configure(command=lambda _value: render())
+        lock_button.configure(command=toggle_wipe_lock)
+        update_lock_button()
         viewport.bind("<Configure>", render)
         viewport.bind("<Motion>", drag_wipe)
         viewport.bind("<Button-1>", drag_wipe)
         viewport.bind("<B1-Motion>", drag_wipe)
+        viewport.bind("<Double-Button-1>", toggle_wipe_lock)
         dialog.bind("<Left>", lambda _e: move_right(-1))
         dialog.bind("<Right>", lambda _e: move_right(1))
         render()
