@@ -3143,7 +3143,7 @@ class MusubiTunerGUI:
         ttk.Label(intro, text="Recent jobs", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(
             intro,
-            text="Track completed, failed, and stopped runs locally. Right-click a job to repeat/edit its settings or load its latest state as a continuation.",
+            text="Track completed, failed, and stopped runs locally. Run name identifies what was produced; Job type explains what operation was run. Right-click a job to repeat/edit its settings or load its latest state as a continuation.",
             style="PageHelp.TLabel",
             wraplength=920,
             justify="left",
@@ -3161,7 +3161,7 @@ class MusubiTunerGUI:
 
         list_frame = ttk.LabelFrame(split, text="Recorded Jobs")
         split.add(list_frame, weight=3)
-        columns = ("status", "mode", "started", "progress", "title")
+        columns = ("status", "mode", "started", "progress", "run_name", "job_type")
         self._jobs_tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -3174,13 +3174,14 @@ class MusubiTunerGUI:
             "mode": "Mode",
             "started": "Started",
             "progress": "Progress",
-            "title": "Title",
+            "run_name": "Run name",
+            "job_type": "Job type",
         }
-        widths = {"status": 96, "mode": 92, "started": 132, "progress": 250, "title": 280}
-        anchors = {"status": "center", "mode": "center", "started": "center", "progress": "center", "title": "w"}
+        widths = {"status": 96, "mode": 92, "started": 132, "progress": 250, "run_name": 300, "job_type": 190}
+        anchors = {"status": "center", "mode": "center", "started": "center", "progress": "center", "run_name": "w", "job_type": "w"}
         for key in columns:
             self._jobs_tree.heading(key, text=headings[key])
-            self._jobs_tree.column(key, width=widths[key], minwidth=70, anchor=anchors[key], stretch=(key == "title"))
+            self._jobs_tree.column(key, width=widths[key], minwidth=70, anchor=anchors[key], stretch=(key == "run_name"))
         list_scroll_y = ttk.Scrollbar(list_frame, orient="vertical", command=self._jobs_tree.yview)
         list_scroll_x = ttk.Scrollbar(list_frame, orient="horizontal", command=self._jobs_tree.xview)
         self._jobs_tree.configure(yscrollcommand=list_scroll_y.set, xscrollcommand=list_scroll_x.set)
@@ -3485,6 +3486,19 @@ class MusubiTunerGUI:
             return f"e{local_epoch}/{local_epoch_total}"
         return "-"
 
+    @staticmethod
+    def _job_display_name(job):
+        """Return the user-facing artifact/run name without changing history storage."""
+        output_name = str(job.get("output_name") or "").strip()
+        if not output_name and isinstance(job.get("settings_snapshot"), dict):
+            output_name = str(job["settings_snapshot"].get("output_name") or "").strip()
+        if output_name:
+            return output_name
+        output_dir = str(job.get("output_dir") or "").strip()
+        if output_dir:
+            return Path(output_dir).name or output_dir
+        return str(job.get("title") or "Job")
+
     def _refresh_job_history_view(self):
         if self._jobs_tree is None:
             return
@@ -3517,6 +3531,7 @@ class MusubiTunerGUI:
                     job.get("mode", ""),
                     timestamp,
                     progress,
+                    self._job_display_name(job),
                     job.get("title", "Job"),
                 ),
             )
