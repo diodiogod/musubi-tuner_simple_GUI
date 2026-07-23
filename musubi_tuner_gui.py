@@ -3369,20 +3369,58 @@ class MusubiTunerGUI:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(True, True)
-        dialog.minsize(1080, 380)
+        dialog.minsize(980, 460)
+        screen_height = dialog.winfo_screenheight()
+        dialog.geometry(f"1180x{min(700, max(500, screen_height - 140))}")
 
         host = ttk.Frame(dialog, padding=16)
         host.pack(fill="both", expand=True)
         host.grid_columnconfigure(0, weight=1)
-        ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
+        host.grid_rowconfigure(2, weight=1)
+        header = ttk.Frame(host)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="Resolution progression", style="PageTitle.TLabel").pack(side="left")
+        ttk.Button(header, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        header_save_button = ttk.Button(
+            header,
+            text="Save Plan",
+            style="Accent.TButton",
+        )
+        header_save_button.pack(side="right")
         ttk.Label(
             host,
             text="Standard stages use a dataset TOML and may inherit or override DOP. Krea Face Refinement is a separate prompt-and-reference stage and uses its saved GUI settings.",
             style="PageHelp.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(3, 14))
 
-        table = ttk.Frame(host)
-        table.grid(row=2, column=0, sticky="nsew")
+        table_region = ttk.Frame(host)
+        table_region.grid(row=2, column=0, sticky="nsew")
+        table_region.grid_rowconfigure(0, weight=1)
+        table_region.grid_columnconfigure(0, weight=1)
+        table_canvas = tk.Canvas(
+            table_region,
+            background=self.colors["page"],
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        table_scrollbar = ttk.Scrollbar(table_region, orient="vertical", command=table_canvas.yview)
+        table_canvas.configure(yscrollcommand=table_scrollbar.set)
+        table_canvas.grid(row=0, column=0, sticky="nsew")
+        table_scrollbar.grid(row=0, column=1, sticky="ns", padx=(5, 0))
+        table = ttk.Frame(table_canvas)
+        table_window = table_canvas.create_window((0, 0), window=table, anchor="nw")
+        table.bind(
+            "<Configure>",
+            lambda _event: table_canvas.configure(scrollregion=table_canvas.bbox("all")),
+        )
+        table_canvas.bind(
+            "<Configure>",
+            lambda event: table_canvas.itemconfigure(table_window, width=event.width),
+        )
+        table_canvas.bind(
+            "<MouseWheel>",
+            lambda event: table_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"),
+        )
         table.grid_columnconfigure(3, weight=1)
         ttk.Label(table, text="Use").grid(row=0, column=0, sticky="w")
         ttk.Label(table, text="Stage Label").grid(row=0, column=1, sticky="w", padx=(8, 0))
@@ -3582,7 +3620,7 @@ class MusubiTunerGUI:
             variable=recache_text_var,
         )
         recache_text_checkbox.grid(row=5, column=0, sticky="w", pady=(6, 0))
-        self.create_tooltip(
+        ToolTip(
             recache_text_checkbox,
             "Usually leave this off. DOP automatically checks the existing caption cache and only encodes captions "
             "that are missing or changed. Turn this on only when you deliberately want every caption encoded again.",
@@ -3661,21 +3699,29 @@ class MusubiTunerGUI:
                 return
             enabled_plan = [item for item in configured if item["enabled"]]
             face_positions = [index for index, item in enumerate(enabled_plan) if item.get("type") == "face_refinement"]
-            if face_positions and face_positions[-1] != len(enabled_plan) - 1:
-                if not messagebox.askyesno(
-                    "Face Refinement ordering",
-                    "A standard-training stage comes after Face Refinement. That later SFT stage starts a fresh optimizer from the refined LoRA and may weaken the identity gain.\n\nKeep this order?",
-                    parent=dialog,
-                ):
-                    return
+            warn_face_order = bool(face_positions and face_positions[-1] != len(enabled_plan) - 1)
             self._staged_training_config = configured
             self._staged_recache_latents = recache_var.get()
             self._staged_recache_text = recache_text_var.get()
             self._update_staged_summary()
             dialog.destroy()
+            if warn_face_order:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Plan saved · Face Refinement ordering",
+                        "The plan was saved. A standard-training stage comes after Face Refinement. "
+                        "That later stage starts a fresh optimizer from the refined LoRA and may weaken some identity gain.",
+                        parent=self.root,
+                    ),
+                )
+
+        header_save_button.configure(command=save_and_close)
 
         ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(actions, text="Save Plan", style="Accent.TButton", command=save_and_close).pack(side="right")
+        dialog.bind("<Control-s>", lambda _event: save_and_close())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
     def _update_staged_summary(self):
