@@ -26,7 +26,7 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - LoRA conversion tools
 - Accelerate setup tab for first-time installation
 - Guided Differential Output Preservation (DOP) for Krea 2 and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
-- One-click concise settings summaries for Training Notes, kept editable and embedded in LoRA metadata
+- Dedicated Training Notes workspace with permanent custom comments plus an optional live hyperparameter summary rebuilt for each run and embedded in LoRA metadata
 
 ## Current Workspace Layout
 

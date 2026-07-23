@@ -413,6 +413,7 @@ class MusubiTunerGUI:
         self.create_model_paths_tab()
         self.create_starting_point_tab()
         self.create_training_params_tab()
+        self.create_notes_tab()
         self.create_training_plan_tab()
         self.create_regularization_tab()
         self.create_advanced_tab()
@@ -460,6 +461,7 @@ class MusubiTunerGUI:
             ("models", "Models"),
             ("starting_point", "Starting Point"),
             ("training", "Training"),
+            ("notes", "Notes"),
             ("training_plan", "Training Plan"),
             ("regularization", "Regularization"),
             ("advanced", "Advanced"),
@@ -900,50 +902,6 @@ class MusubiTunerGUI:
             "Estimates the final LoRA .safetensors file by reading model tensor shapes without loading model weights. Rank and network type change the size; network alpha only changes weight scaling and has no effect on file size. Optimizer and training-state files are not included.",
         )
 
-        notes_frame = ttk.LabelFrame(frame, text="Training Notes")
-        notes_frame.pack(fill="x", padx=10, pady=(0, 10))
-        notes_help = ttk.Label(
-            notes_frame,
-            text="Saved with this GUI session, shown in Jobs, and embedded in LoRA metadata.",
-            style="PageHelp.TLabel",
-        )
-        notes_help.pack(anchor="w", padx=10, pady=(8, 3))
-        notes_actions = ttk.Frame(notes_frame)
-        notes_actions.pack(fill="x", padx=10, pady=(0, 5))
-        summary_button = ttk.Button(
-            notes_actions,
-            text="Append Settings Summary",
-            command=self._append_training_settings_summary,
-        )
-        summary_button.pack(side="right")
-        ToolTip(
-            summary_button,
-            "Adds one concise, editable line describing the current run: mode, output name, network rank, training length, learning rate, staged plan, DOP, Depth Anchor, weight noise, and projector patch when used. Existing notes are kept.",
-        )
-        self.training_comment_text = tk.Text(
-            notes_frame,
-            height=4,
-            wrap=tk.WORD,
-            bg=self.colors["field"],
-            fg=self.colors["text"],
-            insertbackground=self.colors["text"],
-            selectbackground=self.colors["selection"],
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=6,
-            font=("Segoe UI", 10),
-        )
-        self.training_comment_text.pack(fill="x", padx=10, pady=(0, 10))
-        self.entries["training_comment"] = self.training_comment_text
-        notes_tooltip = (
-            "Write reminders about the dataset, intended strength, trigger words, experiments, or results. "
-            "The complete text is saved in settings and local job history and is embedded in each output "
-            "safetensors file as ss_training_comment. It does not affect training."
-        )
-        ToolTip(notes_help, notes_tooltip)
-        ToolTip(self.training_comment_text, notes_tooltip)
-
         optimizer_frame = ttk.LabelFrame(frame, text="Optimizer Settings"); optimizer_frame.pack(fill="x", padx=10, pady=10)
         # Optimizer Type: preset dropdown + optional custom path entry
         _opt_presets = ["adamw", "adamw8bit", "adafactor", "lion", "prodigy",
@@ -1028,6 +986,75 @@ class MusubiTunerGUI:
                 widget.delete(0, tk.END)
                 widget.insert(0, str(value))
         self.update_button_states()
+
+    def create_notes_tab(self):
+        frame = self._create_scrollable_tab("Notes", "notes")
+        self._add_page_intro(
+            frame,
+            "Training notes and metadata",
+            "Keep your own permanent notes separate from an optional settings summary that is rebuilt from the current run whenever commands are generated.",
+        )
+
+        custom_frame = ttk.LabelFrame(frame, text="Your notes")
+        custom_frame.pack(fill="x", padx=10, pady=10)
+        custom_help = ttk.Label(
+            custom_frame,
+            text="Write anything you want to remember: dataset decisions, trigger words, intended strength, comparisons, or results. This text is never replaced by the automatic summary.",
+            style="PageHelp.TLabel",
+            wraplength=900,
+            justify="left",
+        )
+        custom_help.pack(anchor="w", padx=10, pady=(8, 5))
+        self.training_comment_text = self._themed_text(custom_frame, height=7, wrap=tk.WORD)
+        self.training_comment_text.pack(fill="x", padx=10, pady=(0, 10))
+        self.entries["training_comment"] = self.training_comment_text
+        custom_tooltip = (
+            "Your editable note is saved in GUI settings and local job history. During training it is embedded in "
+            "the output safetensors metadata as ss_training_comment. It does not affect learning."
+        )
+        ToolTip(custom_help, custom_tooltip)
+        ToolTip(self.training_comment_text, custom_tooltip)
+
+        automatic_frame = ttk.LabelFrame(frame, text="Live settings summary")
+        automatic_frame.pack(fill="x", padx=10, pady=10)
+        self._add_widget(
+            automatic_frame,
+            "auto_training_settings_summary",
+            "Include Live Settings Summary in Training Metadata",
+            "When enabled, the GUI generates a fresh concise hyperparameter summary for every normal run and every standard staged-training step. It replaces the previous generated summary instead of accumulating copies. Your personal note above remains unchanged.",
+            kind="checkbox",
+            command=self._refresh_training_notes_preview,
+        )
+        ttk.Label(
+            automatic_frame,
+            text="Preview of the generated section. This box is read-only and follows the current settings; it is not stored inside your personal note.",
+            style="PageHelp.TLabel",
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(2, 5))
+        self.training_summary_preview = self._themed_text(
+            automatic_frame,
+            height=8,
+            wrap=tk.WORD,
+            cursor="arrow",
+        )
+        self.training_summary_preview.pack(fill="x", padx=10, pady=(0, 6))
+        self.training_summary_preview.configure(state="disabled")
+        actions = ttk.Frame(automatic_frame)
+        actions.pack(fill="x", padx=10, pady=(0, 10))
+        refresh_button = ttk.Button(actions, text="Refresh Preview", command=self._refresh_training_notes_preview)
+        refresh_button.pack(side="left")
+        ToolTip(refresh_button, "Rebuilds the preview immediately from the fields currently shown in the GUI.")
+        copy_button = ttk.Button(actions, text="Copy Summary", command=self._copy_training_settings_summary)
+        copy_button.pack(side="left", padx=(6, 0))
+        ToolTip(copy_button, "Copies the current generated summary to the clipboard without changing your personal note.")
+        append_button = ttk.Button(actions, text="Add Copy to My Notes", command=self._append_training_settings_summary)
+        append_button.pack(side="right")
+        ToolTip(
+            append_button,
+            "Adds a normal editable copy to your personal note. Unlike the live section, that copied line will not update automatically.",
+        )
+        self._refresh_training_notes_preview()
 
     def create_training_plan_tab(self):
         frame = self._create_scrollable_tab("Training Plan", "training_plan")
@@ -5910,7 +5937,7 @@ class MusubiTunerGUI:
             self.current_total_steps = self._job_metric(recovery or {}, "total_steps")
             self.current_epoch_num = self._job_metric(recovery or {}, "checkpoint_epoch")
             self.current_epoch_total = self._job_metric(recovery or {}, "total_epochs")
-        training_comment = str(settings.get("training_comment") or "").strip()
+        training_comment = self._effective_training_comment(settings)
         if training_comment:
             note = f"{note}\n\n{training_comment}".strip()
         self._active_job = {
@@ -6545,6 +6572,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.hidden_frames['krea2_regularization'].pack_forget()
         except (KeyError, tk.TclError):
             pass
+        self._refresh_training_notes_preview()
         try:
             supports_dop = is_krea2 or mode == "Flux.2 Klein"
             if is_krea2:
@@ -6676,7 +6704,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         parts.append(network_text)
 
         stages = [item for item in settings.get("staged_training_config", []) if item.get("enabled")]
-        if settings.get("use_staged_training") and stages:
+        if settings.get("use_staged_training") and stages and not settings.get("stage_type"):
             stage_notes = []
             for stage in stages:
                 label = cls._stage_label_text(stage)
@@ -6728,6 +6756,39 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if blocks and blocks != "0":
             parts.append(f"swap={blocks}")
         return "Settings: " + "; ".join(parts)
+
+    @classmethod
+    def _effective_training_comment(cls, settings):
+        custom = str(settings.get("training_comment") or "").strip()
+        if not settings.get("auto_training_settings_summary"):
+            return custom
+        generated = cls._training_settings_summary(settings)
+        return "\n\n".join(part for part in (custom, generated) if part)
+
+    def _refresh_training_notes_preview(self, _event=None):
+        try:
+            settings = self.get_settings()
+            enabled = bool(settings.get("auto_training_settings_summary"))
+            preview = (
+                self._training_settings_summary(settings)
+                if enabled
+                else "Live summary is disabled. Enable it above to include a freshly generated settings section in each training run."
+            )
+            self.training_summary_preview.configure(state="normal")
+            self.training_summary_preview.delete("1.0", tk.END)
+            self.training_summary_preview.insert("1.0", preview)
+            self.training_summary_preview.configure(state="disabled")
+        except (AttributeError, KeyError, tk.TclError):
+            pass
+
+    def _copy_training_settings_summary(self):
+        summary = self._training_settings_summary(self.get_settings())
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(summary)
+            self.root.update_idletasks()
+        except tk.TclError:
+            return
 
     def _append_training_settings_summary(self):
         summary = self._training_settings_summary(self.get_settings())
@@ -6817,7 +6878,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
             "krea2_keep_depth_helpers_on_gpu": False,
             "output_dir": "", "output_name": "my-lora",
-            "training_comment": "",
+            "training_comment": "", "auto_training_settings_summary": False,
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
             "network_type": "LoRA", "lokr_factor": "", "network_dim_low": "32", "network_alpha_low": "16", "network_dim_high": "", "network_alpha_high": "",
             "optimizer_type": "adamw8bit", "max_grad_norm": "1.0", "optimizer_args": "", "lr_scheduler": "cosine",
@@ -7378,6 +7439,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.stop_all_activity()
 
     def _commands_for_settings(self, settings):
+        settings = dict(settings)
+        settings["training_comment"] = self._effective_training_comment(settings)
         python_executable = sys.executable or "python"
         mode = settings.get("training_mode", "Wan 2.2")
         if mode == "Wan 2.2":
@@ -7923,6 +7986,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def build_training_commands(self):
         settings = self.get_settings()
+        settings["training_comment"] = self._effective_training_comment(settings)
         settings["sample_prompts"] = self._build_sample_prompts_txt()
         settings["resume_exact_position"] = self._should_use_exact_resume(
             settings, self._pending_recovery, self._active_job
