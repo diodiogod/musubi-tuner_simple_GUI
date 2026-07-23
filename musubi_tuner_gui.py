@@ -757,6 +757,18 @@ class MusubiTunerGUI:
             style="PageHelp.TLabel",
         )
         notes_help.pack(anchor="w", padx=10, pady=(8, 3))
+        notes_actions = ttk.Frame(notes_frame)
+        notes_actions.pack(fill="x", padx=10, pady=(0, 5))
+        summary_button = ttk.Button(
+            notes_actions,
+            text="Append Settings Summary",
+            command=self._append_training_settings_summary,
+        )
+        summary_button.pack(side="right")
+        ToolTip(
+            summary_button,
+            "Adds one concise, editable line describing the current run: mode, output name, network rank, training length, learning rate, staged plan, DOP, Depth Anchor, weight noise, and projector patch when used. Existing notes are kept.",
+        )
         self.training_comment_text = tk.Text(
             notes_frame,
             height=4,
@@ -6369,6 +6381,131 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.entries["krea2_depth_anchor_input_size"].set("518")
         self.entries["krea2_depth_anchor_gradient_weight"].set("0.5")
         self.entries["krea2_depth_anchor_grad_checkpoint"].var.set(True)
+
+    @staticmethod
+    def _dataset_note_label(path):
+        path = str(path or "").strip()
+        if not path:
+            return ""
+        source = Path(path)
+        label = source.stem
+        if not source.is_file():
+            return label
+        try:
+            import tomllib
+
+            payload = tomllib.loads(source.read_text(encoding="utf-8"))
+            resolutions = []
+
+            def collect(value):
+                if isinstance(value, dict):
+                    for key, child in value.items():
+                        if key == "resolution":
+                            if isinstance(child, (list, tuple)):
+                                text = "×".join(str(part) for part in child)
+                            else:
+                                text = str(child)
+                            if text and text not in resolutions:
+                                resolutions.append(text)
+                        collect(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        collect(child)
+
+            collect(payload)
+            if resolutions:
+                label += f" ({'/'.join(resolutions)})"
+        except (OSError, UnicodeError, ValueError):
+            pass
+        return label
+
+    @classmethod
+    def _training_settings_summary(cls, settings):
+        def enabled_number(key):
+            try:
+                value = float(settings.get(key) or 0)
+            except (TypeError, ValueError):
+                return None
+            return f"{value:g}" if value > 0 else None
+
+        parts = [str(settings.get("training_mode") or "Training")]
+        output_name = str(settings.get("output_name") or "").strip()
+        if output_name:
+            parts.append(f"run={output_name}")
+
+        network = str(settings.get("network_type") or "LoRA")
+        rank = str(settings.get("network_dim_low") or "").strip()
+        alpha = str(settings.get("network_alpha_low") or "").strip()
+        network_text = network
+        if rank:
+            network_text += f" rank {rank}"
+        if alpha:
+            network_text += f" α{alpha}"
+        parts.append(network_text)
+
+        stages = [item for item in settings.get("staged_training_config", []) if item.get("enabled")]
+        if settings.get("use_staged_training") and stages:
+            stage_notes = []
+            for stage in stages:
+                label = cls._stage_label_text(stage)
+                stage_type = stage.get("type", "standard")
+                limit = cls._staged_limit_text(stage)
+                stage_notes.append(f"{label} {limit}" + (" face" if stage_type == "face_refinement" else ""))
+            parts.append("staged " + " → ".join(stage_notes))
+        else:
+            steps = str(settings.get("max_train_steps") or "").strip()
+            epochs = str(settings.get("max_train_epochs") or "").strip()
+            if steps:
+                parts.append(f"{steps} steps")
+            elif epochs:
+                parts.append(f"{epochs} epochs")
+            dataset = cls._dataset_note_label(settings.get("dataset_config"))
+            if dataset:
+                parts.append(f"data={dataset}")
+
+        learning_rate = str(settings.get("learning_rate") or "").strip()
+        if learning_rate:
+            parts.append(f"lr={learning_rate}")
+        optimizer = str(settings.get("optimizer_type") or "").strip()
+        if optimizer:
+            parts.append(f"opt={optimizer}")
+
+        if settings.get("dop_enabled"):
+            strength = enabled_number("dop_loss_weight")
+            class_word = str(settings.get("dop_class_word") or "").strip()
+            dop_text = f"DOP {strength or '?'}"
+            if class_word:
+                dop_text += f" ({class_word})"
+            parts.append(dop_text)
+
+        if str(settings.get("training_mode")) == "Krea 2":
+            depth = enabled_number("krea2_depth_anchor_weight")
+            if depth:
+                depth_text = f"depth {depth}@{settings.get('krea2_depth_anchor_input_size') or 518}"
+                depth_text += " GPU" if settings.get("krea2_keep_depth_helpers_on_gpu") else " offload"
+                parts.append(depth_text)
+            noise = enabled_number("krea2_weight_noise_sigma")
+            if noise:
+                parts.append(f"weight-noise {noise} {settings.get('krea2_weight_noise_mode') or 'relative'}")
+            projector = str(settings.get("krea2_projector_diff") or "").strip()
+            if projector:
+                strength = str(settings.get("krea2_projector_diff_strength") or "1").strip()
+                parts.append(f"projector={Path(projector).name}@{strength}")
+
+        blocks = str(settings.get("blocks_to_swap") or "").strip()
+        if blocks and blocks != "0":
+            parts.append(f"swap={blocks}")
+        return "Settings: " + "; ".join(parts)
+
+    def _append_training_settings_summary(self):
+        summary = self._training_settings_summary(self.get_settings())
+        existing = self.training_comment_text.get("1.0", "end-1c").rstrip()
+        if existing.splitlines() and existing.splitlines()[-1].strip() == summary:
+            messagebox.showinfo("Training Notes", "That settings summary is already the last line.", parent=self.root)
+            return
+        self.training_comment_text.insert("end", ("\n" if existing else "") + summary)
+        self.training_comment_text.see("end")
+        self.training_comment_text.focus_set()
 
     def get_settings(self):
         settings = {}
