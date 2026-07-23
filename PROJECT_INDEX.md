@@ -87,6 +87,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 ### Main Desktop App
 
 - `musubi_tuner_gui.py` - everything GUI-side: tab layout, validation, process launch, output parsing, monitoring, sample gallery, job history, staged training, conversion, setup helpers
+- Starting Point separates new training, LoRA-weight continuation, and true Accelerate-state resume into mutually exclusive workflows; Training Plan owns staged progression and cache preparation; Regularization owns experimental DOP, Krea weight noise, and depth anchoring instead of burying these workflows under Advanced or Monitor
 - Training Notes can append a concise editable summary of current mode, output identity, network/rank, limits, dataset resolution when readable, optimizer/LR, DOP, depth residency, weight noise, projector patch, and staged plan
 - Recent Jobs separates ordinary continuation from failed-run recovery: recovery validates complete Accelerate model/optimizer/scheduler/RNG state plus a numbered epoch/step position, keeps the original output identity, and carries bounded loss history into the resumed monitor
 - Staged artifact names are derived internally from a stable base output name; stage execution does not replace the main Output Name field, preventing repeated labels across retries

@@ -408,9 +408,13 @@ class MusubiTunerGUI:
         self.nav_bar.pack_propagate(False)
         self.notebook = ttk.Notebook(body, style="Modern.TNotebook")
         self.notebook.pack(side="right", fill="both", expand=True, padx=12, pady=(10, 8))
+        self._page_indices = {}
 
         self.create_model_paths_tab()
+        self.create_starting_point_tab()
         self.create_training_params_tab()
+        self.create_training_plan_tab()
+        self.create_regularization_tab()
         self.create_advanced_tab()
         self.create_face_refinement_tab()
         self.create_samples_tab()
@@ -444,19 +448,34 @@ class MusubiTunerGUI:
         reset_btn.pack(side="left")
         ToolTip(reset_btn, "Restore every setting to its default value.")
 
-    def _create_scrollable_tab(self, title):
+    def _create_scrollable_tab(self, title, page_key=None):
         tab = ScrollableTab(self.notebook, background=self.colors["page"])
         self.notebook.add(tab, text=title)
+        if page_key:
+            self._page_indices[page_key] = self.notebook.index("end") - 1
         return tab.content
 
     def _build_navigation(self):
-        labels = ("Models", "Training", "Advanced", "Face Refinement", "Samples", "Monitor", "Jobs", "Convert", "Setup")
+        pages = (
+            ("models", "Models"),
+            ("starting_point", "Starting Point"),
+            ("training", "Training"),
+            ("training_plan", "Training Plan"),
+            ("regularization", "Regularization"),
+            ("advanced", "Advanced"),
+            ("face", "Face Refinement"),
+            ("samples", "Samples"),
+            ("monitor", "Monitor"),
+            ("jobs", "Jobs"),
+            ("convert", "Convert"),
+            ("setup", "Setup"),
+        )
         self._nav_buttons = []
         ttk.Label(self.nav_bar, text="WORKSPACE", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 6))
-        for index, label in enumerate(labels):
+        for page_key, label in pages:
             button = ttk.Button(
                 self.nav_bar, text=label, style="Nav.TButton",
-                command=lambda page=index: self._select_page(page),
+                command=lambda page=page_key: self._select_page(page),
             )
             button.pack(fill="x", pady=(0, 3))
             self._nav_buttons.append(button)
@@ -464,6 +483,8 @@ class MusubiTunerGUI:
         self._sync_navigation()
 
     def _select_page(self, index):
+        if isinstance(index, str):
+            index = self._page_indices[index]
         self.notebook.select(index)
 
     def _sync_navigation(self, _event=None):
@@ -623,7 +644,7 @@ class MusubiTunerGUI:
         )
 
     def create_model_paths_tab(self):
-        frame = self._create_scrollable_tab("1  Models")
+        frame = self._create_scrollable_tab("Models", "models")
         self._add_page_intro(frame, "Models & dataset", "Choose the dataset, model components, and output destination for the selected training mode. Required fields are marked with an asterisk.")
 
         dataset_frame = ttk.LabelFrame(frame, text="Dataset Configuration"); dataset_frame.pack(fill="x", padx=10, pady=10)
@@ -708,8 +729,138 @@ class MusubiTunerGUI:
         self._add_widget(output_frame, "output_dir", "Output Directory:", "Base directory to save trained LoRAs. A subfolder will be automatically created.", kind='path_entry', is_dir=True, is_required=True, is_path=True)
         self._add_widget(output_frame, "output_name", "Output Name:", "Base filename for output LoRA (e.g., 'my_character'). Suffixes like '_LowNoise' will be added automatically.", is_required=True)
 
+    def create_starting_point_tab(self):
+        frame = self._create_scrollable_tab("Starting Point", "starting_point")
+        self._add_page_intro(
+            frame,
+            "How should this run begin?",
+            "Choose one starting method. Loading LoRA weights and resuming a complete training state are different operations, so the GUI keeps them mutually exclusive.",
+        )
+
+        self.starting_point_mode_var = tk.StringVar(value="new")
+        self.entries["starting_point_mode"] = self.starting_point_mode_var
+        choices = ttk.LabelFrame(frame, text="Starting method")
+        choices.pack(fill="x", padx=10, pady=10)
+        modes = (
+            (
+                "new",
+                "Start a new LoRA",
+                "Begin with an empty adapter and a fresh optimizer, schedule, epoch count, and step count.",
+            ),
+            (
+                "weights",
+                "Continue from LoRA weights",
+                "Use an existing .safetensors adapter as the starting weights. The optimizer, schedule, epochs, and steps start fresh.",
+            ),
+            (
+                "state",
+                "True resume from saved state",
+                "Restore a complete Accelerate state, including adapter, optimizer, scheduler, epoch/step position, and random state when present.",
+            ),
+        )
+        for value, title, description in modes:
+            row = ttk.Frame(choices)
+            row.pack(fill="x", padx=10, pady=7)
+            radio = ttk.Radiobutton(
+                row,
+                text=title,
+                variable=self.starting_point_mode_var,
+                value=value,
+                command=self._apply_starting_point_mode,
+            )
+            radio.pack(anchor="w")
+            ttk.Label(
+                row,
+                text=description,
+                style="PageHelp.TLabel",
+                wraplength=880,
+                justify="left",
+            ).pack(anchor="w", padx=(24, 0), pady=(2, 0))
+            ToolTip(radio, description)
+
+        self.starting_weights_frame = ttk.LabelFrame(frame, text="Existing LoRA weights")
+        self._add_widget(
+            self.starting_weights_frame,
+            "network_weights",
+            "LoRA Weights:",
+            "Select an existing LoRA .safetensors file. Its learned adapter weights are loaded, but optimizer and training counters start fresh.",
+            kind="path_entry",
+            options=[("Weight files", "*.safetensors")],
+            is_path=True,
+        )
+
+        self.starting_state_frame = ttk.LabelFrame(frame, text="Complete training state")
+        self._add_widget(
+            self.starting_state_frame,
+            "resume_path",
+            "Saved State Folder:",
+            "Select a complete Accelerate state folder. A true resume restores training position and optimizer/scheduler state instead of merely loading LoRA weights.",
+            kind="path_entry",
+            is_dir=True,
+            is_path=True,
+        )
+
+        self.starting_status_frame = ttk.LabelFrame(frame, text="What will happen")
+        self.starting_status_frame.pack(fill="x", padx=10, pady=10)
+        self.starting_point_summary_var = tk.StringVar()
+        ttk.Label(
+            self.starting_status_frame,
+            textvariable=self.starting_point_summary_var,
+            style="PageHelp.TLabel",
+            wraplength=900,
+            justify="left",
+        ).pack(fill="x", padx=10, pady=10)
+        actions = ttk.Frame(self.starting_status_frame)
+        actions.pack(fill="x", padx=10, pady=(0, 10))
+        recent_button = ttk.Button(actions, text="Choose from Recent Jobs…", command=lambda: self._select_page("jobs"))
+        recent_button.pack(side="left")
+        ToolTip(recent_button, "Opens Recent Jobs, where continuation and true failed-run recovery can select a compatible saved state for you.")
+        ttk.Button(actions, text="Clear Starting Point", command=self._clear_starting_point).pack(side="right")
+        self._apply_starting_point_mode(clear_inactive=False)
+
+    def _clear_starting_point(self):
+        self.starting_point_mode_var.set("new")
+        self._apply_starting_point_mode(clear_inactive=True)
+        self._pending_continuation = None
+        self._pending_recovery = None
+        self.update_button_states()
+
+    def _apply_starting_point_mode(self, clear_inactive=True):
+        mode = self.starting_point_mode_var.get() or "new"
+        if clear_inactive:
+            if mode != "weights":
+                self.entries["network_weights"].delete(0, tk.END)
+            if mode != "state":
+                self.entries["resume_path"].delete(0, tk.END)
+
+        self.starting_weights_frame.pack_forget()
+        self.starting_state_frame.pack_forget()
+        if mode == "weights":
+            self.starting_weights_frame.pack(fill="x", padx=10, pady=10, before=self.starting_status_frame)
+            summary = (
+                "Weights continuation: the existing LoRA becomes the starting adapter, but this is a new training run. "
+                "Optimizer, learning-rate schedule, epoch, and step counters begin again."
+            )
+        elif mode == "state":
+            self.starting_state_frame.pack(fill="x", padx=10, pady=10, before=self.starting_status_frame)
+            summary = (
+                "True state resume: Musubi will ask Accelerate to restore the saved optimizer, scheduler, random state, "
+                "and recorded epoch/step position. Use a complete state folder, not a .safetensors file."
+            )
+        else:
+            summary = "New LoRA: no previous adapter or training state will be loaded."
+        self.starting_point_summary_var.set(summary)
+
+    def _sync_starting_point_from_settings(self, settings=None):
+        settings = settings or self.get_settings()
+        resume_path = str(settings.get("resume_path") or "").strip()
+        network_weights = str(settings.get("network_weights") or "").strip()
+        mode = "state" if resume_path else "weights" if network_weights else "new"
+        self.starting_point_mode_var.set(mode)
+        self._apply_starting_point_mode(clear_inactive=False)
+
     def create_training_params_tab(self):
-        frame = self._create_scrollable_tab("2  Training")
+        frame = self._create_scrollable_tab("Training", "training")
         self._add_page_intro(frame, "Training recipe", "Set learning duration, network capacity, optimizer behavior, and the learning-rate schedule.")
         basic_frame = ttk.LabelFrame(frame, text="Basic Training Parameters"); basic_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(basic_frame, "learning_rate", "Learning Rate:", "The speed at which the model learns. Common values are 1e-4, 2e-4, 3e-4.", is_required=True, validate_num=True)
@@ -878,9 +1029,106 @@ class MusubiTunerGUI:
                 widget.insert(0, str(value))
         self.update_button_states()
 
+    def create_training_plan_tab(self):
+        frame = self._create_scrollable_tab("Training Plan", "training_plan")
+        self._add_page_intro(
+            frame,
+            "Plan one run or a staged progression",
+            "Choose a normal run or build an ordered sequence of standard training and face-refinement stages. Nothing starts from this page.",
+        )
+
+        mode_frame = ttk.LabelFrame(frame, text="Run structure")
+        mode_frame.pack(fill="x", padx=10, pady=10)
+        self._add_widget(
+            mode_frame,
+            "use_staged_training",
+            "Use Staged Progression",
+            "When enabled, Run Training executes each configured stage in order and hands the saved adapter or complete state to the next stage. When disabled, one normal training run uses the main form settings.",
+            kind="checkbox",
+            command=self._update_run_mode_controls,
+        )
+        staged_plan_frame = ttk.Frame(mode_frame)
+        staged_plan_frame.pack(fill="x", padx=10, pady=(2, 10))
+        self.staged_summary_var = tk.StringVar(value="No staged run configured")
+        ttk.Label(
+            staged_plan_frame,
+            textvariable=self.staged_summary_var,
+            style="PageHelp.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True)
+        self.staged_config_btn = ttk.Button(
+            staged_plan_frame,
+            text="Configure Stages…",
+            command=self._open_staged_training_dialog,
+        )
+        self.staged_config_btn.pack(side="right", padx=(8, 0))
+        ToolTip(
+            self.staged_config_btn,
+            "Opens the stage-plan editor. Standard stages use a dataset TOML; Krea Face Refinement stages use the saved settings from the Face Refinement workspace.",
+        )
+
+        cache_frame = ttk.LabelFrame(frame, text="Cache preparation")
+        cache_frame.pack(fill="x", padx=10, pady=10)
+        self._add_widget(
+            cache_frame,
+            "recache_latents",
+            "Re-cache Latents Before Training",
+            "Force latent cache generation before the run. Use this when the dataset, resolution, or VAE changed.",
+            kind="checkbox",
+        )
+        self._add_widget(
+            cache_frame,
+            "recache_text",
+            "Re-cache Text Encoders Before Training",
+            "Force caption/text-encoder cache generation before the run. Use this when captions or the text encoder changed.",
+            kind="checkbox",
+        )
+        ttk.Label(
+            cache_frame,
+            text="The stage editor has separate per-stage cache controls for resolution changes and optional full text re-caching.",
+            style="PageHelp.TLabel",
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(2, 10))
+
+        review_frame = ttk.LabelFrame(frame, text="Run review")
+        review_frame.pack(fill="x", padx=10, pady=10)
+        ttk.Label(
+            review_frame,
+            text="Configure the plan here, review the Starting Point separately, then use Monitor to generate the command or start training.",
+            style="PageHelp.TLabel",
+            wraplength=880,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True, padx=10, pady=10)
+        ttk.Button(review_frame, text="Open Monitor", command=lambda: self._select_page("monitor")).pack(side="right", padx=10, pady=10)
+
+    def create_regularization_tab(self):
+        self.regularization_frame = self._create_scrollable_tab("Regularization", "regularization")
+        self._add_page_intro(
+            self.regularization_frame,
+            "Experimental regularization",
+            "Optional tools that help preserve a base model's general knowledge or structural consistency while the adapter learns. Start with one controlled comparison and keep these off for a baseline run.",
+        )
+        availability = ttk.Frame(self.regularization_frame)
+        availability.pack(fill="x", padx=12, pady=(4, 2))
+        self.regularization_availability_var = tk.StringVar()
+        availability_label = ttk.Label(
+            availability,
+            textvariable=self.regularization_availability_var,
+            style="PageHelp.TLabel",
+            wraplength=920,
+            justify="left",
+        )
+        availability_label.pack(anchor="w")
+        ToolTip(
+            availability_label,
+            "The available methods depend on the selected training mode. Existing saved values are preserved when you switch modes, but unsupported controls are hidden and are not added to that mode's command.",
+        )
+
     def create_advanced_tab(self):
-        frame = self._create_scrollable_tab("3  Advanced")
-        self._add_page_intro(frame, "Advanced controls", "Tune memory usage, timestep sampling, attention, logging, precision, and resume behavior.")
+        frame = self._create_scrollable_tab("Advanced", "advanced")
+        self._add_page_intro(frame, "Advanced controls", "Tune memory usage, timestep sampling, attention, logging, precision, and other low-level training behavior.")
         memory_frame = ttk.LabelFrame(frame, text="Memory & Performance"); memory_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(memory_frame, "mixed_precision", "Mixed Precision:", "Use 'fp16' or 'bf16' to reduce VRAM usage and speed up training. 'fp16' is common, 'bf16' is better on newer GPUs.", kind='combobox', options=["no", "fp16", "bf16"])
         self._add_widget(memory_frame, "gradient_checkpointing", "Gradient Checkpointing", "Drastically reduces VRAM usage by re-calculating gradients on the backward pass. Highly recommended.", kind='checkbox', default_val=True)
@@ -946,7 +1194,7 @@ class MusubiTunerGUI:
         self._add_widget(flow_frame, "discrete_flow_shift", "Discrete Flow Shift:", "Shift value for 'shift' sampling. The documentation recommends 3.0.", validate_num=True)
         self._add_widget(flow_frame, "preserve_distribution_shape", "Preserve Distribution Shape", "Prevents distortion of the timestep distribution. Recommended when training only one model (e.g., only low noise).", kind='checkbox')
 
-        self.hidden_frames['dop_options'] = ttk.LabelFrame(frame, text="Identity & Class Preservation · DOP (Experimental)")
+        self.hidden_frames['dop_options'] = ttk.LabelFrame(self.regularization_frame, text="Identity & Class Preservation · DOP (Experimental)")
         ttk.Label(
             self.hidden_frames['dop_options'],
             text=(
@@ -1015,7 +1263,7 @@ class MusubiTunerGUI:
             "Differential Output Preservation was studied from github.com/ostris/ai-toolkit. This implementation shares the training idea but was adapted independently to Musubi's cached-text Krea 2 and FLUX.2 Klein pipelines.",
         )
 
-        self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(frame, text="Krea 2 · Generalization (Experimental)")
+        self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(self.regularization_frame, text="Krea 2 · Generalization (Experimental)")
         ttk.Label(
             self.hidden_frames['krea2_regularization'],
             text="Optional tools for small datasets. Use a preset for a controlled first comparison; all existing behavior stays unchanged when Off.",
@@ -1122,7 +1370,7 @@ class MusubiTunerGUI:
             text="Face Refinement now has its own workspace for references, pose goals, Turbo evaluation, and staged-run setup.",
             wraplength=700,
         ).pack(side="left", fill="x", expand=True)
-        open_face_button = ttk.Button(face_action, text="Open Face Refinement", command=lambda: self._select_page(3))
+        open_face_button = ttk.Button(face_action, text="Open Face Refinement", command=lambda: self._select_page("face"))
         open_face_button.pack(side="right")
         ToolTip(open_face_button, "Opens the dedicated Face Refinement workspace. Nothing starts automatically.")
 
@@ -1170,10 +1418,6 @@ class MusubiTunerGUI:
             default_val=True,
         )
 
-        resume_frame = ttk.LabelFrame(frame, text="Resume Training"); resume_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(resume_frame, "resume_path", "Resume from State:", "Path to a saved state folder to continue a previous training run.", kind='path_entry', is_dir=True, is_path=True)
-        self._add_widget(resume_frame, "network_weights", "Network Weights:", "Load pre-trained LoRA weights to continue training from them (fine-tuning a LoRA).", kind='path_entry', options=[("Weight files", "*.safetensors")], is_path=True)
-
     @staticmethod
     def _face_refinement_workspace_state(config):
         config = config or {}
@@ -1212,7 +1456,7 @@ class MusubiTunerGUI:
         }
 
     def create_face_refinement_tab(self):
-        frame = self._create_scrollable_tab("4  Face Refinement")
+        frame = self._create_scrollable_tab("Face Refinement", "face")
         self._add_page_intro(
             frame,
             "Face Refinement",
@@ -1280,7 +1524,7 @@ class MusubiTunerGUI:
         add_button.pack(side="left"); ToolTip(add_button, "Adds or updates one Face Refinement step at the end of the staged plan and enables Staged Progression. It does not start the run.")
         stages_button = ttk.Button(run_actions, text="Review Staged Plan…", command=self._open_staged_training_dialog)
         stages_button.pack(side="left", padx=(6, 0)); ToolTip(stages_button, "Opens the full stage editor so you can review ordering, resolutions, datasets, and step limits.")
-        monitor_button = ttk.Button(run_actions, text="Open Monitor", command=lambda: self._select_page(5))
+        monitor_button = ttk.Button(run_actions, text="Open Monitor", command=lambda: self._select_page("monitor"))
         monitor_button.pack(side="right"); ToolTip(monitor_button, "Opens the Monitor, where the staged run is started and refinement progress is shown.")
         self._face_workspace_buttons.extend((add_button, stages_button))
         self._refresh_face_refinement_workspace()
@@ -1435,7 +1679,7 @@ class MusubiTunerGUI:
         messagebox.showinfo("Face Refinement", "Face Refinement is now the final staged step. Review the staged plan or open Monitor when you are ready; nothing has started yet.")
 
     def create_samples_tab(self):
-        tab_frame = self._create_scrollable_tab("5  Samples")
+        tab_frame = self._create_scrollable_tab("Samples", "samples")
         self._add_page_intro(tab_frame, "Sample previews", "Choose when previews run, manage reusable prompts, and inspect generated samples without deleting inactive prompts.")
 
         # --- Frequency controls ---
@@ -2585,7 +2829,8 @@ class MusubiTunerGUI:
         self.sample_watcher_active = False
 
     def create_run_monitor_tab(self):
-        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="6  Monitor")
+        tab_frame = ttk.Frame(self.notebook); self.notebook.add(tab_frame, text="Monitor")
+        self._page_indices["monitor"] = self.notebook.index("end") - 1
         layout_toolbar = ttk.Frame(tab_frame)
         layout_toolbar.pack(fill="x", padx=10, pady=(8, 2))
         ttk.Label(
@@ -2617,32 +2862,6 @@ class MusubiTunerGUI:
         self.run_status_var = tk.StringVar(value="⚪ New Training RUN")
         self.run_status_label = ttk.Label(controls_frame, textvariable=self.run_status_var, style='Status.TLabel')
         self.run_status_label.pack(pady=5, padx=10)
-        cache_opts_frame = ttk.Frame(controls_frame)
-        cache_opts_frame.pack(pady=5, padx=10, fill='x')
-        self._add_widget(cache_opts_frame, "recache_latents", "Re-cache Latents Before Training", "If your dataset or VAE changes, check this to force regeneration of the latent cache.", kind='checkbox')
-        self._add_widget(cache_opts_frame, "recache_text", "Re-cache Text Encoders Before Training", "If your dataset or T5 model changes, check this to force regeneration of the text encoder cache.", kind='checkbox')
-
-        staged_frame = ttk.LabelFrame(controls_frame, text="Run Mode")
-        staged_frame.pack(fill="x", padx=10, pady=(4, 8))
-        self._add_widget(
-            staged_frame,
-            "use_staged_training",
-            "Use Staged Progression",
-            "When enabled, the Run button executes each configured stage in order and resumes the complete training state between stages. When disabled, the Run button performs one normal training run using the main form settings.",
-            kind="checkbox",
-            command=self._update_run_mode_controls,
-        )
-        staged_plan_frame = ttk.Frame(staged_frame)
-        staged_plan_frame.pack(fill="x", padx=10, pady=(0, 8))
-        self.staged_summary_var = tk.StringVar(value="No staged run configured")
-        ttk.Label(staged_plan_frame, textvariable=self.staged_summary_var, style="PageHelp.TLabel").pack(side="left", fill="x", expand=True)
-        self.staged_config_btn = ttk.Button(staged_plan_frame, text="Configure Stages…", command=self._open_staged_training_dialog)
-        self.staged_config_btn.pack(side="right", padx=(8, 0))
-        ToolTip(
-            self.staged_config_btn,
-            "Opens the stage plan editor. Standard stages select a dataset TOML; Krea Face Refinement stages use their separate saved reference/prompt settings. Configuring a plan does not run it until Staged Progression is enabled and Run is pressed.",
-        )
-
         train_button_frame = ttk.Frame(controls_frame); train_button_frame.pack(pady=10, padx=10, fill='x')
         self.start_btn = ttk.Button(train_button_frame, text="Run Training", style="Accent.TButton", command=self.start_selected_run); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
         ToolTip(self.start_btn, "Starts either one normal training run or the configured staged progression, according to the Run Mode selection above.")
@@ -3199,7 +3418,7 @@ class MusubiTunerGUI:
             self._face_refinement_config = config
             settings["face_refinement_config"] = copy.deepcopy(config)
             self._face_eval_context = {**prepared, "mode": mode_var.get(), "config": config, "commands": list(prepared["commands"])}
-            self.output_text.delete("1.0", tk.END); self._select_page(5); self.run_status_var.set("🧪 Turbo face baseline evaluation")
+            self.output_text.delete("1.0", tk.END); self._select_page("monitor"); self.run_status_var.set("🧪 Turbo face baseline evaluation")
             self.progress_label_var.set(f"Generating {prepared['cases']} fixed Turbo evaluation image(s)…")
             self._begin_job("sample_test", "Krea Turbo face evaluation", settings=settings, note=f"{mode_var.get()} · {prepared['cases']} fixed cases")
             dialog.destroy(); self.run_process(prepared["commands"][0], on_complete=self._on_face_eval_generation_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
@@ -3224,7 +3443,7 @@ class MusubiTunerGUI:
     def _show_face_evaluation_results(self, result_path):
         self._display_face_evaluation_result(result_path)
         self._refresh_face_refinement_workspace()
-        self._select_page(3)
+        self._select_page("face")
         self.run_status_var.set("✅ Turbo face evaluation complete — review the report in Face Refinement")
 
     def _apply_turbo_evaluation_to_pose_plan(self, payload, results_dialog=None):
@@ -3249,7 +3468,7 @@ class MusubiTunerGUI:
         self._face_refinement_config = config
         if results_dialog: results_dialog.destroy()
         self._refresh_face_refinement_workspace()
-        self._select_page(3)
+        self._select_page("face")
         messagebox.showinfo("Pose plan created", "A pose-aware plan was built from the weak evaluation results. Review or edit it with Configure Pose Plan before training.", parent=self.root)
         if warnings: messagebox.showwarning("Pose plan safeguards", "\n".join(warnings), parent=self.root)
 
@@ -3831,7 +4050,8 @@ class MusubiTunerGUI:
 
     def create_jobs_tab(self):
         tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(tab_frame, text="7  Jobs")
+        self.notebook.add(tab_frame, text="Jobs")
+        self._page_indices["jobs"] = self.notebook.index("end") - 1
         tab_frame.grid_columnconfigure(0, weight=1)
         tab_frame.grid_rowconfigure(2, weight=1)
 
@@ -4835,7 +5055,7 @@ class MusubiTunerGUI:
             return
 
         self.set_values(updates)
-        self._select_page(1)
+        self._select_page("training")
         self.run_status_var.set(f"⚪ Applied training parameters from {source_title}")
         messagebox.showinfo(
             "Training parameters applied",
@@ -4894,7 +5114,7 @@ class MusubiTunerGUI:
         self._sample_prompts_data.extend(additions)
         self._rebuild_prompt_list()
         self.update_button_states()
-        self._select_page(4)
+        self._select_page("samples")
         self.run_status_var.set(f"⚪ Imported {len(additions)} sample prompt(s) from {source_title}")
         messagebox.showinfo(
             "Sample prompts imported",
@@ -4941,7 +5161,7 @@ class MusubiTunerGUI:
         self._pending_continuation = None
         self._pending_recovery = None
         self.set_values(settings)
-        self._select_page(0)
+        self._select_page("models")
         self.run_status_var.set("⚪ Repeated job settings loaded for editing")
         if has_full_snapshot:
             messagebox.showinfo(
@@ -4991,7 +5211,7 @@ class MusubiTunerGUI:
         self._pending_continuation = None
         self._pending_recovery = None
         self.set_values(settings)
-        self._select_page(1)
+        self._select_page("face")
         self.run_status_var.set("⚪ Face-refinement continuation loaded for review")
         self._open_face_refinement_dialog()
 
@@ -5141,7 +5361,7 @@ class MusubiTunerGUI:
             self._pending_recovery["checkpoint_step"], self._pending_recovery["total_steps"],
             self._pending_recovery["checkpoint_epoch"], self._pending_recovery["total_epochs"],
         )
-        self._select_page(1)
+        self._select_page("starting_point")
         self.run_status_var.set(f"🛟 True resume ready from {Path(state_path).name}")
         if dialog is not None:
             dialog.destroy()
@@ -5217,7 +5437,7 @@ class MusubiTunerGUI:
             settings["training_comment"] = f"{existing_comment}\n{continuation_note}".strip()
 
         self.set_values(settings)
-        self._select_page(1)
+        self._select_page("starting_point")
         self.run_status_var.set(f"🟢 Continuation loaded from {Path(state_path).name}")
         messagebox.showinfo(
             "Continuation loaded",
@@ -5819,7 +6039,7 @@ class MusubiTunerGUI:
         self._refresh_job_history_view()
 
     def create_convert_lora_tab(self):
-        tab_frame = self._create_scrollable_tab("Convert")
+        tab_frame = self._create_scrollable_tab("Convert", "convert")
         main_frame = ttk.Frame(tab_frame); main_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         info_frame = ttk.LabelFrame(main_frame, text="Format Reference"); info_frame.pack(fill='x', pady=(0, 10))
@@ -5857,7 +6077,7 @@ class MusubiTunerGUI:
         self.convert_output_text.configure(yscrollcommand=scrollbar.set); self.convert_output_text.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
 
     def create_accelerate_config_tab(self):
-        tab_frame = self._create_scrollable_tab("Setup")
+        tab_frame = self._create_scrollable_tab("Setup", "setup")
         main_frame = ttk.Frame(tab_frame); main_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
         info_frame = ttk.LabelFrame(main_frame, text="Setup Instructions"); info_frame.pack(fill='x', pady=(0, 10))
@@ -6327,6 +6547,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             pass
         try:
             supports_dop = is_krea2 or mode == "Flux.2 Klein"
+            if is_krea2:
+                self.regularization_availability_var.set(
+                    "Krea 2 supports DOP, weight noise, and the optional depth anchor. All methods are disabled by default."
+                )
+            elif mode == "Flux.2 Klein":
+                self.regularization_availability_var.set(
+                    "FLUX.2 Klein currently supports DOP. Krea-specific weight-noise and depth controls are hidden."
+                )
+            else:
+                self.regularization_availability_var.set(
+                    f"{mode} has no regularization methods exposed on this page yet. Saved experimental settings remain preserved."
+                )
             if supports_dop:
                 self.hidden_frames['dop_options'].pack(fill="x", padx=10, pady=10)
                 if self.entries['dop_enabled'].var.get():
@@ -6566,6 +6798,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     widget.insert("1.0", str(value) if value is not None else "")
         try: self._update_staged_summary()
         except AttributeError: pass
+        try: self._sync_starting_point_from_settings(settings)
+        except AttributeError: pass
         self.update_button_states()
 
     def load_default_settings(self):
@@ -6597,7 +6831,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
-            "attention_mechanism": "xformers", "resume_path": "", "network_weights": "",
+            "attention_mechanism": "xformers", "starting_point_mode": "new", "resume_path": "", "network_weights": "",
             "log_with": "none", "logging_dir": "", "log_prefix": "", "log_grad_metrics": False,
             "recache_latents": False, "recache_text": False,
             "convert_lora_path": "", "convert_output_dir": "",
