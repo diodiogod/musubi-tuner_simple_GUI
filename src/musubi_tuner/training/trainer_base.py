@@ -162,6 +162,18 @@ class NetworkTrainer:
 
         return logs
 
+    def collect_grad_metrics(self, params) -> dict:
+        """Collect pre-clipping gradient norm diagnostics for tracker logging."""
+        grads = [p.grad.detach() for p in params if p.grad is not None]
+        if not grads:
+            return {}
+        per_norm = torch.stack([g.norm() for g in grads])
+        return {
+            "grad/norm": per_norm.norm().item(),
+            "grad/mean_norm": per_norm.mean().item(),
+            "grad/max": torch.stack([g.abs().max() for g in grads]).max().item(),
+        }
+
     def get_optimizer(self, args, trainable_params: list[torch.nn.Parameter]) -> tuple[str, str, torch.optim.Optimizer]:
         # adamw, adamw8bit, adafactor
 
@@ -1156,6 +1168,13 @@ class NetworkTrainer:
         output = self.call_dit(args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype)
         return self.compute_loss(args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step)
 
+    def on_after_primary_backward(self, args, accelerator, vae) -> None:
+        """Extension seam for releasing primary-loss resources before auxiliaries."""
+
+    def compute_auxiliary_loss(self, args, accelerator, transformer, network) -> tuple[torch.Tensor | None, dict]:
+        """Compute an optional loss after the primary graph has been released."""
+        return None, {}
+
     def compute_loss(
         self,
         args: argparse.Namespace,
@@ -2097,7 +2116,16 @@ class NetworkTrainer:
                         global_step,
                     )
 
+                    grad_metrics = {}
                     accelerator.backward(loss)
+                    self.on_after_primary_backward(args, accelerator, vae)
+                    auxiliary_loss, auxiliary_metrics = self.compute_auxiliary_loss(
+                        args, accelerator, transformer, network
+                    )
+                    if auxiliary_loss is not None:
+                        accelerator.backward(auxiliary_loss)
+                        loss = loss.detach() + auxiliary_loss.detach().to(loss.dtype)
+                    loss_metrics.update(auxiliary_metrics)
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                         state = accelerate.PartialState()
@@ -2105,6 +2133,9 @@ class NetworkTrainer:
                             for param in network.parameters():
                                 if param.grad is not None:
                                     param.grad = accelerator.reduce(param.grad, reduction="mean")
+
+                        if args.log_grad_metrics and len(accelerator.trackers) > 0:
+                            grad_metrics = self.collect_grad_metrics(network.parameters())
 
                         if args.max_grad_norm != 0.0:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
@@ -2177,6 +2208,7 @@ class NetworkTrainer:
                         args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
                     )
                     logs.update(loss_metrics)
+                    logs.update(grad_metrics)
                     logs.update(self.extra_step_logs(args, logs))
                     accelerator.log(logs, step=global_step)
 

@@ -11,6 +11,7 @@
 - [Select the target modules of LoRA](#select-the-target-modules-of-lora--loraの対象モジュールを選択する)
 - [Save and view logs in TensorBoard format](#save-and-view-logs-in-tensorboard-format--tensorboard形式のログの保存と参照)
 - [Save and view logs in wandb](#save-and-view-logs-in-wandb--wandbでログの保存と参照)
+- [Log gradient metrics](#log-gradient-metrics--勾配メトリクスのログ出力)
 - [FP8 weight optimization for models](#fp8-weight-optimization-for-models--モデルの重みのfp8への最適化)
 - [PyTorch Dynamo optimization for model training](#pytorch-dynamo-optimization-for-model-training--モデルの学習におけるpytorch-dynamoの最適化)
 - [MagCache](#magcache)
@@ -272,6 +273,32 @@ Specify the project name with `--log_tracker_name` when using wandb.
 `--log_with wandb`オプションを指定するとwandb形式でログを保存することができます。`tensorboard`や`all`も指定可能です。デフォルトは`tensorboard`です。
 
 wandbを使用する場合は、`--log_tracker_name`でプロジェクト名を指定してください。
+</details>
+
+## Log gradient metrics / 勾配メトリクスのログ出力
+
+The `--log_grad_metrics` option logs gradient norm diagnostics to the tracker (TensorBoard or wandb) at each optimization step. It is disabled by default.
+
+The following metrics are recorded, measured **before gradient clipping** (i.e. before `--max_grad_norm` is applied):
+
+- `grad/norm`: the total L2 norm over all trainable parameters (the same value that `--max_grad_norm` clips against).
+- `grad/mean_norm`: the mean of the per-parameter L2 norms.
+- `grad/max`: the maximum absolute gradient element.
+
+These are useful for diagnosing gradient explosion / vanishing and for choosing an appropriate `--max_grad_norm` value. Enabling this option adds a small per-step GPU synchronization overhead, so it is recommended to enable it only when needed.
+
+<details>
+<summary>日本語</summary>
+
+`--log_grad_metrics`オプションを指定すると、各最適化ステップで勾配ノルムの診断メトリクスをトラッカー（TensorBoardまたはwandb）に出力します。デフォルトでは無効です。
+
+以下のメトリクスが、**勾配クリッピング前**（`--max_grad_norm`の適用前）の値として記録されます。
+
+- `grad/norm`: 全学習対象パラメータの合計L2ノルム（`--max_grad_norm`がクリッピングの基準とする値と同じ）。
+- `grad/mean_norm`: パラメータごとのL2ノルムの平均。
+- `grad/max`: 勾配要素の絶対値の最大。
+
+勾配の爆発・消失の診断や、適切な`--max_grad_norm`の値を決める際に役立ちます。本オプションを有効にするとステップごとにわずかなGPU同期のオーバーヘッドが発生するため、必要なときのみ有効にすることをお勧めします。
 </details>
 
 ## FP8 weight optimization for models / モデルの重みのFP8への最適化

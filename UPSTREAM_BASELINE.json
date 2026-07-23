@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/kohya-ss/musubi-tuner.git",
   "remote": "upstream",
-  "tag": "v0.3.4",
-  "commit": "30c658c",
-  "audited_on": "2026-07-11",
+  "tag": "main (post-v0.3.4)",
+  "commit": "8934cfb",
+  "audited_on": "2026-07-22",
   "vendored_path": "src/musubi_tuner",
   "protected_downstream_paths": [
     "src/musubi_tuner/krea2/krea2_encoder.py",

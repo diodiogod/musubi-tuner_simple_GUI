@@ -60,6 +60,24 @@ def build_sample_args(cmd, settings):
         cmd.append("--sample_at_first")
 
 
+def build_dop_train_args(cmd, settings):
+    """Forward DOP only when explicitly enabled; zero is the untouched baseline."""
+    if not settings.get("dop_enabled"):
+        return
+    add_arg(cmd, "--dop_loss_weight", settings.get("dop_loss_weight"))
+    add_arg(cmd, "--dop_trigger_word", settings.get("dop_trigger_word"))
+    add_arg(cmd, "--dop_class_word", settings.get("dop_class_word"))
+
+
+def build_dop_cache_args(cmd, settings):
+    if not settings.get("dop_enabled"):
+        return
+    add_arg(cmd, "--dop_trigger_word", settings.get("dop_trigger_word"))
+    add_arg(cmd, "--dop_class_word", settings.get("dop_class_word"))
+    if settings.get("dop_cache_reuse"):
+        cmd.append("--skip_existing")
+
+
 def build_common_train_args(cmd, settings):
     add_arg(cmd, "--optimizer_type", settings.get("optimizer_type"))
     add_arg(cmd, "--learning_rate", settings.get("learning_rate"))
@@ -107,6 +125,7 @@ def build_common_train_args(cmd, settings):
     add_arg(cmd, "--resume_exact_position", settings.get("resume_exact_position"))
     add_arg(cmd, "--network_weights", settings.get("network_weights"), is_path=True)
     add_arg(cmd, "--training_comment", settings.get("training_comment"))
+    add_arg(cmd, "--log_grad_metrics", settings.get("log_grad_metrics"))
 
     log = settings.get("log_with")
     if log and log != "none":

@@ -1,6 +1,7 @@
 from backends._common import (
     add_arg, build_output_dir, build_network_args,
     build_attention_arg, build_common_train_args, build_sample_args,
+    build_dop_cache_args, build_dop_train_args,
 )
 
 FLUX2_VERSION_MAP = {
@@ -20,7 +21,7 @@ def _get_version(settings):
 
 def build_commands(settings):
     """Returns a single accelerate launch command for Flux.2 training."""
-    cmd = ["accelerate", "launch", "--num_cpu_threads_per_process", "1",
+    cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
            "src/musubi_tuner/flux_2_train_network.py"]
 
     add_arg(cmd, "--model_version", _get_version(settings))
@@ -41,6 +42,8 @@ def build_commands(settings):
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
 
     build_sample_args(cmd, settings)
+    if _get_version(settings) != "dev":
+        build_dop_train_args(cmd, settings)
     build_common_train_args(cmd, settings)
 
     output_dir, output_name = build_output_dir(settings)
@@ -69,6 +72,8 @@ def build_cache_commands(settings, python_executable):
                "--model_version", ver]
         if settings.get("fp8_text_encoder"):
             cmd.append("--fp8_text_encoder")
+        if ver != "dev":
+            build_dop_cache_args(cmd, settings)
         cmds.append(cmd)
 
     return cmds

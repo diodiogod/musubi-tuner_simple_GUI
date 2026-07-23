@@ -147,6 +147,7 @@ class MusubiTunerGUI:
         self._staged_run = None
         self._staged_training_config = []
         self._staged_recache_latents = True
+        self._staged_recache_text = False
         self._face_refinement_config = {}
         self._face_eval_context = None
         self.last_line_was_progress = False
@@ -933,6 +934,75 @@ class MusubiTunerGUI:
         self._add_widget(flow_frame, "discrete_flow_shift", "Discrete Flow Shift:", "Shift value for 'shift' sampling. The documentation recommends 3.0.", validate_num=True)
         self._add_widget(flow_frame, "preserve_distribution_shape", "Preserve Distribution Shape", "Prevents distortion of the timestep distribution. Recommended when training only one model (e.g., only low noise).", kind='checkbox')
 
+        self.hidden_frames['dop_options'] = ttk.LabelFrame(frame, text="Identity & Class Preservation · DOP (Experimental)")
+        ttk.Label(
+            self.hidden_frames['dop_options'],
+            text=(
+                "DOP helps a character LoRA learn the named subject without replacing the base model's general idea "
+                "of a person, a woman, a man, an animal, or another class. Supported now: Krea 2 and FLUX.2 Klein."
+            ),
+            wraplength=850,
+            style="PageHelp.TLabel",
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+        self._add_widget(
+            self.hidden_frames['dop_options'],
+            "dop_enabled",
+            "Enable Differential Output Preservation (DOP)",
+            "Protects the base model's general class knowledge while teaching your specific subject. For example, replacing 'Alice' with 'a woman' creates natural class captions such as 'photo of a woman outdoors' and can help prompts containing Alice and another woman keep them distinct. It makes each training step substantially slower and uses more VRAM because the model performs two additional comparisons; combining it with Depth Anchor is especially demanding.",
+            kind="checkbox",
+            command=self._on_dop_toggle,
+        )
+        self.hidden_frames['dop_details'] = ttk.Frame(self.hidden_frames['dop_options'])
+        self._add_widget(
+            self.hidden_frames['dop_details'],
+            "dop_trigger_word",
+            "Subject Trigger Word:",
+            "The unique name or token already present in every training caption, such as 'Alice' or 'ohwx person'. DOP temporarily replaces this exact text with the general class. Matching ignores capitalization, but otherwise uses the words literally.",
+            kind="entry",
+        )
+        self._add_widget(
+            self.hidden_frames['dop_details'],
+            "dop_class_word",
+            "Preservation Class:",
+            "A natural phrase describing what the subject is in general, such as 'a person', 'a woman', 'a man', 'a dog', or 'a car'. Include words like 'a' or 'an' when they make the replaced caption read naturally: 'photo of Bob' becomes 'photo of a man'. DOP protects what the base model already knows about this class.",
+            kind="entry",
+        )
+        self.entries["dop_trigger_word"].bind("<KeyRelease>", self._on_dop_caption_setting_changed, add="+")
+        self.entries["dop_class_word"].bind("<KeyRelease>", self._on_dop_caption_setting_changed, add="+")
+        self._add_widget(
+            self.hidden_frames['dop_details'],
+            "dop_loss_weight",
+            "Preservation Strength:",
+            "How strongly DOP protects the general class. Start at 1.0. Lower values such as 0.25 or 0.5 give the subject more freedom to change class behavior; higher values protect the class more strongly but can slow identity learning.",
+            kind="combobox",
+            options=["1.0", "0.5", "0.25", "1.5", "2.0"],
+        )
+        self.dop_cache_help_var = tk.StringVar(
+            value="Text embeddings must be rebuilt the first time, and whenever the trigger or class changes."
+        )
+        dop_help = ttk.Label(
+            self.hidden_frames['dop_details'],
+            textvariable=self.dop_cache_help_var,
+            wraplength=820,
+            foreground=self.colors["warning"],
+        )
+        dop_help.pack(anchor="w", padx=10, pady=(4, 3))
+        ToolTip(
+            dop_help,
+            "The text cache stores both versions of every caption: the normal subject caption and a class version made by replacing the trigger. The trainer checks a signature and stops with a clear message instead of using stale or mismatched DOP captions.",
+        )
+        attribution = ttk.Label(
+            self.hidden_frames['dop_details'],
+            text="Technique reference: Ostris AI Toolkit · independent Musubi implementation",
+            wraplength=820,
+            style="PageHelp.TLabel",
+        )
+        attribution.pack(anchor="w", padx=10, pady=(0, 8))
+        ToolTip(
+            attribution,
+            "Differential Output Preservation was studied from github.com/ostris/ai-toolkit. This implementation shares the training idea but was adapted independently to Musubi's cached-text Krea 2 and FLUX.2 Klein pipelines.",
+        )
+
         self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(frame, text="Krea 2 · Generalization (Experimental)")
         ttk.Label(
             self.hidden_frames['krea2_regularization'],
@@ -1050,6 +1120,13 @@ class MusubiTunerGUI:
         log_with_widget.bind('<<ComboboxSelected>>', self.update_button_states)
         self._add_widget(logging_frame, "logging_dir", "Logging Directory:", "Directory to save logs. Required if 'Log With' is not 'none'.", kind='path_entry', is_dir=True, is_path=True)
         self._add_widget(logging_frame, "log_prefix", "Log Prefix:", "Optional prefix for log filenames or wandb run names.", kind='entry')
+        self._add_widget(
+            logging_frame,
+            "log_grad_metrics",
+            "Log Gradient Health Metrics",
+            "Adds three expert diagnostics to TensorBoard or W&B: overall gradient size, average per-layer size, and the largest gradient value. These can reveal unstable or stalled training and help tune gradient clipping. Disabled by default because checking them adds a small synchronization cost every training step.",
+            kind='checkbox',
+        )
 
         other_frame = ttk.LabelFrame(frame, text="Other Options"); other_frame.pack(fill="x", padx=10, pady=10)
         fp8_frame = ttk.Frame(other_frame); fp8_frame.pack(fill='x')
@@ -2567,6 +2644,10 @@ class MusubiTunerGUI:
         self.depth_anchor_status_label = ttk.Label(monitor_frame, textvariable=self.depth_anchor_status_var, style="PageHelp.TLabel")
         self.depth_anchor_status_label.pack(anchor="w", padx=10, pady=(4, 0))
         ToolTip(self.depth_anchor_status_label, "When enabled, this shows the raw depth-consistency loss and its weighted contribution to the training objective. A changing finite value confirms the depth checker is participating in training.")
+        self.dop_status_var = tk.StringVar(value="DOP: Off")
+        self.dop_status_label = ttk.Label(monitor_frame, textvariable=self.dop_status_var, style="PageHelp.TLabel")
+        self.dop_status_label.pack(anchor="w", padx=10, pady=(3, 0))
+        ToolTip(self.dop_status_label, "When DOP is enabled, this shows its raw preservation error and the amount added to the total training loss. Changing finite values confirm DOP is actively protecting the selected class.")
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
 
         bottom_pane_host = ttk.Frame(self.monitor_bottom_pane)
@@ -2736,6 +2817,9 @@ class MusubiTunerGUI:
         path_row(identity, "Reference image folder", reference_var)
         path_row(identity, "AntelopeV2 folder", model_var)
         ttk.Label(identity, textvariable=status_var, wraplength=680).pack(anchor="w", padx=8, pady=(3, 6))
+        download_progress_var = tk.DoubleVar(value=0)
+        download_progress = ttk.Progressbar(identity, variable=download_progress_var, maximum=100, mode="determinate")
+        download_progress.pack(fill="x", padx=8, pady=(0, 5))
 
         license_var = tk.BooleanVar(value=bool(config.get("license_acknowledged")))
         ttk.Checkbutton(
@@ -2743,13 +2827,17 @@ class MusubiTunerGUI:
             text="I understand AntelopeV2 model files are third-party artifacts with separate terms and are not bundled with this GUI.",
         ).pack(anchor="w", padx=8, pady=4)
 
-        def run_background(action, success):
+        def run_background(action, success, failure=None):
             def worker():
                 try:
                     result = action()
                     self.root.after(0, lambda: success(result))
                 except Exception as exc:
-                    self.root.after(0, lambda exc=exc: messagebox.showerror("Face Refinement", str(exc), parent=dialog))
+                    def show_failure(exc=exc):
+                        if failure:
+                            failure(exc)
+                        messagebox.showerror("Face Refinement", str(exc), parent=dialog)
+                    self.root.after(0, show_failure)
             threading.Thread(target=worker, daemon=True).start()
 
         identity_actions = ttk.Frame(identity); identity_actions.pack(fill="x", padx=8, pady=(4, 8))
@@ -2757,21 +2845,70 @@ class MusubiTunerGUI:
             if not license_var.get():
                 messagebox.showwarning("Face-model terms", "Acknowledge the third-party model notice before downloading.", parent=dialog); return
             if not messagebox.askokcancel("Download AntelopeV2", "Download approximately 220 MB of third-party face-analysis model files from Hugging Face?", parent=dialog): return
-            status_var.set("Downloading face models…")
+            download_button.configure(state="disabled")
+            analyze_button.configure(state="disabled")
+            download_progress_var.set(0)
+            status_var.set("Connecting to Hugging Face…")
             from musubi_tuner.face_refinement.face_models import ensure_models
-            run_background(lambda: ensure_models(model_var.get()), lambda _r: status_var.set("Face models are ready. Click Analyze Faces & Poses."))
+
+            def progress(name, received, total):
+                def update():
+                    received_mb = received / (1024 * 1024)
+                    if total > 0:
+                        percent = min(100.0, received * 100.0 / total)
+                        download_progress_var.set(percent)
+                        status_var.set(
+                            f"Downloading {name}: {percent:.1f}% · {received_mb:.1f}/{total / (1024 * 1024):.1f} MB"
+                        )
+                    else:
+                        status_var.set(f"Downloading {name}: {received_mb:.1f} MB received")
+                self.root.after(0, update)
+
+            def complete(_result):
+                download_progress_var.set(100)
+                download_button.configure(state="normal")
+                analyze_button.configure(state="normal")
+                status_var.set("Face models are ready. Click Analyze Faces & Poses.")
+
+            def failed(exc):
+                download_button.configure(state="normal")
+                analyze_button.configure(state="normal")
+                status_var.set(f"Download failed: {exc}")
+
+            run_background(lambda: ensure_models(model_var.get(), progress=progress), complete, failed)
         def face_check():
             if not self._check_face_refinement_dependencies(parent=dialog):
                 return
-            status_var.set("Checking reference faces…")
+            analyze_button.configure(state="disabled")
+            review_button.configure(state="disabled")
+            download_progress_var.set(0)
+            status_var.set("Preparing face analysis…")
             from musubi_tuner.face_refinement.preflight import scan_reference_faces
+            def progress(phase, current, total, name):
+                def update():
+                    fraction = current / max(1, total)
+                    if phase == "detect":
+                        percent = 60.0 * fraction
+                        label = "Detecting faces and poses"
+                    else:
+                        percent = 60.0 + 40.0 * fraction
+                        label = "Encoding identity"
+                    download_progress_var.set(percent)
+                    status_var.set(f"{label}: {current}/{total} · {name} · {percent:.0f}%")
+                self.root.after(0, update)
             def show(report):
                 warnings = " ".join(report["warnings"]) or "No obvious reference-set problems found."
                 outliers = sum(1 for item in report.get("scored_images", []) if item.get("outlier"))
+                download_progress_var.set(100)
+                analyze_button.configure(state="normal")
                 status_var.set(f"Usable faces: {report['valid_faces']}/{report['images_scanned']}. Mean identity consistency: {report['similarity_mean']:.2f}. Flagged for review: {outliers}. {warnings}")
                 config["preflight_report"] = report
                 review_button.configure(state="normal")
-            run_background(lambda: scan_reference_faces(reference_var.get(), model_var.get()), show)
+            def failed(exc):
+                analyze_button.configure(state="normal")
+                review_button.configure(state="normal" if config.get("preflight_report") else "disabled")
+                status_var.set(f"Face analysis failed: {exc}")
+            run_background(lambda: scan_reference_faces(reference_var.get(), model_var.get(), progress=progress), show, failed)
         def review_references():
             report = config.get("preflight_report") or {}
             if not report:
@@ -3029,7 +3166,13 @@ class MusubiTunerGUI:
                 if min(config["evaluation_prompts_per_pose"], config["evaluation_seeds_per_prompt"], config["evaluation_resolution"], config["evaluation_steps"]) < 1: raise ValueError("Evaluation counts, resolution, and steps must be positive.")
                 if config["evaluation_lora_strength"] <= 0: raise ValueError("LoRA strength must be greater than zero.")
                 baseline = baseline_var.get().strip() if mode_var.get() == "compare" else None
-                if mode_var.get() == "compare" and (not baseline or not Path(baseline).is_file()): raise ValueError("Choose an existing baseline results.json before comparing.")
+                if mode_var.get() == "compare" and (not baseline or not Path(baseline).is_file()):
+                    raise ValueError(
+                        "Comparison needs the results.json produced when you evaluated the original LoRA. "
+                        "It is not a LoRA file or an output folder. Choose that earlier results.json as the baseline. "
+                        "If you have not created one yet, select ‘Create or replace the starting baseline’ and evaluate "
+                        "the original LoRA first."
+                    )
                 settings = self.get_settings(); settings["python_executable"] = sys.executable or "python"
                 prepared = krea2_face_eval_backend.prepare(settings, config, lora_var.get(), baseline_result=baseline, label=mode_var.get())
             except Exception as exc: messagebox.showerror("Turbo Evaluation", str(exc), parent=dialog); return
@@ -3234,7 +3377,7 @@ class MusubiTunerGUI:
         ttk.Label(host, text="Resolution progression", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             host,
-            text="Standard stages use a dataset TOML. Krea Face Refinement is a separate prompt-and-reference stage and uses its saved GUI settings.",
+            text="Standard stages use a dataset TOML and may inherit or override DOP. Krea Face Refinement is a separate prompt-and-reference stage and uses its saved GUI settings.",
             style="PageHelp.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(3, 14))
 
@@ -3273,6 +3416,10 @@ class MusubiTunerGUI:
             path_var = tk.StringVar(value=saved.get("dataset_config", ""))
             epochs_var = tk.StringVar(value=str(saved.get("epochs", self.entries["max_train_epochs"].get() or "1")))
             steps_var = tk.StringVar(value=str(saved.get("steps", "")))
+            dop_mode_var = tk.StringVar(value=str(saved.get("dop_mode", "inherit")))
+            dop_weight_var = tk.StringVar(value=str(saved.get("dop_loss_weight", "")))
+            dop_trigger_var = tk.StringVar(value=str(saved.get("dop_trigger_word", "")))
+            dop_class_var = tk.StringVar(value=str(saved.get("dop_class_word", "")))
             ttk.Checkbutton(table, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
             ttk.Entry(table, textvariable=label_var, width=14).grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=4)
             type_widget = ttk.Combobox(table, textvariable=type_var, width=18, state="readonly", values=["standard", "face_refinement"])
@@ -3296,13 +3443,88 @@ class MusubiTunerGUI:
             configure_button = ttk.Button(table, text="Settings…")
             configure_button.grid(row=row_index, column=6, sticky="ew", padx=(8, 0), pady=4)
 
+            def open_standard_dop_settings():
+                dop_dialog = tk.Toplevel(dialog)
+                dop_dialog.title(f"DOP · {label_var.get().strip() or 'Stage'}")
+                dop_dialog.transient(dialog)
+                dop_dialog.grab_set()
+                dop_dialog.resizable(False, False)
+                panel = ttk.Frame(dop_dialog, padding=16)
+                panel.pack(fill="both", expand=True)
+                ttk.Label(panel, text="DOP for this stage", style="PageTitle.TLabel").pack(anchor="w")
+                ttk.Label(
+                    panel,
+                    text="Inherit uses the main Training Parameters settings. Enable or Disable affects only this stage.",
+                    wraplength=590,
+                    style="PageHelp.TLabel",
+                ).pack(anchor="w", pady=(3, 12))
+                mode_row = ttk.Frame(panel); mode_row.pack(fill="x", pady=4)
+                ttk.Label(mode_row, text="Stage behavior:", width=22).pack(side="left")
+                mode_box = ttk.Combobox(
+                    mode_row,
+                    textvariable=dop_mode_var,
+                    state="readonly",
+                    values=["inherit", "enable", "disable"],
+                    width=28,
+                )
+                mode_box.pack(side="left", fill="x", expand=True)
+                ToolTip(mode_box, "Inherit follows the main DOP switch. Enable forces DOP on for this stage. Disable turns it off for this stage.")
+
+                fields = ttk.Frame(panel); fields.pack(fill="x", pady=(6, 0))
+                entries = []
+                for row_num, (label, variable, tip) in enumerate((
+                    ("Strength override:", dop_weight_var, "Leave blank to inherit. Start at 1.0; lower values protect the class less strongly."),
+                    ("Trigger override:", dop_trigger_var, "Leave blank to inherit the subject trigger from the main DOP panel."),
+                    ("Class override:", dop_class_var, "Leave blank to inherit. Use a phrase that fits naturally after replacement, such as a person, a woman, a man, or a dog."),
+                )):
+                    ttk.Label(fields, text=label, width=22).grid(row=row_num, column=0, sticky="w", pady=4)
+                    entry = ttk.Entry(fields, textvariable=variable, width=38)
+                    entry.grid(row=row_num, column=1, sticky="ew", pady=4)
+                    ToolTip(entry, tip)
+                    entries.append(entry)
+                fields.grid_columnconfigure(1, weight=1)
+
+                def refresh_fields(*_):
+                    state = "disabled" if dop_mode_var.get() == "disable" else "normal"
+                    for entry in entries:
+                        entry.configure(state=state)
+                mode_var_trace = dop_mode_var.trace_add("write", refresh_fields)
+                refresh_fields()
+
+                def close_dop(save=True):
+                    if save and dop_weight_var.get().strip():
+                        try:
+                            if float(dop_weight_var.get()) <= 0:
+                                raise ValueError
+                        except ValueError:
+                            messagebox.showerror("Stage DOP", "Strength must be a number greater than zero, or blank to inherit.", parent=dop_dialog)
+                            return
+                    dop_mode_var.trace_remove("write", mode_var_trace)
+                    dop_dialog.destroy()
+
+                buttons = ttk.Frame(panel); buttons.pack(fill="x", pady=(14, 0))
+                ttk.Button(buttons, text="Done", style="Accent.TButton", command=close_dop).pack(side="right")
+                dop_dialog.protocol("WM_DELETE_WINDOW", close_dop)
+
+            def configure_stage():
+                if type_var.get() == "face_refinement":
+                    self._open_face_refinement_dialog(on_save=lambda cfg: steps_var.set(str(cfg["steps"])))
+                else:
+                    open_standard_dop_settings()
+
+            configure_button.configure(command=configure_stage)
+
             def sync_limit_fields(*_args, steps=steps_var, epochs_widget=epochs_entry, steps_widget=steps_entry, path_widget=path_entry, browse_parent=path_host, stage_type=type_var, button=configure_button):
                 face = stage_type.get() == "face_refinement"
                 epochs_widget.configure(state="disabled" if face or steps.get().strip() else "normal")
                 steps_widget.configure(state="normal")
                 path_widget.configure(state="disabled" if face else "normal")
                 for child in browse_parent.winfo_children()[1:]: child.configure(state="disabled" if face else "normal")
-                button.configure(state="normal" if face else "disabled")
+                dop_supported_here = self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein")
+                button.configure(
+                    text="Face Settings…" if face else "DOP Settings…",
+                    state="normal" if face or dop_supported_here else "disabled",
+                )
                 if face:
                     configured_steps = str((self._face_refinement_config or self._default_face_refinement_config())["steps"])
                     if steps.get() != configured_steps:
@@ -3310,7 +3532,6 @@ class MusubiTunerGUI:
 
             steps_var.trace_add("write", sync_limit_fields)
             type_var.trace_add("write", sync_limit_fields)
-            configure_button.configure(command=lambda: self._open_face_refinement_dialog(on_save=lambda cfg: steps_var.set(str(cfg["steps"]))) )
             sync_limit_fields()
 
             row = {
@@ -3320,6 +3541,10 @@ class MusubiTunerGUI:
                 "path": path_var,
                 "epochs": epochs_var,
                 "steps": steps_var,
+                "dop_mode": dop_mode_var,
+                "dop_loss_weight": dop_weight_var,
+                "dop_trigger_word": dop_trigger_var,
+                "dop_class_word": dop_class_var,
                 "widgets": [],
             }
 
@@ -3350,8 +3575,21 @@ class MusubiTunerGUI:
             variable=recache_var,
         ).grid(row=4, column=0, sticky="w", pady=(12, 0))
 
+        recache_text_var = tk.BooleanVar(value=getattr(self, "_staged_recache_text", False))
+        recache_text_checkbox = ttk.Checkbutton(
+            host,
+            text="Fully re-cache text before every standard stage",
+            variable=recache_text_var,
+        )
+        recache_text_checkbox.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self.create_tooltip(
+            recache_text_checkbox,
+            "Usually leave this off. DOP automatically checks the existing caption cache and only encodes captions "
+            "that are missing or changed. Turn this on only when you deliberately want every caption encoded again.",
+        )
+
         actions = ttk.Frame(host)
-        actions.grid(row=5, column=0, sticky="e", pady=(18, 0))
+        actions.grid(row=6, column=0, sticky="e", pady=(18, 0))
 
         def save_and_close():
             configured = []
@@ -3385,6 +3623,10 @@ class MusubiTunerGUI:
                         "dataset_config": path_var.get().strip(),
                         "epochs": epochs_text,
                         "steps": steps_text,
+                        "dop_mode": row["dop_mode"].get(),
+                        "dop_loss_weight": row["dop_loss_weight"].get().strip(),
+                        "dop_trigger_word": row["dop_trigger_word"].get().strip(),
+                        "dop_class_word": row["dop_class_word"].get().strip(),
                     })
                     continue
                 path = path_var.get().strip()
@@ -3409,6 +3651,10 @@ class MusubiTunerGUI:
                     "dataset_config": path if stage_type == "standard" else "",
                     "epochs": "" if steps_text or stage_type == "face_refinement" else str(limit),
                     "steps": str(limit) if steps_text else "",
+                    "dop_mode": row["dop_mode"].get(),
+                    "dop_loss_weight": row["dop_loss_weight"].get().strip(),
+                    "dop_trigger_word": row["dop_trigger_word"].get().strip(),
+                    "dop_class_word": row["dop_class_word"].get().strip(),
                 })
             if not any(item["enabled"] for item in configured):
                 messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
@@ -3424,6 +3670,7 @@ class MusubiTunerGUI:
                     return
             self._staged_training_config = configured
             self._staged_recache_latents = recache_var.get()
+            self._staged_recache_text = recache_text_var.get()
             self._update_staged_summary()
             dialog.destroy()
 
@@ -3436,7 +3683,12 @@ class MusubiTunerGUI:
         if not enabled:
             self.staged_summary_var.set("No staged run configured")
             return
-        self.staged_summary_var.set(" → ".join(f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}" for item in enabled))
+        self.staged_summary_var.set(
+            " → ".join(
+                f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}{self._staged_dop_suffix(item)}"
+                for item in enabled
+            )
+        )
 
     @staticmethod
     def _staged_limit_text(stage):
@@ -3444,6 +3696,33 @@ class MusubiTunerGUI:
         if steps:
             return f"{steps} steps"
         return f"{stage.get('epochs', '')} epochs"
+
+    @staticmethod
+    def _staged_dop_suffix(stage):
+        if stage.get("type", "standard") != "standard":
+            return ""
+        mode = str(stage.get("dop_mode", "inherit"))
+        if mode == "enable":
+            strength = str(stage.get("dop_loss_weight", "")).strip()
+            return f" · DOP on{f' ({strength})' if strength else ''}"
+        if mode == "disable":
+            return " · DOP off"
+        return ""
+
+    @staticmethod
+    def _apply_stage_dop_settings(settings, stage):
+        """Apply one standard stage's DOP overrides to a settings snapshot."""
+        mode = str(stage.get("dop_mode", "inherit"))
+        if mode == "disable":
+            settings["dop_enabled"] = False
+            return settings
+        if mode == "enable":
+            settings["dop_enabled"] = True
+        for key in ("dop_loss_weight", "dop_trigger_word", "dop_class_word"):
+            value = str(stage.get(key, "")).strip()
+            if value:
+                settings[key] = value
+        return settings
 
     @staticmethod
     def _stage_label_text(stage):
@@ -4293,6 +4572,9 @@ class MusubiTunerGUI:
             "--log_prefix": "log_prefix",
             "--training_comment": "training_comment",
             "--vae": "vae_model",
+            "--dop_loss_weight": "dop_loss_weight",
+            "--dop_trigger_word": "dop_trigger_word",
+            "--dop_class_word": "dop_class_word",
         }
         for option, key in option_map.items():
             value = self._command_option(command, option)
@@ -4331,6 +4613,7 @@ class MusubiTunerGUI:
         }
         for flag, key in flag_map.items():
             settings[key] = re.search(rf"(?:^|\s){re.escape(flag)}(?:\s|$)", command) is not None
+        settings["dop_enabled"] = bool(settings.get("dop_loss_weight"))
 
         if re.search(r"(?:^|\s)--sdpa(?:\s|$)", command):
             settings["attention_mechanism"] = "sdpa"
@@ -4372,6 +4655,10 @@ class MusubiTunerGUI:
             "compile_cache_size_limit",
             "attention_mechanism",
             "save_state",
+            "dop_enabled",
+            "dop_trigger_word",
+            "dop_class_word",
+            "dop_loss_weight",
             "rename_final_artifacts_to_epoch",
         }
 
@@ -5752,6 +6039,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_wan = (mode == "Wan 2.2")
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
+        supports_dop = is_krea2 or mode == "Flux.2 Klein"
+        dop_active = bool(supports_dop and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
         invalid_fields = []
         wants_samples = bool(
@@ -5800,6 +6089,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             train_high = False; train_low = True  # for combined-run logic below
 
         log_with = self.entries["log_with"].get(); self.entries["logging_dir"].is_required = log_with != "none"
+        self.entries["dop_trigger_word"].is_required = dop_active
+        self.entries["dop_class_word"].is_required = dop_active
 
         for key, widget in self.entries.items():
             if not isinstance(widget, tk.Widget): continue
@@ -5827,6 +6118,20 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         if is_wan:
             if not (train_high or train_low): all_valid = False
+        if dop_active:
+            trigger = self.entries["dop_trigger_word"].get().strip()
+            class_word = self.entries["dop_class_word"].get().strip()
+            try:
+                weight_ok = float(self.entries["dop_loss_weight"].get()) > 0
+            except ValueError:
+                weight_ok = False
+            if trigger and class_word and trigger.casefold() == class_word.casefold():
+                all_valid = False
+                invalid_fields.append("dop_class_word")
+                self.entries["dop_class_word"].config(style="Invalid.TEntry")
+            if not weight_ok:
+                all_valid = False
+                invalid_fields.append("dop_loss_weight")
         self.start_btn.config(state="normal" if all_valid and not self.current_process else "disabled")
         try:
             if self.current_process:
@@ -5927,6 +6232,45 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.hidden_frames['krea2_regularization'].pack_forget()
         except (KeyError, tk.TclError):
             pass
+        try:
+            supports_dop = is_krea2 or mode == "Flux.2 Klein"
+            if supports_dop:
+                self.hidden_frames['dop_options'].pack(fill="x", padx=10, pady=10)
+                if self.entries['dop_enabled'].var.get():
+                    self.hidden_frames['dop_details'].pack(fill="x")
+                else:
+                    self.hidden_frames['dop_details'].pack_forget()
+            else:
+                self.hidden_frames['dop_options'].pack_forget()
+        except (KeyError, tk.TclError):
+            pass
+
+    def _on_dop_toggle(self):
+        """Make the first DOP run safe without forcing future re-caches forever."""
+        try:
+            if self.entries["dop_enabled"].var.get():
+                if not self.entries["recache_text"].var.get():
+                    self.entries["recache_text"].var.set(True)
+                self.dop_cache_help_var.set(
+                    "Re-cache Text Encoder Outputs was enabled for safety. You may turn it off on later runs "
+                    "when the dataset, trigger, and class have not changed."
+                )
+            else:
+                self.dop_cache_help_var.set(
+                    "Text embeddings must be rebuilt the first time, and whenever the trigger or class changes."
+                )
+        except (KeyError, AttributeError):
+            pass
+
+    def _on_dop_caption_setting_changed(self, _event=None):
+        try:
+            if self.entries["dop_enabled"].var.get():
+                self.entries["recache_text"].var.set(True)
+                self.dop_cache_help_var.set(
+                    "Trigger or class changed, so Re-cache Text Encoder Outputs was enabled to rebuild the signed DOP captions."
+                )
+        except (KeyError, AttributeError):
+            pass
 
     def _apply_krea2_generalization_preset(self):
         preset = self.entries["krea2_generalization_preset"].get()
@@ -5957,6 +6301,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         settings["sample_prompts_data"] = self._sample_prompts_data
         settings["staged_training_config"] = self._staged_training_config
         settings["staged_recache_latents"] = self._staged_recache_latents
+        settings["staged_recache_text"] = self._staged_recache_text
         settings["face_refinement_config"] = self._face_refinement_config
         return settings
 
@@ -5981,10 +6326,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._staged_training_config = settings.get("staged_training_config") or []
         if "staged_recache_latents" in settings:
             self._staged_recache_latents = bool(settings.get("staged_recache_latents"))
+        if "staged_recache_text" in settings:
+            self._staged_recache_text = bool(settings.get("staged_recache_text"))
         if "face_refinement_config" in settings:
             self._face_refinement_config = settings.get("face_refinement_config") or {}
         for key, value in settings.items():
-            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts", "staged_training_config", "staged_recache_latents", "face_refinement_config"): continue
+            if key in ("training_mode", "appearance_mode", "sample_prompts_data", "sample_prompts", "staged_training_config", "staged_recache_latents", "staged_recache_text", "face_refinement_config"): continue
             if key in self.entries:
                 widget = self.entries[key]
                 if isinstance(widget, (tk.BooleanVar, tk.StringVar)):
@@ -6027,17 +6374,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "compile": False, "compile_backend": "inductor", "compile_mode": "default",
             "compile_dynamic": "auto", "compile_fullgraph": False, "compile_cache_size_limit": "32",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
+            "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
             "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "resume_path": "", "network_weights": "",
-            "log_with": "none", "logging_dir": "", "log_prefix": "",
+            "log_with": "none", "logging_dir": "", "log_prefix": "", "log_grad_metrics": False,
             "recache_latents": False, "recache_text": False,
             "convert_lora_path": "", "convert_output_dir": "",
             "training_mode": "Wan 2.2",
             "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
             "sample_prompts_data": [],
-            "use_staged_training": False, "staged_training_config": [], "staged_recache_latents": True, "face_refinement_config": {},
+            "use_staged_training": False, "staged_training_config": [], "staged_recache_latents": True, "staged_recache_text": False, "face_refinement_config": {},
         }
         self.set_values(defaults)
 
@@ -6269,6 +6617,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 f"Depth anchor: waiting for first training step · strength {depth_strength:g}"
                 if self.training_mode_var.get() == "Krea 2" and depth_strength > 0 else "Depth anchor: Off"
             )
+            try:
+                dop_active = self.entries["dop_enabled"].var.get() and self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein")
+                dop_strength = float(self.entries["dop_loss_weight"].get() or 0)
+            except (KeyError, ValueError):
+                dop_active, dop_strength = False, 0.0
+            self.dop_status_var.set(
+                f"DOP: waiting for first training step · strength {dop_strength:g}"
+                if dop_active and dop_strength > 0 else "DOP: Off"
+            )
         self.last_progress_milestone = 0
         command_display = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
@@ -6277,6 +6634,28 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         try:
             env = os.environ.copy(); env['PYTHONUNBUFFERED'] = '1'; env['PYTHONUTF8'] = '1'
+            # GUI backend commands are explicitly single-process. A prior torchrun,
+            # MPI shell, IDE, or launcher can leave rank variables in the GUI's
+            # inherited environment; Accelerate interprets even LOCAL_RANK=0 as a
+            # distributed job and then expects an initialized process group.
+            for distributed_key in (
+                "LOCAL_RANK",
+                "RANK",
+                "WORLD_SIZE",
+                "LOCAL_WORLD_SIZE",
+                "GROUP_RANK",
+                "ROLE_RANK",
+                "MASTER_ADDR",
+                "MASTER_PORT",
+                "TORCHELASTIC_RUN_ID",
+                "PMI_SIZE",
+                "PMI_RANK",
+                "OMPI_COMM_WORLD_SIZE",
+                "OMPI_COMM_WORLD_RANK",
+                "MV2_COMM_WORLD_SIZE",
+                "MV2_COMM_WORLD_RANK",
+            ):
+                env.pop(distributed_key, None)
             project_root = os.getcwd(); src_path = os.path.join(project_root, 'src')
             env['PYTHONPATH'] = f"{src_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
 
@@ -6395,6 +6774,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "loss": metric("avr_loss"),
             "depth_loss": metric("loss/depth_anchor"),
             "diffusion_loss": metric("loss/diffusion"),
+            "dop_loss": metric("loss/dop"),
+            "dop_weighted": metric("loss/dop_weighted"),
         }
 
     def read_output(self, on_complete, output_widget):
@@ -6470,6 +6851,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 0,
                                 self.depth_anchor_status_var.set,
                                 f"Depth anchor: active · loss {depth_loss:.4f} · weighted {depth_loss * strength:.5f}",
+                            )
+                        if training_progress and training_progress["dop_loss"] is not None:
+                            dop_loss = training_progress["dop_loss"]
+                            weighted = training_progress["dop_weighted"]
+                            if weighted is None:
+                                try:
+                                    weighted = dop_loss * float(self.entries["dop_loss_weight"].get() or 0)
+                                except (KeyError, ValueError):
+                                    weighted = 0.0
+                            self.root.after(
+                                0,
+                                self.dop_status_var.set,
+                                f"DOP: active · class error {dop_loss:.4f} · added loss {weighted:.5f}",
                             )
 
                         epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", chunk, re.IGNORECASE)
@@ -6613,8 +7007,20 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() != "Krea 2":
             messagebox.showerror("Staged Run", "Face Refinement is currently available only in Krea 2 mode.")
             return
-        if any(item.get("type") == "face_refinement" for item in stages) and not self._check_face_refinement_dependencies():
-            return
+        if any(item.get("type") == "face_refinement" for item in stages):
+            if not self._check_face_refinement_dependencies():
+                return
+            from musubi_tuner.face_refinement.face_models import models_complete
+            face_model_dir = str((self._face_refinement_config or {}).get("face_model_dir", "")).strip()
+            if not models_complete(face_model_dir):
+                messagebox.showerror(
+                    "Staged Run · Face models missing",
+                    "Face Refinement needs its detector and identity model files before the staged run begins.\n\n"
+                    "Open Face & Pose Refinement, confirm the face-model folder, acknowledge the third-party terms, "
+                    "and click Download Face Models. Then run Analyze Faces & Poses again.\n\n"
+                    f"Incomplete folder: {face_model_dir or 'not selected'}",
+                )
+                return
         if not first_is_face:
             first_dataset = stages[0]["dataset_config"]
             self.entries["dataset_config"].delete(0, tk.END)
@@ -6625,6 +7031,46 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return
 
         base_settings = self.get_settings()
+        dop_supported = base_settings.get("training_mode") in ("Krea 2", "Flux.2 Klein")
+        any_stage_dop = any(
+            item.get("type", "standard") == "standard"
+            and (
+                item.get("dop_mode") == "enable"
+                or (item.get("dop_mode", "inherit") == "inherit" and base_settings.get("dop_enabled"))
+            )
+            for item in stages
+        )
+        if any_stage_dop and not dop_supported:
+            messagebox.showerror("Staged Run", "DOP stages are currently supported only for Krea 2 and FLUX.2 Klein.")
+            return
+        if any_stage_dop:
+            text_encoder_key = "krea2_text_encoder" if base_settings.get("training_mode") == "Krea 2" else "flux2_text_encoder"
+            text_encoder_path = str(base_settings.get(text_encoder_key) or "").strip()
+            if not text_encoder_path or not os.path.exists(text_encoder_path):
+                messagebox.showerror(
+                    "Staged Run",
+                    "A valid text encoder is required because DOP-enabled stages validate their class-caption cache.",
+                )
+                return
+            from musubi_tuner.training.dop import validate_dop_config
+
+            for item in stages:
+                if item.get("type", "standard") != "standard":
+                    continue
+                effective = self._apply_stage_dop_settings(dict(base_settings), item)
+                if not effective.get("dop_enabled"):
+                    continue
+                try:
+                    validate_dop_config(
+                        effective.get("dop_trigger_word", ""),
+                        effective.get("dop_class_word", ""),
+                        float(effective.get("dop_loss_weight") or 0),
+                    )
+                    if float(effective.get("dop_loss_weight") or 0) <= 0:
+                        raise ValueError("DOP preservation strength must be greater than zero.")
+                except (TypeError, ValueError) as exc:
+                    messagebox.showerror("Staged Run", f"{self._stage_label_text(item)} DOP settings: {exc}")
+                    return
         if base_settings.get("training_mode") == "Wan 2.2":
             separate_wan_runs = (
                 base_settings.get("train_low_noise")
@@ -6662,7 +7108,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "staged_training",
             "Staged resolution training",
             settings=base_settings,
-            note=" → ".join(f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}" for item in stages),
+            note=" → ".join(
+                f"{self._stage_label_text(item)} × {self._staged_limit_text(item)}{self._staged_dop_suffix(item)}"
+                for item in stages
+            ),
         )
         self._advance_staged_training()
 
@@ -6724,9 +7173,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         stage_label = self._stage_label_text(stage)
         settings["output_name"] = f"{run['base_output_name']}-{stage_label}"
         settings["stage_type"] = stage_type
+        if stage_type == "standard":
+            self._apply_stage_dop_settings(settings, stage)
+        else:
+            settings["dop_enabled"] = False
         settings["save_state"] = stage_type == "standard"
         settings["recache_latents"] = stage_type == "standard" and bool(self._staged_recache_latents)
-        settings["recache_text"] = stage_type == "standard" and (bool(settings.get("recache_text")) if next_index == 0 else False)
+        explicit_first_text_recache = next_index == 0 and bool(run["base_settings"].get("recache_text"))
+        force_text_recache = bool(self._staged_recache_text) or explicit_first_text_recache
+        settings["recache_text"] = stage_type == "standard" and (bool(settings.get("dop_enabled")) or force_text_recache)
+        settings["dop_cache_reuse"] = (
+            stage_type == "standard" and bool(settings.get("dop_enabled")) and not force_text_recache
+        )
         settings["resume_path"] = str(state_path) if state_path is not None else ""
         if input_lora is not None and stage_type == "standard":
             settings["network_weights"] = str(input_lora)
@@ -6737,6 +7195,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         run["previous_settings"] = settings
         run["next_index"] = next_index + 1
         self.set_values(settings)
+        # Stage-specific artifact names are internal. Leaving one in the main
+        # Output Name field makes a retry treat it as the new base and append
+        # the stage label repeatedly (Base-2048px-2048px-...).
+        self.entries["output_name"].delete(0, tk.END)
+        self.entries["output_name"].insert(0, run["base_output_name"])
+        # A staged DOP validation pass uses the cache command internally, but it
+        # is not a user-requested full rebuild. Keep the full re-cache checkbox
+        # off so the UI accurately reflects what will happen.
+        if settings.get("dop_cache_reuse"):
+            self.entries["recache_text"].var.set(False)
         self.run_status_var.set(f"🟢 Stage {next_index + 1}/{len(run['stages'])}: {stage_label}")
         stage_limit = self._staged_limit_text(stage)
         self.progress_label_var.set(f"Stage {next_index + 1}/{len(run['stages'])} · {stage_label} · {stage_limit}")
@@ -6745,6 +7213,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             f"\n=== Stage {next_index + 1}/{len(run['stages'])}: {stage_label} for {stage_limit} ===\n"
             f"Type: {stage_type}\n"
             f"Dataset: {stage.get('dataset_config') or 'not used'}\n"
+            f"DOP: {'on · strength ' + str(settings.get('dop_loss_weight')) if settings.get('dop_enabled') else 'off'}\n"
+            f"Text cache: {'validate and reuse' if settings.get('dop_cache_reuse') else ('full re-cache' if settings.get('recache_text') else 'reuse')}\n"
             f"Handoff: {settings['resume_path'] or settings.get('network_weights') or input_lora or 'new training state'}\n",
         )
         if stage_type == "face_refinement":

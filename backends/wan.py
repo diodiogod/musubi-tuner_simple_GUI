@@ -16,7 +16,7 @@ def build_commands(settings):
     is_combined_run = train_low and train_high and not is_separate_run
 
     def _single(is_high_noise_run, is_combined_run):
-        cmd = ["accelerate", "launch", "--num_cpu_threads_per_process", "1",
+        cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
                "src/musubi_tuner/wan_train_network.py"]
 
         task_type = "i2v-A14B" if settings.get("is_i2v") else "t2v-A14B"

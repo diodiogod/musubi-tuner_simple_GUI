@@ -12,6 +12,19 @@ from accelerate import Accelerator, InitProcessGroupKwargs, DistributedDataParal
 from accelerate.utils import TorchDynamoPlugin, DynamoBackend
 
 
+def distributed_launch_requested() -> bool:
+    """Return true only when a launcher actually assigned distributed ranks.
+
+    Multiple installed GPUs do not imply a distributed job. In particular, the
+    GUI intentionally launches one process and lets CUDA select one device.
+    """
+
+    try:
+        return int(os.environ.get("WORLD_SIZE", "1")) > 1 or int(os.environ.get("LOCAL_RANK", "-1")) >= 0
+    except ValueError:
+        return False
+
+
 def clean_memory_on_device(device: torch.device):
     r"""
     Clean memory on the specified device, will be called from training scripts.
@@ -88,7 +101,7 @@ def prepare_accelerator(args: argparse.Namespace) -> Accelerator:
                 ),
                 timeout=timedelta(minutes=args.ddp_timeout) if args.ddp_timeout else None,
             )
-            if torch.cuda.device_count() > 1
+            if distributed_launch_requested()
             else None
         ),
         (

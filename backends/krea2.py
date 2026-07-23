@@ -1,12 +1,13 @@
 from backends._common import (
     add_arg, build_output_dir, build_network_args,
     build_attention_arg, build_common_train_args, build_sample_args,
+    build_dop_cache_args, build_dop_train_args,
 )
 
 
 def build_commands(settings):
     """Returns a single accelerate launch command for Krea 2 training."""
-    cmd = ["accelerate", "launch", "--num_cpu_threads_per_process", "1",
+    cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
            "src/musubi_tuner/krea2_train_network.py"]
 
     add_arg(cmd, "--mixed_precision", settings.get("mixed_precision"))
@@ -36,6 +37,7 @@ def build_commands(settings):
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
 
     build_sample_args(cmd, settings)
+    build_dop_train_args(cmd, settings)
     build_common_train_args(cmd, settings)
 
     output_dir, output_name = build_output_dir(settings)
@@ -59,6 +61,7 @@ def build_cache_commands(settings, python_executable):
         cmd = [python_executable, "src/musubi_tuner/krea2_cache_text_encoder_outputs.py",
                "--dataset_config", settings["dataset_config"],
                "--text_encoder", settings["krea2_text_encoder"]]
+        build_dop_cache_args(cmd, settings)
         cmds.append(cmd)
 
     return cmds

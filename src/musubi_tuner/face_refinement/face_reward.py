@@ -322,6 +322,7 @@ class FaceSimilarityReward(nn.Module):
         pose_min_references: int = 2,
         pose_targets: dict[str, float] | None = None,
         device: str | torch.device | None = None,
+        reference_progress=None,
     ):
         super().__init__()
         self.model_dir = Path(model_dir).expanduser()
@@ -361,6 +362,7 @@ class FaceSimilarityReward(nn.Module):
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
         self.last_metrics: dict[str, float] = {}
+        self.reference_progress = reference_progress
         if self.crop_mode not in {"aligned", "bbox"}:
             raise ValueError("crop_mode must be 'aligned' or 'bbox'")
         if self.reference_face_policy not in {"largest", "highest", "single", "all"}:
@@ -446,6 +448,37 @@ class FaceSimilarityReward(nn.Module):
             max_num=0,
             metric="default",
         )
+        # SCRFD can miss an otherwise obvious face when a generated portrait is
+        # cropped tightly against the image borders. Retry on a neutral padded
+        # canvas to restore the context its anchors expect, then translate the
+        # detection back to the untouched source image used for recognition.
+        if bboxes.shape[0] == 0:
+            height, width = image_bgr.shape[:2]
+            pad_y = max(1, round(height * 0.25))
+            pad_x = max(1, round(width * 0.25))
+            padded = cv2.copyMakeBorder(
+                image_bgr,
+                pad_y,
+                pad_y,
+                pad_x,
+                pad_x,
+                cv2.BORDER_CONSTANT,
+                value=(127, 127, 127),
+            )
+            bboxes, kpss = self.detector.detect(
+                padded,
+                input_size=self.det_size,
+                max_num=0,
+                metric="default",
+            )
+            if bboxes.shape[0] > 0:
+                bboxes[:, [0, 2]] -= pad_x
+                bboxes[:, [1, 3]] -= pad_y
+                bboxes[:, [0, 2]] = np.clip(bboxes[:, [0, 2]], 0, width - 1)
+                bboxes[:, [1, 3]] = np.clip(bboxes[:, [1, 3]], 0, height - 1)
+                if kpss is not None:
+                    kpss[:, :, 0] -= pad_x
+                    kpss[:, :, 1] -= pad_y
         if bboxes.shape[0] == 0:
             return []
         faces = []
@@ -600,17 +633,23 @@ class FaceSimilarityReward(nn.Module):
     def _reference_crops(self, paths: list[Path]) -> list[torch.Tensor]:
         crops = []
         with torch.no_grad():
-            for path in paths:
+            for index, path in enumerate(paths, start=1):
                 image_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
                 if image_bgr is None:
                     self.skipped_reference_images.append((str(path), -1))
+                    if self.reference_progress:
+                        self.reference_progress("detect", index, len(paths), path.name)
                     continue
                 faces = self.detect_faces(image_bgr)
                 if not faces:
                     self.skipped_reference_images.append((str(path), len(faces)))
+                    if self.reference_progress:
+                        self.reference_progress("detect", index, len(paths), path.name)
                     continue
                 if self.reference_face_policy == "single" and len(faces) != 1:
                     self.skipped_reference_images.append((str(path), len(faces)))
+                    if self.reference_progress:
+                        self.reference_progress("detect", index, len(paths), path.name)
                     continue
                 if self.reference_face_policy == "largest":
                     faces = [
@@ -628,13 +667,15 @@ class FaceSimilarityReward(nn.Module):
                 crops.extend(self.crop_tensor(image, face) for face in faces)
                 self.valid_reference_images.append(str(path))
                 self.valid_reference_faces.append(faces[0])
+                if self.reference_progress:
+                    self.reference_progress("detect", index, len(paths), path.name)
         return crops
 
     def _encode_reference_crops(self, crops: list[torch.Tensor]) -> torch.Tensor:
         with torch.no_grad():
             generator = torch.Generator(device=self.device).manual_seed(17_042)
             embeddings = []
-            for crop in crops:
+            for index, crop in enumerate(crops, start=1):
                 views = self._eot_crops(
                     crop,
                     self.reference_eot_views,
@@ -642,6 +683,9 @@ class FaceSimilarityReward(nn.Module):
                 )
                 embedding = self.encode_faces(views).mean(dim=0, keepdim=True)
                 embeddings.append(F.normalize(embedding, dim=-1))
+                if self.reference_progress:
+                    name = Path(self.valid_reference_images[index - 1]).name
+                    self.reference_progress("encode", index, len(crops), name)
             return torch.cat(embeddings, dim=0).detach()
 
     def identity_scores(self, embeddings: torch.Tensor) -> torch.Tensor:

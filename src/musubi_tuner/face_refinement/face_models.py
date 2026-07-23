@@ -56,7 +56,7 @@ def ensure_models(model_dir: str | Path, progress=None) -> Path:
                 output.write(chunk)
                 received += len(chunk)
                 if progress:
-                    progress(destination.name, received, total)
+                    progress(item.relative_path.as_posix(), received, total)
         if partial.stat().st_size < item.minimum_bytes:
             raise RuntimeError(f"Downloaded face model is unexpectedly small: {partial}")
         partial.replace(destination)

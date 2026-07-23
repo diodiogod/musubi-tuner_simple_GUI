@@ -8,9 +8,10 @@ not contain the GUI files.
 ## Current upstream baseline
 
 - Upstream repository: `https://github.com/kohya-ss/musubi-tuner`
-- Audited baseline: `v0.3.4` / `30c658c` (2026-06-24)
-- Audit date: 2026-07-11
-- Shared trainer and parser matched the baseline at audit time.
+- Audited baseline: upstream `main` / `8934cfb` (post-`v0.3.4`)
+- Latest release at audit time: `v0.3.4` (2026-06-24)
+- Audit date: 2026-07-22
+- Upstream gradient diagnostics and CUDA 13.2 packaging are imported; shared trainer/parser retain only the documented exact-resume seams.
 - Krea 2 files intentionally differ because this fork adds pre-quantized FP8,
   projector-patch, and Turbo-preview support.
 
@@ -28,6 +29,19 @@ not contain the GUI files.
 7. Update `UPSTREAM_BASELINE.json` and the baseline below.
 
 ## Maintained integrations
+
+### Deterministic single-GPU GUI launches
+
+- GUI backend commands in `backends/wan.py`, `backends/flux2.py`, and
+  `backends/krea2.py` pass `accelerate launch --num_processes 1` explicitly.
+- `musubi_tuner_gui.py` also removes inherited torchrun/MPI rank and rendezvous
+  variables from subprocess environments. Even `LOCAL_RANK=0` makes Accelerate
+  expect a distributed process group, which is invalid for the simple launcher.
+- The current GUI monitor, VRAM controls, staged handoff, and Windows runtime are
+  single-GPU workflows. Do not let Accelerate infer multi-GPU merely because a
+  second or integrated adapter is visible; that can enter an unconfigured
+  distributed rendezvous and fail before training starts.
+- Advanced multi-GPU users can still launch the underlying Musubi CLI directly.
 
 ### Krea 2 FP8, projector patch, and Turbo previews
 
@@ -60,12 +74,44 @@ not contain the GUI files.
   frozen Qwen-Image VAE and Depth Anything V2.
 - Ground-truth depth targets are cached in a bounded CPU LRU keyed by clean
   latent content. Predicted depth remains differentiable.
-- Disabled invariant: `--depth_anchor_weight 0` takes the exact upstream
-  `process_batch` path and does not load, download, or instantiate a perceptor.
+- Oversized latents are resized with their aspect ratio intact before the
+  depth-only VAE decode. The decoded long side is limited to the configured
+  perceptor resolution; training latents and generated samples are unchanged.
+- Disabled invariant: `--depth_anchor_weight 0` keeps the standard diffusion-loss
+  behavior and does not load, download, or instantiate a perceptor.
 - Tests: `tests/test_depth_anchor.py` and
   `tests/test_krea2_backend_regularization.py`.
 - Effective regularization settings are embedded in saved LoRA metadata under
   `ss_krea2_*` keys for reproducibility and job-history audits.
+
+### Differential Output Preservation (Krea 2 and FLUX.2 Klein)
+
+- Shared implementation: `training/dop.py`; technique reference:
+  `https://github.com/ostris/ai-toolkit`. This is an independent Musubi adaptation.
+- Architecture seams: `krea2_train_network.py` and `flux_2_train_network.py`
+  call the shared helper from their model-specific `process_batch` overrides.
+- Cache seams: `krea2_cache_text_encoder_outputs.py`,
+  `flux_2_cache_text_encoder_outputs.py`, and optional DOP tensors in
+  `dataset/cache_io.py`. Normal cache keys and behavior remain unchanged when DOP is off.
+- Shared-parser seam: the block marked `DOWNSTREAM` in `training/parser_common.py`
+  adds disabled-by-default DOP arguments.
+- Safety invariant: the class cache stores a trigger/class signature; missing,
+  stale, or mismatched caches fail instead of silently training the wrong objective.
+- DOP is calculated as a post-primary auxiliary backward pass. Its gradients
+  accumulate before the same optimizer step, while the primary/depth graph and
+  frozen helpers can be released first to control peak VRAM.
+- Staged DOP caching uses `--skip_existing` with a DOP-aware validator: unchanged
+  caption/signature/embedding caches are reused, while missing or stale entries are
+  regenerated. The GUI retains an explicit full text re-cache control.
+- `training/accelerator_setup.py` creates an init-process-group handler only
+  when launcher rank variables identify a real distributed job. Merely having
+  multiple physical GPUs must not put a GUI single-process run into a partially
+  initialized distributed state.
+- Disabled invariant: `--dop_loss_weight 0` performs no extra DiT forwards and
+  does not inspect DOP cache keys.
+- GUI/backend integration: `musubi_tuner_gui.py`, `backends/_common.py`,
+  `backends/krea2.py`, and `backends/flux2.py`, including staged overrides.
+- Tests: `tests/test_dop.py`.
 
 ### Krea 2 DRaFT face refinement
 

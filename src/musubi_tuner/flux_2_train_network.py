@@ -20,6 +20,7 @@ from musubi_tuner.hv_train_network import (
 import logging
 
 from musubi_tuner.utils import model_utils
+from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +47,16 @@ class Flux2NetworkTrainer(NetworkTrainer):
         self._control_training = False  # this means video training, not control image training
         self.default_guidance_scale = 4.0  # CFG scale for inference for base models
         self.default_discrete_flow_shift = None  # Use FLUX.2 shift as default
+        if dop_enabled(args):
+            if args.model_version == "dev":
+                raise ValueError("DOP is currently supported for FLUX.2 Klein 4B/9B, not FLUX.2 Dev.")
+            validate_dop_config(args.dop_trigger_word, args.dop_class_word, args.dop_loss_weight)
+            logger.info(
+                "DOP enabled: trigger=%r, preservation class=%r, strength=%g",
+                args.dop_trigger_word,
+                args.dop_class_word,
+                args.dop_loss_weight,
+            )
 
     def process_sample_prompts(self, args: argparse.Namespace, accelerator: Accelerator, sample_prompts: str):
         device = accelerator.device
@@ -333,6 +344,58 @@ class Flux2NetworkTrainer(NetworkTrainer):
         target = noise - latents
 
         return DiTOutput(pred=model_pred, target=target)
+
+    def process_batch(
+        self,
+        args,
+        accelerator,
+        transformer,
+        network,
+        batch,
+        latents,
+        noise,
+        noise_scheduler,
+        dit_dtype,
+        network_dtype,
+        vae,
+        global_step,
+    ):
+        noisy_input, timesteps = self.get_noisy_model_input_and_timesteps(
+            args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+        )
+        output = self.call_dit(
+            args, accelerator, transformer, latents, batch, noise, noisy_input, timesteps, network_dtype
+        )
+        normal_loss, metrics = self.compute_loss(
+            args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step
+        )
+        if dop_enabled(args):
+            metrics["loss/diffusion"] = normal_loss.detach()
+        self._dop_step_context = (
+            batch, latents, noise, noisy_input, timesteps, network_dtype
+        ) if dop_enabled(args) else None
+        return normal_loss, metrics
+
+    def compute_auxiliary_loss(self, args, accelerator, transformer, network):
+        context = getattr(self, "_dop_step_context", None)
+        if context is None:
+            return None, {}
+        self._dop_step_context = None
+        batch, latents, noise, noisy_input, timesteps, network_dtype = context
+        return compute_dop_loss(
+            self, args, accelerator, transformer, network, batch, latents, noise,
+            noisy_input, timesteps, network_dtype,
+            embedding_key="ctx_vec",
+            dop_embedding_key="dop_ctx_vec",
+        )
+
+    def extra_metadata(self, args):
+        return {
+            "ss_dop_loss_weight": args.dop_loss_weight,
+            "ss_dop_trigger_word": args.dop_trigger_word if dop_enabled(args) else "",
+            "ss_dop_class_word": args.dop_class_word if dop_enabled(args) else "",
+            "ss_dop_reference": "https://github.com/ostris/ai-toolkit" if dop_enabled(args) else "",
+        }
 
     # endregion model specific
 

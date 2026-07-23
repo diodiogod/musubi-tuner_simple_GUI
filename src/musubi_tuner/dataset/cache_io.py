@@ -378,12 +378,23 @@ def save_text_encoder_output_cache_flux_kontext(item_info: ItemInfo, t5_vec: tor
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_FLUX_KONTEXT_FULL)
 
 
-def save_text_encoder_output_cache_flux_2(item_info: ItemInfo, ctx_vec: torch.Tensor, arch_full: str):
+def save_text_encoder_output_cache_flux_2(
+    item_info: ItemInfo,
+    ctx_vec: torch.Tensor,
+    arch_full: str,
+    dop_ctx_vec: Optional[torch.Tensor] = None,
+    dop_signature: Optional[torch.Tensor] = None,
+):
     """Flux 2 architecture."""
 
     sd = {}
     dtype_str = dtype_to_str(ctx_vec.dtype)
     sd[f"ctx_vec_{dtype_str}"] = ctx_vec.detach().cpu()
+    if dop_ctx_vec is not None:
+        dtype_str = dtype_to_str(dop_ctx_vec.dtype)
+        sd[f"dop_ctx_vec_{dtype_str}"] = dop_ctx_vec.detach().cpu()
+    if dop_signature is not None:
+        sd["dop_signature"] = dop_signature.detach().cpu()
 
     save_text_encoder_output_cache_common(item_info, sd, arch_full)
 
@@ -397,7 +408,12 @@ def save_text_encoder_output_cache_qwen_image(item_info: ItemInfo, embed: torch.
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_QWEN_IMAGE_FULL)
 
 
-def save_text_encoder_output_cache_krea2(item_info: ItemInfo, embed: torch.Tensor):
+def save_text_encoder_output_cache_krea2(
+    item_info: ItemInfo,
+    embed: torch.Tensor,
+    dop_embed: Optional[torch.Tensor] = None,
+    dop_signature: Optional[torch.Tensor] = None,
+):
     """Krea 2 (K2) architecture.
 
     `embed` is the per-item stack of *selected* Qwen3-VL hidden-state layers for the
@@ -412,6 +428,12 @@ def save_text_encoder_output_cache_krea2(item_info: ItemInfo, embed: torch.Tenso
     sd = {}
     dtype_str = dtype_to_str(embed.dtype)
     sd[f"varlen_krea2_vl_embed_{dtype_str}"] = embed.detach().cpu()
+    if dop_embed is not None:
+        assert dop_embed.dim() == 3, "dop_embed should be 3D tensor (valid_len, num_select_layers, hidden)"
+        dtype_str = dtype_to_str(dop_embed.dtype)
+        sd[f"varlen_dop_krea2_vl_embed_{dtype_str}"] = dop_embed.detach().cpu()
+    if dop_signature is not None:
+        sd["dop_signature"] = dop_signature.detach().cpu()
 
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
 

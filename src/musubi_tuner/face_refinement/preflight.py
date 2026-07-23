@@ -10,7 +10,7 @@ from musubi_tuner.face_refinement.face_reward import FaceSimilarityReward, IMAGE
 from musubi_tuner.face_refinement.pose import estimate_pose
 
 
-def scan_reference_faces(reference_dir: str, model_dir: str) -> dict:
+def scan_reference_faces(reference_dir: str, model_dir: str, progress=None) -> dict:
     root = Path(reference_dir).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Reference folder does not exist: {root}")
@@ -19,7 +19,7 @@ def scan_reference_faces(reference_dir: str, model_dir: str) -> dict:
         raise ValueError("Reference folder contains no supported images")
     reward = FaceSimilarityReward(
         reference_images=images, model_dir=model_dir, reference_face_policy="largest",
-        providers=["CPUExecutionProvider"], device="cpu",
+        providers=["CPUExecutionProvider"], device="cpu", reference_progress=progress,
     )
     valid = list(reward.valid_reference_images)
     skipped = [{"path": path, "faces": count} for path, count in reward.skipped_reference_images]

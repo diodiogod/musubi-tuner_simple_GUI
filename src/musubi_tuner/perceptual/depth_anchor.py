@@ -15,6 +15,29 @@ def reconstruct_clean_latents(noisy_latents: torch.Tensor, velocity: torch.Tenso
     return noisy_latents.float() - t * velocity.float()
 
 
+def resize_latents_for_depth_decode(
+    latents: torch.Tensor, input_size: int, spatial_compression_ratio: int = 8
+) -> torch.Tensor:
+    """Limit VAE decode size to what the depth perceptor can consume."""
+
+    height, width = latents.shape[-2:]
+    ratio = int(spatial_compression_ratio)
+    max_latent_side = max(1, (int(input_size) + ratio - 1) // ratio)
+    if max(height, width) <= max_latent_side:
+        return latents
+    scale = max_latent_side / max(height, width)
+    resized_height = max(1, round(height * scale))
+    resized_width = max(1, round(width * scale))
+    frames = latents.shape[2]
+    resized = F.interpolate(
+        latents.flatten(0, 2).unsqueeze(1),
+        size=(resized_height, resized_width),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(1)
+    return resized.reshape(latents.shape[0], latents.shape[1], frames, resized_height, resized_width)
+
+
 class DepthAnchor:
     def __init__(self, model_id: str, device: torch.device, input_size: int = 518, grad_checkpoint: bool = True):
         from transformers import AutoModelForDepthEstimation

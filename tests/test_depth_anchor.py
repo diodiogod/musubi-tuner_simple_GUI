@@ -3,7 +3,7 @@ from collections import OrderedDict
 
 import torch
 
-from musubi_tuner.perceptual.depth_anchor import DepthAnchor, reconstruct_clean_latents
+from musubi_tuner.perceptual.depth_anchor import DepthAnchor, reconstruct_clean_latents, resize_latents_for_depth_decode
 
 
 class DepthAnchorTests(unittest.TestCase):
@@ -27,6 +27,17 @@ class DepthAnchorTests(unittest.TestCase):
         self.assertIsNotNone(predicted.grad)
         self.assertGreater(predicted.grad.abs().sum().item(), 0)
         self.assertIsNone(target.grad)
+
+    def test_depth_decode_resize_limits_long_side_and_preserves_gradient(self):
+        latents = torch.randn(1, 4, 1, 360, 182, requires_grad=True)
+        resized = resize_latents_for_depth_decode(latents, 518, 8)
+        self.assertEqual(resized.shape, (1, 4, 1, 65, 33))
+        resized.sum().backward()
+        self.assertIsNotNone(latents.grad)
+
+    def test_depth_decode_resize_does_not_upscale_small_latents(self):
+        latents = torch.randn(1, 4, 1, 32, 24)
+        self.assertIs(resize_latents_for_depth_decode(latents, 518, 8), latents)
 
     def test_target_depth_cache_avoids_duplicate_perceptor_work(self):
         anchor = object.__new__(DepthAnchor)

@@ -18,6 +18,7 @@
 
 - GUI behavior should prefer living in `musubi_tuner_gui.py`, GUI helper modules such as `dataset_config_builder.py` / `prompt_library.py`, and `backends/` rather than patching upstream-style `src/` training logic unless the backend itself genuinely needs a behavior change
 - `backends/` is the command-construction layer; it decides which wrappers/scripts run for each mode
+- GUI-generated Accelerate training commands explicitly use one process/GPU; this prevents machines with an additional or integrated GPU from silently entering unsupported Windows distributed mode
 - Root-level wrapper scripts mirror packaged modules so users can launch workflows from the repo root without remembering `src/` module paths
 - The GUI keeps musubi-tuner’s underlying CLI workflow intact and mainly adds state management, UX, monitoring, and automation around it
 - Mode-specific required fields and visible sections are driven from the selected training mode inside the GUI, not from separate apps
@@ -37,8 +38,8 @@
 **Mode-specific GUI behavior includes:**
 
 - Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
-- Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection
-- Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, and experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring)
+- Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection, and optional DOP class preservation for Klein 4B/9B
+- Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring), and optional DOP class preservation
 
 ## Documentation Files
 
@@ -55,6 +56,7 @@
 - `sampling_during_training.md` - Sampling behavior reference
 - `advanced_config.md` - Advanced training flags and behaviors
 - `loha_lokr.md` - LoHa / LoKr notes
+- `dop.md` - Krea 2 / FLUX.2 Klein Differential Output Preservation setup, monitoring, and staged behavior
 - `musubi-tuner-gui.png` - Main GUI screenshot
 
 ### Other Model Docs in `docs/`
@@ -86,6 +88,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 
 - `musubi_tuner_gui.py` - everything GUI-side: tab layout, validation, process launch, output parsing, monitoring, sample gallery, job history, staged training, conversion, setup helpers
 - Recent Jobs separates ordinary continuation from failed-run recovery: recovery validates complete Accelerate model/optimizer/scheduler/RNG state plus a numbered epoch/step position, keeps the original output identity, and carries bounded loss history into the resumed monitor
+- Staged artifact names are derived internally from a stable base output name; stage execution does not replace the main Output Name field, preventing repeated labels across retries
 - The shared trainer reconstructs `global_step`, starts an epoch checkpoint at the following epoch, and skips already-consumed batches for a step checkpoint; unnumbered end-state folders are not advertised as exact positional recovery
 
 ### Resume Semantics — Preserve This Invariant
@@ -104,6 +107,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - `krea2.py` - Krea 2 command construction
 
 Krea 2 also forwards optional weight-noise and depth-anchor controls. Both are explicit no-ops at their default strength of `0`.
+Krea 2 and FLUX.2 Klein also forward disabled-by-default DOP settings to both the text-cache and training commands.
 
 **Backend responsibility split:**
 
@@ -157,12 +161,21 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `training/sampling_prompts.py` - prompt-driven sample support
 - `training/timesteps.py` - timestep logic
 - `training/weight_noise.py` - isolated adapter-only Gaussian weight-noise implementation used by the Krea trainer hook
+- `training/dop.py` - shared caption replacement/signature validation, temporary adapter bypass, and preservation-loss implementation used by Krea 2 and FLUX.2 Klein
+
+### Experimental Differential Output Preservation
+
+- Krea 2 and FLUX.2 Klein text-cache scripts store a second class-caption embedding plus a trigger/class signature; stale or mismatched caches fail clearly. DOP uses a separate post-primary backward pass whose gradients join the same optimizer step, avoiding simultaneous primary/depth/DOP graphs
+- Model trainers reuse the normal noisy latent/timestep for a frozen-base class prediction and a LoRA-enabled class prediction, logging `loss/dop` and `loss/dop_weighted`
+- GUI validation requires a distinct trigger and class, explains the speed cost, enables safe first-run recaching, and shows DOP participation in Live Monitoring
+- Standard staged-training rows provide inherit/enable/disable plus optional strength/trigger/class overrides; DOP stages validate and reuse matching dual-caption caches and encode only stale/missing entries, with an explicit full-recache option
+- Technique reference: `ostris/ai-toolkit`; implementation is an independent cached-text Musubi adaptation
 
 ### Experimental Perceptual Training
 
 - `perceptual/depth_anchor.py` - differentiable Depth Anything V2 anchor, rectified-flow clean-latent reconstruction, and bounded target-depth cache
 - Krea integration stays in `krea2_train_network.py` through existing `process_batch`, `on_post_optimizer_step`, `extra_step_logs`, and `extra_metadata` overrides; the shared upstream trainer remains unchanged
-- Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps
+- Ground-truth depth targets are generated automatically from cached dataset latents during training and cached in CPU RAM; users do not prepare depth maps. Oversized latents are reduced only for the depth VAE decode to avoid wasting VRAM above the perceptor's configured resolution
 - The live monitor distinguishes the main `steps:` bar from model-loading bars, graphs combined loss, and shows depth loss/contribution; Krea sampling offloads the depth helper, caches only Turbo (RAW restores from disk), falls back to full streaming when RAM headroom is unsafe, and uses tiled VAE decoding only as an OOM fallback
 - Saved LoRAs record effective settings in `ss_krea2_*` metadata
 
@@ -268,6 +281,7 @@ For this fork, `musubi_tuner_gui.py` is the practical entrypoint users work with
 - `tests/test_weight_noise.py` - noise behavior, frozen-parameter protection, and norm bounding
 - `tests/test_depth_anchor.py` - clean-latent reconstruction, gradient direction, and target-depth caching
 - `tests/test_krea2_backend_regularization.py` - GUI/backend command forwarding and disabled defaults
+- Upstream gradient diagnostics (`--log_grad_metrics`) are available from the Logging panel and remain disabled by default; the audited upstream baseline is `8934cfb` (2026-07-22)
 
 ## Typical GUI Workflow
 

@@ -25,6 +25,7 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - Save/load settings and auto-restore of your last session
 - LoRA conversion tools
 - Accelerate setup tab for first-time installation
+- Guided Differential Output Preservation (DOP) for Krea 2 and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
 
 ## Current Workspace Layout
 
@@ -57,6 +58,7 @@ Docs: [docs/wan.md](./docs/wan.md)
 - Flux.2 DiT path selection
 - Qwen3 or Mistral3 text encoder input
 - FP8 text encoder option
+- Experimental DOP class preservation for Klein 4B/9B
 
 Docs: [docs/flux_2.md](./docs/flux_2.md)
 
@@ -68,8 +70,11 @@ Docs: [docs/flux_2.md](./docs/flux_2.md)
 - Krea-specific timestep sampling and prompt controls
 - In-app Krea test sample generation
 - Experimental small-dataset generalization presets with adapter weight noise and automatic depth anchoring
+- Experimental DOP class preservation with caption validation and staged-training controls
 
 Docs: [docs/krea2.md](./docs/krea2.md)
+
+DOP guide: [docs/dop.md](./docs/dop.md)
 
 ## Installation
 
@@ -283,6 +288,7 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
 - Sampling during training: [docs/sampling_during_training.md](./docs/sampling_during_training.md)
 - Advanced config: [docs/advanced_config.md](./docs/advanced_config.md)
 - LoHa / LoKr notes: [docs/loha_lokr.md](./docs/loha_lokr.md)
+- Differential Output Preservation: [docs/dop.md](./docs/dop.md)
 
 ## Notes
 
@@ -299,6 +305,9 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
   weight noise and frozen depth-perceptor losses. This repository contains an independent
   Musubi/Krea 2 adaptation and is not endorsed by the reference project. Weight noise and
   perceptual loss are broader techniques that predate both projects.
+- Differential Output Preservation was studied from
+  [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit). This repository contains an
+  independent Musubi implementation for cached-text Krea 2 and FLUX.2 Klein training.
 - This repo builds a GUI workflow around that backend and adds mode-specific UX, sampling, monitoring, and local job tracking.
 
 ## License

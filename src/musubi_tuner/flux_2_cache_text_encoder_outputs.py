@@ -9,6 +9,13 @@ from musubi_tuner.dataset.image_video_dataset import ItemInfo, save_text_encoder
 
 from musubi_tuner.flux_2 import flux2_utils
 import musubi_tuner.cache_text_encoder_outputs as cache_text_encoder_outputs
+from musubi_tuner.training.dop import (
+    add_cache_arguments,
+    dop_signature,
+    is_valid_dop_cache,
+    make_class_caption,
+    validate_dop_config,
+)
 import logging
 
 
@@ -16,16 +23,39 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def encode_and_save_batch(text_embedder: torch.nn.Module, batch: list[ItemInfo], device: torch.device, arch_full: str):
+def encode_and_save_batch(
+    text_embedder: torch.nn.Module,
+    batch: list[ItemInfo],
+    device: torch.device,
+    arch_full: str,
+    dop_trigger_word: str = "",
+    dop_class_word: str = "",
+):
     prompts = [item.caption for item in batch]
+    use_dop = bool(dop_trigger_word or dop_class_word)
+    class_prompts = None
+    signature = None
+    if use_dop:
+        validate_dop_config(dop_trigger_word, dop_class_word)
+        class_prompts = []
+        for item in batch:
+            try:
+                class_prompts.append(make_class_caption(item.caption, dop_trigger_word, dop_class_word))
+            except ValueError as exc:
+                raise ValueError(f"DOP caption error for {item.item_key}: {exc}") from exc
+        signature = dop_signature(dop_trigger_word, dop_class_word)
     autocast_dtype = torch.bfloat16 if text_embedder.dtype.itemsize == 1 else text_embedder.dtype  # use bfloat16 for fp8 models
     with torch.autocast(device_type=device.type, dtype=autocast_dtype), torch.no_grad():
         ctx_vec = text_embedder(prompts)
         ctx_vec = ctx_vec.cpu()  # [1, 512, 15360]
+        dop_ctx_vecs = text_embedder(class_prompts).cpu() if class_prompts is not None else None
 
     # save prompt cache
-    for item, _ctx_vec in zip(batch, ctx_vec):
-        save_text_encoder_output_cache_flux_2(item, _ctx_vec, arch_full=arch_full)
+    for index, (item, _ctx_vec) in enumerate(zip(batch, ctx_vec)):
+        dop_ctx_vec = dop_ctx_vecs[index] if dop_ctx_vecs is not None else None
+        save_text_encoder_output_cache_flux_2(
+            item, _ctx_vec, arch_full=arch_full, dop_ctx_vec=dop_ctx_vec, dop_signature=signature
+        )
 
 
 def main():
@@ -47,7 +77,7 @@ def main():
 
     datasets = train_dataset_group.datasets
 
-    # prepare cache files and paths: all_cache_files_for_dataset = exisiting cache files, all_cache_paths_for_dataset = all cache paths in the dataset
+    # Prepare existing cache files and all cache paths in the dataset.
     all_cache_files_for_dataset, all_cache_paths_for_dataset = cache_text_encoder_outputs.prepare_cache_files_and_paths(datasets)
 
     # Load Mistral 3 or Qwen-3 text encoder
@@ -61,7 +91,23 @@ def main():
 
     def encode_for_text_encoder(batch: list[ItemInfo]):
         nonlocal text_embedder
-        encode_and_save_batch(text_embedder, batch, device, model_version_info.architecture_full)
+        encode_and_save_batch(
+            text_embedder,
+            batch,
+            device,
+            model_version_info.architecture_full,
+            args.dop_trigger_word,
+            args.dop_class_word,
+        )
+
+    cache_validator = None
+    if args.dop_trigger_word or args.dop_class_word:
+        cache_validator = lambda item: is_valid_dop_cache(
+            item,
+            args.dop_trigger_word,
+            args.dop_class_word,
+            "dop_ctx_vec_",
+        )
 
     cache_text_encoder_outputs.process_text_encoder_batches(
         args.num_workers,
@@ -71,6 +117,7 @@ def main():
         all_cache_files_for_dataset,
         all_cache_paths_for_dataset,
         encode_for_text_encoder,
+        cache_validator=cache_validator,
     )
     del text_embedder
 
@@ -83,6 +130,7 @@ def main():
 def flux_2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--text_encoder", type=str, default=None, required=True, help="text encoder (mistral 3) checkpoint path")
     parser.add_argument("--fp8_text_encoder", action="store_true", help="use fp8 for Text Encoder model")
+    add_cache_arguments(parser)
     flux2_utils.add_model_version_args(parser)
     return parser
 

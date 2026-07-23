@@ -79,6 +79,7 @@ def process_text_encoder_batches(
     all_cache_paths_for_dataset: list[set],
     encode: callable,
     requires_content: Optional[bool] = False,
+    cache_validator: Optional[callable] = None,
 ):
     """
     Architecture independent processing of text encoder batches.
@@ -104,7 +105,10 @@ def process_text_encoder_batches(
             # skip existing cache files
             if skip_existing:
                 filtered_batch = [
-                    item for item in batch if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
+                    item
+                    for item in batch
+                    if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
+                    or (cache_validator is not None and not cache_validator(item))
                 ]
                 # print(f"Filtered {len(batch) - len(filtered_batch)} existing cache files")
                 if len(filtered_batch) == 0:
