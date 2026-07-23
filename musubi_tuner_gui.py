@@ -1097,6 +1097,13 @@ class MusubiTunerGUI:
             kind='checkbox',
             default_val=True,
         )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_keep_depth_helpers_on_gpu",
+            "Keep Depth Helpers on GPU",
+            "Faster, but uses more VRAM. When enabled, the frozen VAE and depth checker stay on the GPU while DOP runs and between training steps. Try this for lower-resolution stages if they comfortably fit. Leave it off for 2K or after any out-of-memory error. It does not change the loss or training result—only where helper models wait.",
+            kind='checkbox',
+        )
         face_action = ttk.Frame(self.hidden_frames['krea2_regularization']); face_action.pack(fill="x", padx=10, pady=(8, 10))
         ttk.Label(
             face_action,
@@ -3458,6 +3465,7 @@ class MusubiTunerGUI:
             dop_weight_var = tk.StringVar(value=str(saved.get("dop_loss_weight", "")))
             dop_trigger_var = tk.StringVar(value=str(saved.get("dop_trigger_word", "")))
             dop_class_var = tk.StringVar(value=str(saved.get("dop_class_word", "")))
+            depth_helpers_mode_var = tk.StringVar(value=str(saved.get("depth_helpers_mode", "inherit")))
             ttk.Checkbutton(table, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
             ttk.Entry(table, textvariable=label_var, width=14).grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=4)
             type_widget = ttk.Combobox(table, textvariable=type_var, width=18, state="readonly", values=["standard", "face_refinement"])
@@ -3483,13 +3491,13 @@ class MusubiTunerGUI:
 
             def open_standard_dop_settings():
                 dop_dialog = tk.Toplevel(dialog)
-                dop_dialog.title(f"DOP · {label_var.get().strip() or 'Stage'}")
+                dop_dialog.title(f"Advanced stage settings · {label_var.get().strip() or 'Stage'}")
                 dop_dialog.transient(dialog)
                 dop_dialog.grab_set()
                 dop_dialog.resizable(False, False)
                 panel = ttk.Frame(dop_dialog, padding=16)
                 panel.pack(fill="both", expand=True)
-                ttk.Label(panel, text="DOP for this stage", style="PageTitle.TLabel").pack(anchor="w")
+                ttk.Label(panel, text="Advanced settings for this stage", style="PageTitle.TLabel").pack(anchor="w")
                 ttk.Label(
                     panel,
                     text="Inherit uses the main Training Parameters settings. Enable or Disable affects only this stage.",
@@ -3521,6 +3529,21 @@ class MusubiTunerGUI:
                     ToolTip(entry, tip)
                     entries.append(entry)
                 fields.grid_columnconfigure(1, weight=1)
+
+                memory_row = ttk.Frame(panel); memory_row.pack(fill="x", pady=(10, 0))
+                ttk.Label(memory_row, text="Depth helper memory:", width=22).pack(side="left")
+                memory_box = ttk.Combobox(
+                    memory_row,
+                    textvariable=depth_helpers_mode_var,
+                    state="readonly",
+                    values=["inherit", "keep on GPU", "offload to CPU"],
+                    width=28,
+                )
+                memory_box.pack(side="left", fill="x", expand=True)
+                ToolTip(
+                    memory_box,
+                    "Krea 2 only. Inherit follows the main Keep Depth Helpers on GPU checkbox. Keeping them on GPU is faster but needs more VRAM; offloading is safer for 2K stages. This does not change the loss.",
+                )
 
                 def refresh_fields(*_):
                     state = "disabled" if dop_mode_var.get() == "disable" else "normal"
@@ -3560,7 +3583,7 @@ class MusubiTunerGUI:
                 for child in browse_parent.winfo_children()[1:]: child.configure(state="disabled" if face else "normal")
                 dop_supported_here = self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein")
                 button.configure(
-                    text="Face Settings…" if face else "DOP Settings…",
+                    text="Face Settings…" if face else "Stage Settings…",
                     state="normal" if face or dop_supported_here else "disabled",
                 )
                 if face:
@@ -3583,6 +3606,7 @@ class MusubiTunerGUI:
                 "dop_loss_weight": dop_weight_var,
                 "dop_trigger_word": dop_trigger_var,
                 "dop_class_word": dop_class_var,
+                "depth_helpers_mode": depth_helpers_mode_var,
                 "widgets": [],
             }
 
@@ -3665,6 +3689,7 @@ class MusubiTunerGUI:
                         "dop_loss_weight": row["dop_loss_weight"].get().strip(),
                         "dop_trigger_word": row["dop_trigger_word"].get().strip(),
                         "dop_class_word": row["dop_class_word"].get().strip(),
+                        "depth_helpers_mode": row["depth_helpers_mode"].get(),
                     })
                     continue
                 path = path_var.get().strip()
@@ -3693,6 +3718,7 @@ class MusubiTunerGUI:
                     "dop_loss_weight": row["dop_loss_weight"].get().strip(),
                     "dop_trigger_word": row["dop_trigger_word"].get().strip(),
                     "dop_class_word": row["dop_class_word"].get().strip(),
+                    "depth_helpers_mode": row["depth_helpers_mode"].get(),
                 })
             if not any(item["enabled"] for item in configured):
                 messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
@@ -3768,6 +3794,15 @@ class MusubiTunerGUI:
             value = str(stage.get(key, "")).strip()
             if value:
                 settings[key] = value
+        return settings
+
+    @staticmethod
+    def _apply_stage_depth_memory_settings(settings, stage):
+        mode = str(stage.get("depth_helpers_mode", "inherit"))
+        if mode == "keep on GPU":
+            settings["krea2_keep_depth_helpers_on_gpu"] = True
+        elif mode == "offload to CPU":
+            settings["krea2_keep_depth_helpers_on_gpu"] = False
         return settings
 
     @staticmethod
@@ -6409,6 +6444,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
             "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
+            "krea2_keep_depth_helpers_on_gpu": False,
             "output_dir": "", "output_name": "my-lora",
             "training_comment": "",
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
@@ -6659,8 +6695,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 depth_strength = float(self.entries["krea2_depth_anchor_weight"].get() or 0)
             except (KeyError, ValueError):
                 depth_strength = 0.0
+            keep_depth_helpers = bool(
+                self.entries.get("krea2_keep_depth_helpers_on_gpu")
+                and self.entries["krea2_keep_depth_helpers_on_gpu"].var.get()
+            )
             self.depth_anchor_status_var.set(
-                f"Depth anchor: waiting for first training step · strength {depth_strength:g}"
+                f"Depth anchor: waiting for first training step · strength {depth_strength:g} · "
+                f"{'helpers kept on GPU' if keep_depth_helpers else 'low-VRAM helper offload'}"
                 if self.training_mode_var.get() == "Krea 2" and depth_strength > 0 else "Depth anchor: Off"
             )
             try:
@@ -6893,10 +6934,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                             except (KeyError, ValueError):
                                 strength = 0.0
                             depth_loss = training_progress["depth_loss"]
+                            keep_depth_helpers = bool(
+                                self.entries.get("krea2_keep_depth_helpers_on_gpu")
+                                and self.entries["krea2_keep_depth_helpers_on_gpu"].var.get()
+                            )
                             self.root.after(
                                 0,
                                 self.depth_anchor_status_var.set,
-                                f"Depth anchor: active · loss {depth_loss:.4f} · weighted {depth_loss * strength:.5f}",
+                                f"Depth anchor: active · loss {depth_loss:.4f} · weighted {depth_loss * strength:.5f} · "
+                                f"{'helpers kept on GPU' if keep_depth_helpers else 'low-VRAM helper offload'}",
                             )
                         if training_progress and training_progress["dop_loss"] is not None:
                             dop_loss = training_progress["dop_loss"]
@@ -7221,6 +7267,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         settings["stage_type"] = stage_type
         if stage_type == "standard":
             self._apply_stage_dop_settings(settings, stage)
+            self._apply_stage_depth_memory_settings(settings, stage)
         else:
             settings["dop_enabled"] = False
         settings["save_state"] = stage_type == "standard"

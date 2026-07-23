@@ -77,6 +77,9 @@ not contain the GUI files.
 - Oversized latents are resized with their aspect ratio intact before the
   depth-only VAE decode. The decoded long side is limited to the configured
   perceptor resolution; training latents and generated samples are unchanged.
+- `--keep_depth_helpers_on_gpu` optionally keeps the frozen VAE and depth
+  perceptor resident across the separate DOP pass and between steps. It changes
+  memory scheduling only, defaults off, and can be overridden per staged row.
 - Disabled invariant: `--depth_anchor_weight 0` keeps the standard diffusion-loss
   behavior and does not load, download, or instantiate a perceptor.
 - Tests: `tests/test_depth_anchor.py` and

@@ -69,7 +69,7 @@ Docs: [docs/flux_2.md](./docs/flux_2.md)
 - Optional projector patch and patch strength
 - Krea-specific timestep sampling and prompt controls
 - In-app Krea test sample generation
-- Experimental small-dataset generalization presets with adapter weight noise and automatic depth anchoring
+- Experimental small-dataset generalization presets with adapter weight noise, automatic depth anchoring, and an optional faster keep-on-GPU helper mode
 - Experimental DOP class preservation with caption validation and staged-training controls
 
 Docs: [docs/krea2.md](./docs/krea2.md)

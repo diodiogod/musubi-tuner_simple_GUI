@@ -26,11 +26,17 @@ class Krea2BackendRegularizationTests(unittest.TestCase):
             "krea2_weight_noise_bound_norm": True, "krea2_depth_anchor_weight": "0.01",
             "krea2_depth_anchor_model": "depth-model", "krea2_depth_anchor_input_size": "518",
             "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": False,
+            "krea2_keep_depth_helpers_on_gpu": True,
         }
         command = build_commands(settings)[0]
         self.assertIn("--weight_noise_bound_norm", command)
         self.assertIn("--no-depth_anchor_grad_checkpoint", command)
+        self.assertIn("--keep_depth_helpers_on_gpu", command)
         self.assertEqual(command[command.index("--depth_anchor_model") + 1], "depth-model")
+
+    def test_safe_default_offloads_depth_helpers(self):
+        command = build_commands(self._settings() | {"krea2_depth_anchor_weight": "0.01"})[0]
+        self.assertNotIn("--keep_depth_helpers_on_gpu", command)
 
 
 if __name__ == "__main__":

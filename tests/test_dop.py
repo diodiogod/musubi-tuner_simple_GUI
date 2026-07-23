@@ -227,3 +227,14 @@ def test_staged_dop_can_inherit_override_and_disable():
 
     disabled = MusubiTunerGUI._apply_stage_dop_settings(dict(base), {"dop_mode": "disable"})
     assert disabled["dop_enabled"] is False
+
+
+def test_staged_depth_helper_memory_can_inherit_or_override():
+    base = {"krea2_keep_depth_helpers_on_gpu": False}
+    assert MusubiTunerGUI._apply_stage_depth_memory_settings(dict(base), {"depth_helpers_mode": "inherit"}) == base
+    kept = MusubiTunerGUI._apply_stage_depth_memory_settings(dict(base), {"depth_helpers_mode": "keep on GPU"})
+    assert kept["krea2_keep_depth_helpers_on_gpu"] is True
+    offloaded = MusubiTunerGUI._apply_stage_depth_memory_settings(
+        {"krea2_keep_depth_helpers_on_gpu": True}, {"depth_helpers_mode": "offload to CPU"}
+    )
+    assert offloaded["krea2_keep_depth_helpers_on_gpu"] is False

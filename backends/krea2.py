@@ -28,6 +28,7 @@ def build_commands(settings):
     add_arg(cmd, "--depth_anchor_gradient_weight", settings.get("krea2_depth_anchor_gradient_weight"))
     if not settings.get("krea2_depth_anchor_grad_checkpoint", True):
         cmd.append("--no-depth_anchor_grad_checkpoint")
+    add_arg(cmd, "--keep_depth_helpers_on_gpu", settings.get("krea2_keep_depth_helpers_on_gpu"))
 
     build_network_args(cmd, settings, "networks.lora_krea2")
     build_attention_arg(cmd, settings)

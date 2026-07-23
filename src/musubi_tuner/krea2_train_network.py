@@ -83,6 +83,11 @@ class Krea2NetworkTrainer(NetworkTrainer):
             raise ValueError("--depth_anchor_weight must be non-negative.")
         if args.depth_anchor_input_size <= 0 or args.depth_anchor_input_size % 14:
             raise ValueError("--depth_anchor_input_size must be a positive multiple of 14.")
+        if args.depth_anchor_weight > 0:
+            logger.info(
+                "Depth helper memory mode: %s",
+                "keep on GPU (faster, more VRAM)" if args.keep_depth_helpers_on_gpu else "offload to CPU (safer, slower)",
+            )
         if dop_enabled(args):
             validate_dop_config(args.dop_trigger_word, args.dop_class_word, args.dop_loss_weight)
             logger.info(
@@ -567,7 +572,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         return total, metrics
 
     def on_after_primary_backward(self, args, accelerator, vae):
-        if args.depth_anchor_weight <= 0:
+        if args.depth_anchor_weight <= 0 or args.keep_depth_helpers_on_gpu:
             return
         vae.to("cpu")
         if self._depth_anchor is not None:
@@ -612,6 +617,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
             "ss_krea2_depth_anchor_model": args.depth_anchor_model if args.depth_anchor_weight > 0 else "",
             "ss_krea2_depth_anchor_input_size": args.depth_anchor_input_size,
             "ss_krea2_depth_anchor_gradient_weight": args.depth_anchor_gradient_weight,
+            "ss_krea2_keep_depth_helpers_on_gpu": args.keep_depth_helpers_on_gpu,
             "ss_dop_loss_weight": args.dop_loss_weight,
             "ss_dop_trigger_word": args.dop_trigger_word if dop_enabled(args) else "",
             "ss_dop_class_word": args.dop_class_word if dop_enabled(args) else "",
@@ -721,6 +727,11 @@ def krea2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     depth_anchor.add_argument("--depth_anchor_input_size", type=int, default=518)
     depth_anchor.add_argument("--depth_anchor_gradient_weight", type=float, default=0.5)
     depth_anchor.add_argument("--depth_anchor_grad_checkpoint", action=argparse.BooleanOptionalAction, default=True)
+    depth_anchor.add_argument(
+        "--keep_depth_helpers_on_gpu",
+        action="store_true",
+        help="Keep the frozen VAE and depth perceptor on GPU between primary and DOP passes for speed; uses more VRAM.",
+    )
     parser.add_argument(
         "--fp8_scaled",
         action="store_true",
