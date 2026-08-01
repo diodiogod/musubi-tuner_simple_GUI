@@ -15,6 +15,23 @@ class GuiTrainingProgressTests(unittest.TestCase):
         self.assertAlmostEqual(parsed["loss"], 0.119)
         self.assertAlmostEqual(parsed["depth_loss"], 0.238)
 
+    def test_epoch_markers_only_include_reached_boundaries(self):
+        markers = MusubiTunerGUI._epoch_marker_positions(1320, 3, 467)
+
+        self.assertEqual(markers, [(440, 2)])
+
+    def test_epoch_markers_include_each_reached_boundary(self):
+        markers = MusubiTunerGUI._epoch_marker_positions(1320, 3, 900)
+
+        self.assertEqual(markers, [(440, 2), (880, 3)])
+
+    def test_epoch_markers_are_capped_for_long_runs(self):
+        markers = MusubiTunerGUI._epoch_marker_positions(1000, 1000, 1000)
+
+        self.assertLessEqual(len(markers), 8)
+        self.assertEqual(markers[0], (1, 2))
+        self.assertEqual(markers[-1], (999, 1000))
+
 
 if __name__ == "__main__":
     unittest.main()

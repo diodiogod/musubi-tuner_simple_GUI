@@ -140,6 +140,8 @@ class MusubiTunerGUI:
         self.vram_thread = None
         self._vram_gpu_index = None
         self._vram_previous_gpu_index = None
+        self._vram_gpu_hint = None
+        self._vram_gpu_hint_source = None
         self._vram_baseline = []
         self.loss_data = []
         self.peak_vram = 0
@@ -1159,6 +1161,7 @@ class MusubiTunerGUI:
         memory_frame = ttk.LabelFrame(frame, text="Memory & Performance"); memory_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(memory_frame, "mixed_precision", "Mixed Precision:", "Use 'fp16' or 'bf16' to reduce VRAM usage and speed up training. 'fp16' is common, 'bf16' is better on newer GPUs.", kind='combobox', options=["no", "fp16", "bf16"])
         self._add_widget(memory_frame, "gradient_checkpointing", "Gradient Checkpointing", "Drastically reduces VRAM usage by re-calculating gradients on the backward pass. Highly recommended.", kind='checkbox', default_val=True)
+        self._add_widget(memory_frame, "expandable_cuda_segments", "Expandable CUDA Memory Segments", "Passes PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to new training processes. This can reduce allocator-fragmentation OOMs, but does not reduce the model's true VRAM requirement.", kind='checkbox')
         self._add_widget(memory_frame, "persistent_data_loader_workers", "Persistent Data Loader Workers", "Keeps data loader processes alive between epochs to speed up data loading, at the cost of slightly higher RAM usage.", kind='checkbox')
         self._add_widget(memory_frame, "gradient_accumulation_steps", "Gradient Accumulation Steps:", "Simulates a larger batch size by accumulating gradients over several steps. E.g., a batch size of 1 with 4 accumulation steps simulates a batch size of 4.", validate_num=True)
         self._add_widget(memory_frame, "max_data_loader_n_workers", "Max Data Loader Workers:", "Number of CPU threads to load data. '2' is a safe default. Higher values can speed up loading but use more RAM.", validate_num=True)
@@ -4273,6 +4276,21 @@ class MusubiTunerGUI:
             compact.append(cleaned[-1])
         return compact[:limit - 1] + [cleaned[-1]] if len(compact) > limit else compact
 
+    @staticmethod
+    def _loss_history_through_step(points, checkpoint_step):
+        """Discard monitor points recorded after the checkpoint being resumed."""
+        try:
+            checkpoint_step = int(checkpoint_step or 0)
+        except (TypeError, ValueError):
+            checkpoint_step = 0
+        if checkpoint_step <= 0:
+            return list(points or [])
+        return [
+            [int(step), float(loss)]
+            for step, loss in (points or [])
+            if int(step) <= checkpoint_step
+        ]
+
     @classmethod
     def _job_cumulative_progress(cls, job):
         prior_epochs = cls._job_metric(job, "continuation_prior_epochs")
@@ -4620,6 +4638,19 @@ class MusubiTunerGUI:
     def _state_step_from_path(state_path):
         match = re.search(r"-step(\d+)-state$", Path(state_path).name, re.IGNORECASE)
         return int(match.group(1)) if match else 0
+
+    @classmethod
+    def _checkpoint_step_from_state(cls, state_path, job):
+        """Resolve a resume checkpoint step without using a failed run's later step."""
+        explicit_step = cls._state_step_from_path(state_path)
+        if explicit_step:
+            return explicit_step
+        state_epoch = cls._state_epoch_from_path(state_path)
+        total_steps = cls._job_metric(job, "total_steps")
+        total_epochs = cls._job_metric(job, "total_epochs")
+        if state_epoch and total_steps and total_epochs:
+            return min(total_steps, math.ceil(total_steps * state_epoch / total_epochs))
+        return cls._job_metric(job, "current_step")
 
     def _continuation_state_candidates(self, job):
         candidates = []
@@ -5309,7 +5340,10 @@ class MusubiTunerGUI:
             ttk.Label(summary, text=value, style="PageHelp.TLabel", wraplength=520).grid(row=row, column=1, sticky="nw", padx=(0, 10), pady=4)
         summary.grid_columnconfigure(1, weight=1)
 
-        saved_history = self._compact_loss_history(job.get("loss_history") or [])
+        checkpoint_step = self._checkpoint_step_from_state(state_path, job)
+        saved_history = self._loss_history_through_step(
+            self._compact_loss_history(job.get("loss_history") or []), checkpoint_step
+        )
         history_text = (
             f"The previous graph has {len(saved_history)} saved point(s) and will continue in the monitor."
             if saved_history
@@ -5355,8 +5389,11 @@ class MusubiTunerGUI:
         settings["recache_text"] = False
         settings["use_staged_training"] = False
 
-        history = self._compact_loss_history(job.get("loss_history") or [])
-        if not history:
+        checkpoint_step = self._checkpoint_step_from_state(state_path, job)
+        history = self._loss_history_through_step(
+            self._compact_loss_history(job.get("loss_history") or []), checkpoint_step
+        )
+        if not history and checkpoint_step <= 0:
             try:
                 last_step = int(job.get("current_step") or 0)
                 last_loss = float(job.get("last_loss"))
@@ -5373,7 +5410,7 @@ class MusubiTunerGUI:
             "source_title": self._job_display_name(job),
             "state_path": str(state_path),
             "loss_history": history,
-            "checkpoint_step": self._state_step_from_path(state_path) or self._job_metric(job, "current_step"),
+            "checkpoint_step": checkpoint_step,
             "checkpoint_epoch": self._state_epoch_from_path(state_path) or self._job_metric(job, "current_epoch"),
             "total_steps": self._job_metric(job, "total_steps"),
             "total_epochs": self._job_metric(job, "total_epochs"),
@@ -6889,7 +6926,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "compile_dynamic": "auto", "compile_fullgraph": False, "compile_cache_size_limit": "32",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
             "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
-            "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
+            "gradient_checkpointing": True, "expandable_cuda_segments": False, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "starting_point_mode": "new", "resume_path": "", "network_weights": "",
@@ -6932,6 +6969,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             pynvml.nvmlInit()
             self._vram_gpu_index = None
             self._vram_previous_gpu_index = None
+            self._vram_gpu_hint = None
+            self._vram_gpu_hint_source = None
             self._vram_baseline = [
                 pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
                 for index in range(pynvml.nvmlDeviceGetCount())
@@ -6978,24 +7017,141 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 pass
         return process_ids
 
+    @staticmethod
+    def _first_gpu_selector(value):
+        """Return the first CUDA/Accelerate GPU selector from a comma list."""
+        if value is None:
+            return None
+        value = str(value).strip()
+        if not value or value == "-1":
+            return None
+        selector = value.split(",", 1)[0].strip()
+        if selector.isdigit():
+            return int(selector)
+        return selector or None
+
+    @staticmethod
+    def _command_option_value(command, option):
+        """Read a simple ``--option value`` or ``--option=value`` argument."""
+        args = list(command) if not isinstance(command, str) else command.split()
+        for index, arg in enumerate(args):
+            arg = str(arg)
+            if arg == option and index + 1 < len(args):
+                return str(args[index + 1])
+            prefix = f"{option}="
+            if arg.startswith(prefix):
+                return arg[len(prefix):]
+        return None
+
+    @staticmethod
+    def _torch_nvml_index_map(handles):
+        """Return physical NVML indices in Torch's logical CUDA order."""
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return None
+            logical_devices = []
+            for index in range(torch.cuda.device_count()):
+                properties = torch.cuda.get_device_properties(index)
+                logical_devices.append((str(properties.name), int(properties.total_memory)))
+        except Exception:
+            return None
+
+        physical_devices = []
+        for index, handle in enumerate(handles):
+            try:
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode(errors="replace")
+                total_memory = int(pynvml.nvmlDeviceGetMemoryInfo(handle).total)
+                physical_devices.append((index, str(name), total_memory))
+            except pynvml.NVMLError:
+                return None
+
+        mapping = []
+        used_physical_indices = set()
+        for logical_name, logical_memory in logical_devices:
+            candidates = [
+                item for item in physical_devices
+                if item[0] not in used_physical_indices and item[1] == logical_name
+            ]
+            if len(candidates) > 1:
+                candidates.sort(key=lambda item: abs(item[2] - logical_memory))
+            if not candidates:
+                return None
+            physical_index = candidates[0][0]
+            mapping.append(physical_index)
+            used_physical_indices.add(physical_index)
+        return mapping
+
+    def _resolve_vram_gpu_hint(self, env, command, handles):
+        """Resolve Torch's logical CUDA device to an NVML physical index.
+
+        ``CUDA_VISIBLE_DEVICES`` renumbers devices for Torch, so logical
+        ``cuda:0`` is not necessarily NVML device 0.  Accelerate's
+        ``--gpu_ids`` is expressed in that logical namespace as well.
+        """
+        visible_value = env.get("CUDA_VISIBLE_DEVICES")
+        visible_tokens = None
+        if visible_value is not None and str(visible_value).strip():
+            visible_tokens = [token.strip() for token in str(visible_value).split(",")]
+            if not visible_tokens or visible_tokens[0] == "-1":
+                return None, "unknown"
+
+        gpu_ids_value = self._command_option_value(command, "--gpu_ids")
+        logical_index = self._first_gpu_selector(gpu_ids_value)
+        if logical_index is None:
+            logical_index = 0
+        if not isinstance(logical_index, int):
+            return None, "unknown"
+
+        if visible_tokens is None:
+            # CUDA normally uses a performance-oriented order, while NVML's
+            # physical indices may follow PCI/display order. Match by the
+            # device properties Torch actually sees instead of assuming the
+            # two index spaces are identical.
+            torch_to_nvml = self._torch_nvml_index_map(handles)
+            if torch_to_nvml is not None and logical_index < len(torch_to_nvml):
+                return torch_to_nvml[logical_index], "Torch/NVML"
+            return None, "unknown"
+
+        if logical_index >= len(visible_tokens):
+            return None, "unknown"
+        selected = visible_tokens[logical_index]
+        if selected.isdigit():
+            physical_index = int(selected)
+            return (physical_index, "CUDA_VISIBLE_DEVICES") if physical_index < len(handles) else (None, "unknown")
+
+        # CUDA also accepts GPU UUIDs.  Resolve those against NVML where
+        # possible; otherwise leave the monitor undecided instead of guessing.
+        for physical_index, handle in enumerate(handles):
+            try:
+                device_uuid = pynvml.nvmlDeviceGetUUID(handle)
+                if isinstance(device_uuid, bytes):
+                    device_uuid = device_uuid.decode(errors="replace")
+                if str(device_uuid).lower() == selected.lower():
+                    return physical_index, "CUDA_VISIBLE_DEVICES"
+            except pynvml.NVMLError:
+                continue
+        return None, "unknown"
+
     def _detect_training_gpu(self, handles, memory_info):
+        if self._vram_gpu_hint is not None:
+            return self._vram_gpu_hint
+
         training_process_ids = self._training_process_ids()
         if training_process_ids:
             for index, handle in enumerate(handles):
                 if training_process_ids & self._gpu_process_ids(handle):
                     return index
 
-            # NVML process accounting is unavailable on some Windows driver
-            # modes. In that case, select the GPU whose usage grew after this
-            # training run started instead of assuming physical GPU 0.
-            deltas = [
-                info.used - self._vram_baseline[index]
-                for index, info in enumerate(memory_info)
-            ]
-            if deltas:
-                index = max(range(len(deltas)), key=deltas.__getitem__)
-                if deltas[index] >= 64 * 1024**2:
-                    return index
+            # Do not select a card from an incidental VRAM increase. Browsers,
+            # desktop composition, and other GPU processes make that fallback
+            # unreliable on Windows. An explicit CUDA mapping is handled above;
+            # without one, the normal CUDA default is physical GPU 0.
+            if self._vram_gpu_hint_source != "unknown" and handles:
+                return 0
         return None
 
     def vram_monitor_loop(self):
@@ -7018,6 +7174,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     info = memory_info[self._vram_gpu_index]
                     used_gb = info.used / (1024**3)
                     if used_gb > self.peak_vram: self.peak_vram = used_gb
+                    gpu_name = pynvml.nvmlDeviceGetName(handles[self._vram_gpu_index])
+                    if isinstance(gpu_name, bytes):
+                        gpu_name = gpu_name.decode(errors="replace")
                     self.root.after(
                         0,
                         self.update_vram_display,
@@ -7025,15 +7184,48 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                         self.peak_vram,
                         info.total / (1024**3),
                         self._vram_gpu_index,
+                        str(gpu_name),
                     )
                 time.sleep(1)
         except pynvml.NVMLError:
             if self.monitoring_active:
                 self.root.after(0, lambda: self.vram_label_var.set("VRAM: Monitoring Error"))
 
-    def update_vram_display(self, used, peak, total, gpu_index):
-        self.vram_label_var.set(f"GPU {gpu_index} VRAM: {used:.2f} GB / {total:.2f} GB")
-        self.peak_vram_label_var.set(f"GPU {gpu_index} Peak VRAM: {peak:.2f} GB")
+    def update_vram_display(self, used, peak, total, gpu_index, gpu_name=None):
+        label = f"GPU {gpu_index}"
+        if gpu_name:
+            label += f" ({gpu_name})"
+        self.vram_label_var.set(f"{label} VRAM: {used:.2f} GB / {total:.2f} GB")
+        self.peak_vram_label_var.set(f"{label} Peak VRAM: {peak:.2f} GB")
+
+    @staticmethod
+    def _epoch_marker_positions(total_steps, total_epochs, observed_step, max_markers=8):
+        """Return reached epoch boundaries as ``(step, new_epoch)`` pairs."""
+        try:
+            total_steps = int(total_steps or 0)
+            total_epochs = int(total_epochs or 0)
+            observed_step = int(observed_step or 0)
+            max_markers = max(2, int(max_markers or 0))
+        except (TypeError, ValueError):
+            return []
+        if total_steps <= 0 or total_epochs <= 1 or observed_step <= 0:
+            return []
+        steps_per_epoch = max(1, math.ceil(total_steps / total_epochs))
+        boundaries = [
+            (epoch * steps_per_epoch, epoch + 1)
+            for epoch in range(1, total_epochs)
+            if epoch * steps_per_epoch <= observed_step
+        ]
+        if len(boundaries) <= max_markers:
+            return boundaries
+
+        # Keep the marker density bounded while retaining the first and most
+        # recent reached boundary. This keeps a 1,000-epoch run readable.
+        stride = math.ceil(len(boundaries) / max_markers)
+        selected = boundaries[::stride]
+        if selected[-1] != boundaries[-1]:
+            selected = selected[:max_markers - 1] + [boundaries[-1]]
+        return selected
 
     def update_loss_graph(self, step=None, loss_value=None):
         if not MATPLOTLIB_AVAILABLE: return
@@ -7050,6 +7242,30 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.ax.clear(); self.setup_graph_style()
         if self.loss_data:
             steps, losses = zip(*self.loss_data)
+            observed_step = max(max(steps), self.current_step)
+            for boundary, epoch in self._epoch_marker_positions(
+                self.current_total_steps, self.current_epoch_total, observed_step
+            ):
+                self.ax.axvline(
+                    boundary,
+                    color=self.colors["muted"],
+                    linestyle=(0, (4, 4)),
+                    linewidth=0.8,
+                    alpha=0.45,
+                    zorder=1,
+                )
+                self.ax.text(
+                    boundary,
+                    0.97,
+                    f"E{epoch}",
+                    transform=self.ax.get_xaxis_transform(),
+                    color=self.colors["muted"],
+                    fontsize=8,
+                    ha="right",
+                    va="top",
+                    alpha=0.8,
+                    clip_on=True,
+                )
             self.ax.plot(steps, losses, color='#68bcece8')
         self.canvas.draw()
 
@@ -7118,9 +7334,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             self.next_epoch_var.set("To next epoch: N/A")
 
+    def _reset_live_training_counters_for_process(self):
+        """Forget the previous subprocess position before reading a new one.
+
+        A resumed run can legitimately start below the failed run's last
+        displayed step. The monotonic guard in update_training_counters is
+        useful within one process, but would otherwise preserve stale values
+        across a resume or staged subprocess boundary.
+        """
+        self.current_step = 0
+        self.current_total_steps = 0
+        self.current_epoch_num = 0
+        self.current_epoch_total = 0
+        self.update_training_counters()
+
     def run_process(self, command, on_complete=None, output_widget=None, job_context=None):
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
+        if output_widget == self.output_text and self._is_training_command(" ".join(map(str, command))):
+            self._reset_live_training_counters_for_process()
         self.last_line_was_progress = False
         if output_widget == self.output_text:
             try:
@@ -7153,6 +7385,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         try:
             env = os.environ.copy(); env['PYTHONUNBUFFERED'] = '1'; env['PYTHONUTF8'] = '1'
+            expandable_segments = self.entries.get("expandable_cuda_segments")
+            if expandable_segments is not None and expandable_segments.var.get():
+                allocator_variable = "PYTORCH_CUDA_ALLOC_CONF"
+                if allocator_variable not in env and "PYTORCH_ALLOC_CONF" in env:
+                    allocator_variable = "PYTORCH_ALLOC_CONF"
+                allocator_config = env.get(allocator_variable, "")
+                if not re.search(r"(?:^|,)\s*expandable_segments\s*:", allocator_config):
+                    env[allocator_variable] = (
+                        f"{allocator_config},expandable_segments:True" if allocator_config else "expandable_segments:True"
+                    )
             # GUI backend commands are explicitly single-process. A prior torchrun,
             # MPI shell, IDE, or launcher can leave rank variables in the GUI's
             # inherited environment; Accelerate interprets even LOCAL_RANK=0 as a
@@ -7181,15 +7423,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if self.monitoring_active and PYNVML_AVAILABLE:
                 # Cache and Accelerate training commands may use different GPUs.
                 # Re-detect for every subprocess and preserve the peak only when
-                # the physical GPU stays the same.
+                # the physical GPU stays the same. Resolve CUDA's logical device
+                # mapping before relying on Windows NVML process accounting.
                 self._vram_previous_gpu_index = self._vram_gpu_index
                 self._vram_gpu_index = None
                 try:
-                    self._vram_baseline = [
-                        pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
+                    handles = [
+                        pynvml.nvmlDeviceGetHandleByIndex(index)
                         for index in range(pynvml.nvmlDeviceGetCount())
                     ]
+                    self._vram_gpu_hint, self._vram_gpu_hint_source = self._resolve_vram_gpu_hint(
+                        env, command, handles
+                    )
+                    self._vram_baseline = [
+                        pynvml.nvmlDeviceGetMemoryInfo(handle).used
+                        for handle in handles
+                    ]
                 except pynvml.NVMLError:
+                    self._vram_gpu_hint = None
+                    self._vram_gpu_hint_source = "unknown"
                     pass
                 self.vram_label_var.set("VRAM: Detecting process GPU...")
 
@@ -7884,9 +8136,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if recovery and self._normalise_history_path(recovery.get("state_path")) != self._normalise_history_path(settings.get("resume_path")):
             recovery = None
             self._pending_recovery = None
-        restored_history = self._compact_loss_history((recovery or {}).get("loss_history") or [])
+        checkpoint_step = self._job_metric(recovery or {}, "checkpoint_step")
+        restored_history = self._loss_history_through_step(
+            self._compact_loss_history((recovery or {}).get("loss_history") or []), checkpoint_step
+        )
         self.loss_data = [(int(step), float(loss)) for step, loss in restored_history]
-        self.current_step = self._job_metric(recovery or {}, "checkpoint_step")
+        self.current_step = checkpoint_step
         self.current_total_steps = self._job_metric(recovery or {}, "total_steps")
         self.current_epoch_num = self._job_metric(recovery or {}, "checkpoint_epoch")
         self.current_epoch_total = self._job_metric(recovery or {}, "total_epochs")

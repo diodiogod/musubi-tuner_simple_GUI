@@ -1,5 +1,13 @@
 # Musubi Tuner Simple GUI
 
+> **Experimental modern interface:** this fork also includes the parallel
+> local web workspace **Musubi Studio**. Run `LAUNCH_MODERN_GUI.bat` to try its
+> modern configuration, dataset/TOML, monitoring, job, stage, and sample
+> workflows. The established Tkinter interface remains available through
+> `LAUNCH_GUI.bat`; no existing workflow was removed. See
+> [`modern_gui/README.md`](modern_gui/README.md) for architecture and safety
+> details.
+
 A Windows-focused desktop GUI for [kohya-ss/musubi-tuner](https://github.com/kohya-ss/musubi-tuner).
 
 ![Musubi Tuner GUI running in Krea 2 mode](docs/musubi-tuner-gui.png)

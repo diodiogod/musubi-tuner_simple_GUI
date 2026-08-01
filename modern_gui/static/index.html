@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musubi Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">M</span><span><strong>Musubi</strong><small>Training Studio</small></span></div>
+      <nav aria-label="Workspace">
+        <button class="nav active" data-view="home"><span>⌂</span><span>Dashboard</span></button>
+        <button class="nav nav-new" data-view="setup"><span>＋</span><span>New training</span></button>
+        <button class="nav" data-view="datasets"><span>▦</span><span>Datasets</span></button>
+        <button class="nav" data-view="plan"><span>≡</span><span>Training plan</span></button>
+        <button class="nav" data-view="face"><span>◎</span><span>Face refinement</span></button>
+        <button class="nav" data-view="run"><span>▶</span><span>Active run</span><i id="run-dot"></i></button>
+        <button class="nav" data-view="samples"><span>◫</span><span>Samples</span></button>
+        <button class="nav" data-view="jobs"><span>☷</span><span>History</span></button>
+        <button class="nav" data-view="tools"><span>◇</span><span>Tools</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav" data-view="settings"><span>⚙</span><span>All settings</span></button>
+        <button class="icon-action" id="theme-toggle" title="Switch theme" aria-label="Switch theme">☼</button>
+        <button class="save-state" id="save-state" type="button" title="Save current workspace">Saved</button>
+        <span class="connection" id="server-status"><i></i>Connecting</span>
+      </div>
+    </aside>
+
+    <main>
+      <section class="view active" id="home">
+        <header class="page-header">
+          <div><p class="kicker">LOCAL MUSUBI WORKSPACE</p><h1>What do you want to train?</h1><p>Start with the model family. The studio will reveal only the decisions that apply.</p></div>
+          <button class="quiet" id="open-desktop">Open classic GUI</button>
+        </header>
+        <div class="model-launcher" id="model-launcher">
+          <button class="model-tile" data-mode="Krea 2"><span class="model-orb krea"></span><span><strong>Krea 2</strong><small>RAW image LoRA with optional Turbo sampling</small></span><b>→</b></button>
+          <button class="model-tile" data-mode="Wan 2.2"><span class="model-orb wan"></span><span><strong>Wan 2.2</strong><small>Image or video, low/high-noise workflows</small></span><b>→</b></button>
+          <button class="model-tile" data-mode="Flux.2 Klein"><span class="model-orb klein"></span><span><strong>Flux.2 Klein</strong><small>Compact Flux image training with DOP support</small></span><b>→</b></button>
+          <button class="model-tile" data-mode="Flux.2 Dev"><span class="model-orb flux"></span><span><strong>Flux.2 Dev</strong><small>Full Flux.2 image LoRA training</small></span><b>→</b></button>
+        </div>
+        <div class="home-grid">
+          <article class="activity-panel">
+            <div class="section-title"><div><p class="kicker">CONTINUE WORKING</p><h2>Recent training</h2></div><button class="text-action" data-go="jobs">View all</button></div>
+            <div id="recent-jobs" class="empty">Your recent Musubi jobs will appear here.</div>
+          </article>
+          <article class="readiness-panel">
+            <p class="kicker">CURRENT WORKSPACE</p><h2 id="workspace-name">No training selected</h2>
+            <ol class="readiness-list">
+              <li id="ready-model"><i>1</i><span><strong>Choose a model</strong><small>Select a family above</small></span></li>
+              <li id="ready-data"><i>2</i><span><strong>Connect a dataset</strong><small>No TOML selected</small></span></li>
+              <li id="ready-output"><i>3</i><span><strong>Name the output</strong><small>No output configured</small></span></li>
+            </ol>
+            <button class="primary full" data-go="setup">Continue setup</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="setup">
+        <header class="page-header compact">
+          <div><p class="kicker">NEW TRAINING</p><h1>Build a training recipe</h1><p>Make the important choices first. Tune the details only when you need them.</p></div>
+          <div class="header-actions"><button class="quiet" id="preview-button">Preview command</button><button class="primary" id="save-settings">Save recipe</button></div>
+        </header>
+        <div class="recipe-layout">
+          <nav class="recipe-steps" aria-label="Training setup">
+            <button class="recipe-step active" data-step="model"><i>1</i><span><strong>Model</strong><small id="step-model-summary">Choose a family</small></span></button>
+            <button class="recipe-step" data-step="data"><i>2</i><span><strong>Dataset</strong><small id="step-data-summary">Connect training data</small></span></button>
+            <button class="recipe-step" data-step="method"><i>3</i><span><strong>Method</strong><small id="step-method-summary">LoRA and schedule</small></span></button>
+            <button class="recipe-step" data-step="performance"><i>4</i><span><strong>Performance</strong><small>Memory and precision</small></span></button>
+            <button class="recipe-step" data-step="review"><i>5</i><span><strong>Review</strong><small>Validate and launch</small></span></button>
+          </nav>
+          <div class="recipe-canvas">
+            <div class="step-pane active" data-pane="model">
+              <p class="kicker">STEP 1 OF 5</p><h2>Choose the training target</h2><p class="lead">This changes the available model files, defaults, and specialized tools.</p>
+              <div class="choice-grid" id="mode-choices"></div>
+              <div id="model-fields" class="guided-fields"></div>
+            </div>
+            <div class="step-pane" data-pane="data">
+              <p class="kicker">STEP 2 OF 5</p><h2>Connect your dataset</h2><p class="lead">Use an existing TOML or open the visual dataset workspace to create and inspect one.</p>
+              <div id="data-fields" class="guided-fields"></div>
+              <div class="estimate-row"><span>Create the classic models/ and log/ concept layout from the workspace path.</span><button class="quiet" id="apply-workspace">Apply workspace layout</button></div>
+              <button class="workspace-link" data-go="datasets"><span>▦</span><span><strong>Open dataset workspace</strong><small>Inspect images, captions, resolutions, repeats, and caches</small></span><b>→</b></button>
+            </div>
+            <div class="step-pane" data-pane="method">
+              <p class="kicker">STEP 3 OF 5</p><h2>Shape the training recipe</h2><p class="lead">Start from safe choices, then expand a section when you need more control.</p>
+              <div id="method-fields" class="guided-fields"></div>
+              <div class="estimate-row"><span id="lora-estimate">Estimate the final adapter size from model tensor shapes.</span><button class="quiet" id="estimate-lora">Estimate size</button></div>
+              <details class="raw-settings"><summary>Regularization and small-dataset controls</summary><div id="regularization-fields" class="guided-fields"></div></details>
+            </div>
+            <div class="step-pane" data-pane="performance">
+              <p class="kicker">STEP 4 OF 5</p><h2>Fit the run to your machine</h2><p class="lead">Precision and memory choices affect speed and VRAM. Help is available beside every unfamiliar option.</p>
+              <div id="performance-fields" class="guided-fields"></div>
+            </div>
+            <div class="step-pane" data-pane="review">
+              <p class="kicker">STEP 5 OF 5</p><h2>Review before training</h2>
+              <div id="review-summary" class="review-summary"></div>
+              <div id="settings-validation" class="issues"></div>
+              <div class="review-actions"><button class="quiet" id="validate-settings">Check setup</button><button class="primary large" id="start-from-review">Start training</button></div>
+            </div>
+            <footer class="step-footer"><button class="quiet" id="step-back">Back</button><span id="autosave-note">Changes are kept in this workspace</span><button class="primary" id="step-next">Continue</button></footer>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="datasets">
+        <header class="page-header compact"><div><p class="kicker">DATASET WORKSPACE</p><h1>See what Musubi will learn</h1><p>Browse the real training media, fix captions, and tune source settings without flattening your TOML.</p></div><div class="header-actions"><button class="quiet" id="inspect-dataset">Run full audit</button><button class="primary" id="save-dataset" disabled>Save TOML</button></div></header>
+        <div class="path-bar dataset-path-bar"><label for="dataset-path">Dataset TOML</label><input id="dataset-path" placeholder="Choose or paste a dataset TOML path"><span class="document-state" id="dataset-document-state">Not loaded</span><button class="quiet" id="browse-dataset">Browse</button><button class="quiet" id="load-dataset">Load</button></div>
+        <div id="dataset-overview" class="dataset-overview" aria-live="polite">
+          <div><small>SOURCES</small><strong>—</strong></div><div><small>MEDIA</small><strong>—</strong></div><div><small>CAPTION COVERAGE</small><strong>—</strong></div><div><small>EFFECTIVE SAMPLES</small><strong>—</strong></div><div><small>HEALTH</small><strong>Load a TOML</strong></div>
+        </div>
+        <div class="dataset-workspace">
+          <aside class="dataset-rail">
+            <div class="rail-heading"><div><strong>Training sources</strong><small>Ordered as in TOML</small></div><span id="dataset-count">0</span></div>
+            <button class="dataset-defaults" id="dataset-defaults"><span>⚙</span><span><strong>Document defaults</strong><small>Inherited by every source</small></span></button>
+            <div id="dataset-list" class="dataset-list empty">Load a TOML to begin.</div>
+            <div class="add-menu"><button id="add-image-dataset">＋ Image folder</button><button id="add-video-dataset">＋ Video folder</button></div>
+          </aside>
+          <div class="dataset-detail">
+            <div id="dataset-welcome" class="dataset-welcome"><span>▦</span><h2>Your data at a glance</h2><p>Select a source to browse its media, or load a dataset TOML to begin.</p></div>
+            <div id="dataset-content" hidden>
+              <div id="dataset-source-head"></div>
+              <div class="dataset-tabs" id="dataset-tabs" role="tablist">
+                <button class="active" data-dataset-tab="media" role="tab">Media</button>
+                <button data-dataset-tab="settings" role="tab">Source settings</button>
+                <button data-dataset-tab="health" role="tab">Health</button>
+                <button data-dataset-tab="toml" role="tab">TOML</button>
+              </div>
+              <section class="dataset-pane active" data-dataset-pane="media" role="tabpanel">
+                <div class="dataset-media-toolbar">
+                  <div class="search"><span>⌕</span><label class="sr-only" for="dataset-media-search">Search media and captions</label><input id="dataset-media-search" placeholder="Search filenames or caption text"></div>
+                  <label for="dataset-media-filter">Show</label>
+                  <select id="dataset-media-filter"><option value="all">All media</option><option value="needs_attention">Needs attention</option><option value="missing_caption">Missing captions</option><option value="eligible">Training eligible</option><option value="controls">Has controls</option><option value="missing_media">Missing files</option></select>
+                  <button class="quiet" id="open-dataset-source">Open folder</button>
+                  <button class="quiet" id="refresh-dataset-media">Refresh</button>
+                </div>
+                <div id="dataset-media-summary"></div>
+                <div id="dataset-media-grid" class="dataset-media-grid empty">Select a source to browse its media.</div>
+                <div id="dataset-media-pager" class="dataset-media-pager"></div>
+              </section>
+              <section class="dataset-pane" data-dataset-pane="settings" role="tabpanel"><div id="dataset-editor"></div></section>
+              <section class="dataset-pane" data-dataset-pane="health" role="tabpanel"><div id="dataset-inspection" aria-live="polite"><div class="dataset-health-empty"><h3>No full audit yet</h3><p>Run the audit to check every source against Musubi’s real file-loading rules.</p><button class="quiet" data-run-dataset-audit>Run full audit</button></div></div></section>
+              <section class="dataset-pane" data-dataset-pane="toml" role="tabpanel">
+                <div class="toml-intro"><div><p class="kicker">CANONICAL DOCUMENT</p><h3>Complete TOML</h3><p>Comments, ordering, unknown keys, and specialized trainer fields stay here. Visual edits patch this document in place.</p></div><span id="toml-preservation-state">Structure preserved</span></div>
+                <textarea id="dataset-source" spellcheck="false" aria-label="Dataset TOML source"></textarea>
+                <div class="source-actions"><button class="quiet" id="validate-dataset">Apply TOML changes</button></div>
+              </section>
+              <div id="dataset-issues" class="issues"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="plan">
+        <header class="page-header compact"><div><p class="kicker">TRAINING PLAN</p><h1>Plan the learning journey</h1><p>Define comparable samples, optional training stages, and the notes saved with this run.</p></div><div class="header-actions"><span class="plan-save-note" id="plan-save-note">Changes stay in this workspace</span><button class="primary" id="save-plan">Save plan</button></div></header>
+        <div class="plan-overview" id="plan-overview" aria-live="polite">
+          <div><small>INCLUDED PROMPTS</small><strong id="plan-prompt-count">0</strong><span id="plan-prompt-health">Add a prompt</span></div>
+          <div><small>SAMPLE SCHEDULE</small><strong id="plan-sample-schedule">Off</strong><span>During training</span></div>
+          <div><small>TRAINING STAGES</small><strong id="plan-stage-count">Normal run</strong><span id="plan-stage-health">Uses the main recipe</span></div>
+          <div><small>PLAN STATUS</small><strong id="plan-health">Ready</strong><span id="plan-health-copy">No plan issues</span></div>
+        </div>
+        <div class="plan-tabs"><button class="active" data-plan-tab="prompts">Sample prompts <span id="prompt-tab-count">0</span></button><button data-plan-tab="stages">Stages <span id="stage-tab-count">0</span></button><button data-plan-tab="notes">Notes</button></div>
+        <div class="plan-pane active" data-plan-pane="prompts">
+          <div class="workspace-heading plan-toolbar"><div><p class="kicker">COMPARABLE CHECKPOINTS</p><h2>Sample prompts</h2><p>Keep a small, consistent set of prompts to see what the LoRA is learning over time.</p></div><div class="header-actions"><button class="quiet" id="open-prompt-library">Open library</button><button class="quiet" id="preview-prompts">Generate enabled</button><details class="action-menu"><summary>Manage</summary><div><button id="save-prompts-library">Save all to library</button><button id="enable-prompts">Include all</button><button id="disable-prompts">Turn all off</button></div></details><button class="primary" id="add-prompt">＋ Add prompt</button></div></div>
+          <div id="prompt-list" class="prompt-card-grid"></div>
+          <section class="sampling-schedule-card">
+            <div><span class="schedule-icon">◷</span><div><strong>When should Musubi sample?</strong><p>Choose an epoch or step cadence. Zero or blank leaves that cadence off.</p></div></div>
+            <div id="sampling-frequency-fields" class="guided-fields"></div>
+          </section>
+        </div>
+        <div class="plan-pane" data-plan-pane="stages">
+          <div class="workspace-heading plan-toolbar"><div><p class="kicker">ORDERED PROGRESSION</p><h2>Training stages</h2><p>Build a deliberate sequence. The connector between cards shows exactly what is handed forward.</p></div><div class="header-actions"><label class="inline-switch plan-master-switch"><input type="checkbox" id="use-stages"> Use staged training</label><button class="primary" id="add-stage">＋ Add stage</button></div></div>
+          <section class="plan-policy-card" id="normal-cache-policy"><div><strong>Prepare the normal run</strong><p>Choose whether Musubi should rebuild latent or text caches before this single recipe starts.</p></div><div class="stage-policies" id="run-cache-policies"></div></section>
+          <section class="plan-policy-card" id="staged-cache-policy"><div><strong>Preparation between stages</strong><p>These policies affect standard stages while preserving typed state and LoRA handoffs.</p></div><div class="stage-policies" id="stage-policies"></div></section>
+          <div id="stage-list" class="plan-stage-timeline"></div>
+        </div>
+        <div class="plan-pane" data-plan-pane="notes">
+          <div class="workspace-heading plan-toolbar"><div><p class="kicker">RUN MEMORY</p><h2>Training notes</h2><p>Your own note stays separate from the fresh settings summary generated for each run or stage.</p></div><button class="quiet" id="copy-summary">Copy summary</button></div>
+          <div class="notes-workspace"><section class="notes-editor-card"><div id="notes-fields" class="guided-fields"></div></section><div class="summary-preview"><p class="kicker">SAVED SETTINGS SUMMARY</p><pre id="training-summary"></pre></div></div>
+        </div>
+      </section>
+
+      <section class="view" id="face">
+        <header class="page-header compact"><div><p class="kicker">KREA 2 SPECIALIZED WORKFLOW</p><h1>Face refinement</h1><p>Analyze references, refine identity with DRaFT, and compare fixed Turbo evaluations.</p></div><button class="primary" id="save-face">Save face workspace</button></header>
+        <div id="face-mode-warning" class="issue warning">Face refinement is available for Krea 2 recipes.</div>
+        <div class="face-workspace">
+          <nav class="face-steps">
+            <button class="active" data-face-step="setup"><i>1</i><span><strong>Setup</strong><small>LoRA and references</small></span></button>
+            <button data-face-step="preflight"><i>2</i><span><strong>Analyze</strong><small>Reference quality</small></span></button>
+            <button data-face-step="recipe"><i>3</i><span><strong>Refine</strong><small>Reward and schedule</small></span></button>
+            <button data-face-step="evaluation"><i>4</i><span><strong>Evaluate</strong><small>Fixed Turbo suite</small></span></button>
+          </nav>
+          <div class="face-canvas">
+            <div class="face-pane active" data-face-pane="setup"><p class="kicker">STEP 1</p><h2>Choose identity inputs</h2><div id="face-setup-fields" class="guided-fields"></div><div class="review-actions"><button class="quiet" id="download-face-models">Download AntelopeV2 models</button></div></div>
+            <div class="face-pane" data-face-pane="preflight"><p class="kicker">STEP 2</p><h2>Reference analysis</h2><p class="lead">Preflight detects faces, scores outliers, and builds the pose distribution required by refinement.</p><div class="workflow-action"><div><strong>Scan or rescan the reference folder</strong><small>Review and correct the detected pose for every usable image below.</small></div><button class="primary" id="run-face-preflight">Analyze references</button></div><div id="face-preflight-report" class="empty">No preflight report saved yet.</div></div>
+            <div class="face-pane" data-face-pane="recipe"><p class="kicker">STEP 3</p><h2>Refinement recipe</h2><div id="face-recipe-fields" class="guided-fields"></div><div class="structured-head"><h3>Pose training plan</h3><div class="header-actions"><select id="pose-preset"><option value="balanced_identity">Balanced identity</option><option value="improve_profiles">Improve profiles</option><option value="improve_three_quarter">Improve three-quarter views</option></select><button class="quiet" id="apply-pose-preset">Apply preset</button><button class="quiet" id="import-pose-prompts">Import pose prompts</button><input type="file" id="pose-prompt-file" accept=".txt,.json" hidden></div></div><p class="lead">Shares are normalized automatically; sparse reference buckets are disabled safely.</p><div id="pose-plan" class="structured-workspace"></div><div class="structured-head"><h3>Prompts</h3><button class="quiet" id="add-face-prompt">Add prompt</button></div><div id="face-prompts" class="structured-workspace"></div></div>
+            <div class="face-pane" data-face-pane="evaluation"><p class="kicker">STEP 4</p><h2>Fixed Turbo evaluation</h2><div id="face-eval-fields" class="guided-fields"></div><div class="review-actions"><button class="quiet" id="load-face-result">Load latest result</button><button class="quiet" id="open-face-results">Open generated images</button><button class="quiet" id="build-weak-pose-plan" disabled>Build plan from weak poses</button><button class="quiet" id="face-baseline">Generate baseline</button><button class="primary" id="face-compare">Evaluate refined LoRA</button></div><div id="face-eval-result" class="empty">No evaluation result loaded.</div></div>
+            <div class="face-finish"><div><p class="kicker">TRAINING HANDOFF</p><strong id="face-stage-status">Face refinement is not in the staged plan yet.</strong><small>Add it as the final stage, then review the complete ordered plan before training.</small></div><div class="header-actions"><button class="quiet" id="review-face-stage">Review training plan</button><button class="primary" id="add-face-stage">Add/update final stage</button></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="run">
+        <header class="page-header compact"><div><p class="kicker">ACTIVE RUN</p><h1 id="active-title">Training control</h1><p id="active-subtitle">No Musubi process is running.</p></div><div class="header-actions"><button class="quiet" id="return-review">Return to review</button><button class="danger" id="stop-job" disabled>Stop run</button></div></header>
+        <div class="run-overview">
+          <div class="progress-focus"><div class="progress-ring" id="progress-ring" role="progressbar" aria-label="Training progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><strong id="metric-percent">0%</strong></div><div><span class="status-label" id="active-status" aria-live="polite">IDLE</span><h2 id="metric-progress">Waiting to start</h2><p id="metric-epoch">Configure a recipe, then launch it from Review.</p></div></div>
+          <div class="metric-strip"><div><small>LOSS</small><strong id="metric-loss">—</strong></div><div><small>VRAM</small><strong id="metric-vram">—</strong></div><div><small>DEPTH</small><strong id="metric-depth">—</strong></div><div><small>DOP</small><strong id="metric-dop">—</strong></div></div>
+        </div>
+        <div class="run-tabs"><button class="active" data-run-tab="chart">Loss</button><button data-run-tab="log">Live log</button></div>
+        <div class="run-panel active" data-run-pane="chart"><canvas id="loss-canvas" width="1400" height="360"></canvas></div>
+        <div class="run-panel" data-run-pane="log"><div class="terminal-head"><span>Musubi output</span><div><button class="text-action" id="copy-log">Copy</button><button class="text-action" id="clear-log">Clear</button></div></div><pre id="live-log" role="log" aria-live="off">Waiting for a job…</pre></div>
+      </section>
+
+      <section class="view" id="samples">
+        <header class="page-header compact"><div><p class="kicker">TRAINING SAMPLES</p><h1>Compare progress</h1><p>Choose a prompt, then move through epochs or steps without losing your place.</p></div><div class="header-actions"><div class="compare-tools"><button class="active" data-sample-mode="compare">Compare</button><button data-sample-mode="gallery">Gallery</button></div><button class="quiet" id="refresh-samples">Refresh</button></div></header>
+        <div class="sample-workspace">
+          <aside class="sample-rail"><div class="rail-heading"><strong>Prompts</strong><span id="sample-count">0</span></div><div id="sample-groups" class="sample-list empty">No samples found.</div></aside>
+          <div class="compare-stage" id="compare-stage">
+            <div class="compare-empty"><span>◫</span><h2>Select a sample series</h2><p>Samples from the same prompt are grouped across training time.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="jobs">
+        <header class="page-header compact"><div><p class="kicker">HISTORY</p><h1>Training jobs</h1><p>Continue successful work or recover a verified interrupted state.</p></div><div class="header-actions"><button class="danger" id="clear-jobs">Clear history</button><button class="quiet" id="import-jobs">Import found jobs</button><button class="quiet" id="refresh-jobs">Refresh</button></div></header>
+        <div class="history-toolbar"><div class="search"><span>⌕</span><label class="sr-only" for="job-search">Search training jobs</label><input id="job-search" placeholder="Search jobs by name or model…"></div><label for="job-status-filter">Status</label><select id="job-status-filter"><option value="">All statuses</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="stopped">Stopped</option><option value="discovered">Discovered</option></select><span id="job-result-count"></span></div>
+        <div id="jobs-list" class="jobs-table empty">No jobs recorded yet.</div>
+      </section>
+
+      <section class="view" id="settings">
+        <header class="page-header compact"><div><p class="kicker">COMPLETE CONTROL</p><h1>All settings</h1><p>Search every Musubi option. This is the advanced escape hatch, not the normal workflow.</p></div><div class="header-actions"><input type="file" id="settings-file-input" accept=".json,application/json" hidden><button class="quiet" id="load-settings-file">Load file</button><button class="quiet" id="export-settings-file">Export file</button><button class="danger" id="reset-settings">Reset</button><button class="primary" id="save-all-settings">Save settings</button></div></header>
+        <div class="settings-toolbar"><div class="search"><span>⌕</span><label class="sr-only" for="setting-search">Search all settings</label><input id="setting-search" placeholder="Search settings by name…"></div><label><input type="checkbox" id="show-all-modes"> Include other model families</label></div>
+        <div id="settings-sections" class="settings-accordion"></div>
+        <details class="raw-settings"><summary>Raw settings JSON</summary><textarea id="settings-json" spellcheck="false"></textarea><div id="json-error" class="issues"></div></details>
+      </section>
+
+      <section class="view" id="tools">
+        <header class="page-header compact"><div><p class="kicker">UTILITIES</p><h1>Tools and setup</h1><p>Conversion and one-time environment setup use the same local Python environment.</p></div></header>
+        <div class="tool-grid">
+          <article class="tool-panel"><p class="kicker">LORA FORMAT</p><h2>Convert LoRA</h2><p>Convert between Diffusers A/B keys and Musubi/ComfyUI down/up keys without changing the source file.</p><div id="convert-fields" class="guided-fields"></div><button class="primary" id="start-conversion">Start conversion</button></article>
+          <article class="tool-panel"><p class="kicker">ONE-TIME SETUP</p><h2>Configure Accelerate</h2><p>Opens an interactive terminal for the Accelerate configuration used by Musubi.</p><ul><li>This machine</li><li>No distributed training</li><li>GPU training</li><li>No DeepSpeed</li><li>BF16 or FP16 precision</li></ul><button class="primary" id="run-accelerate-config">Open Accelerate config</button></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="help-dialog"><button class="dialog-close" data-close="help-dialog" aria-label="Close setting help">×</button><p class="kicker">SETTING HELP</p><h2 id="help-title"></h2><div id="help-copy"></div><code id="help-key"></code></dialog>
+  <dialog id="command-dialog"><button class="dialog-close" data-close="command-dialog" aria-label="Close command preview">×</button><p class="kicker">READ-ONLY PREVIEW</p><h2>Musubi command plan</h2><pre id="command-preview"></pre></dialog>
+  <dialog id="job-dialog"><button class="dialog-close" data-close="job-dialog" aria-label="Close job details">×</button><p class="kicker">JOB DETAILS</p><h2 id="job-dialog-title"></h2><div id="job-dialog-summary" class="review-summary"></div><div class="review-actions"><button class="quiet" id="job-open-output">Open output</button><button class="quiet" id="job-open-logs">Open logs</button><button class="quiet" id="job-dialog-copy">Copy command</button></div><details class="raw-settings"><summary>Recorded job data</summary><pre id="job-dialog-json"></pre></details></dialog>
+  <dialog id="prompt-library-dialog"><div class="dialog-sticky-header"><button class="dialog-close" data-close="prompt-library-dialog" aria-label="Close prompt library">×</button><p class="kicker">GLOBAL PROMPT LIBRARY</p><h2>Reusable prompts</h2><div class="search"><span>⌕</span><label class="sr-only" for="library-search">Search prompt library</label><input id="library-search" placeholder="Search prompts, tags, or collections"></div></div><div id="library-list" class="structured-workspace"></div></dialog>
+  <dialog id="prompt-editor-dialog"><button class="dialog-close" data-close="prompt-editor-dialog" aria-label="Close prompt editor">×</button><p class="kicker">LIBRARY PROMPT</p><h2>Edit reusable prompt</h2><input type="hidden" id="library-edit-id"><div class="guided-fields"><div class="field wide"><label for="library-edit-name">Name</label><input id="library-edit-name"></div><div class="field wide"><label for="library-edit-prompt">Prompt</label><textarea id="library-edit-prompt"></textarea></div><div class="field"><label for="library-edit-collection">Collection</label><input id="library-edit-collection"></div><div class="field"><label for="library-edit-tags">Tags</label><input id="library-edit-tags" placeholder="portrait, studio, close-up"></div></div><div class="review-actions"><button class="danger" id="library-delete">Delete</button><button class="primary" id="library-save">Save changes</button></div></dialog>
+  <dialog id="plan-prompt-dialog" class="plan-editor-dialog" aria-labelledby="plan-prompt-title" aria-describedby="plan-prompt-subtitle">
+    <button class="dialog-close" data-close="plan-prompt-dialog" aria-label="Close sample prompt editor">×</button>
+    <div class="plan-editor-head"><p class="kicker" id="plan-prompt-kicker">SAMPLE PROMPT</p><h2 id="plan-prompt-title">Edit sample prompt</h2><p id="plan-prompt-subtitle">Changes update this plan immediately and are written only when you save the plan.</p></div>
+    <div id="plan-prompt-editor" class="plan-editor-body"></div>
+    <div class="plan-editor-actions"><span id="plan-prompt-editor-state">Included in training samples</span><button class="quiet" id="plan-prompt-preview">Generate preview</button><button class="primary" data-close="plan-prompt-dialog">Done</button></div>
+  </dialog>
+  <dialog id="stage-editor-dialog" class="plan-editor-dialog" aria-labelledby="stage-editor-title" aria-describedby="stage-editor-subtitle">
+    <button class="dialog-close" data-close="stage-editor-dialog" aria-label="Close stage editor">×</button>
+    <div class="plan-editor-head"><p class="kicker" id="stage-editor-kicker">TRAINING STAGE</p><h2 id="stage-editor-title">Edit stage</h2><p id="stage-editor-subtitle">Stage details update immediately. Save the plan when the sequence looks right.</p></div>
+    <div id="stage-editor-body" class="plan-editor-body"></div>
+    <div class="plan-editor-actions"><span id="stage-editor-state">Included in staged training</span><button class="primary" data-close="stage-editor-dialog">Done</button></div>
+  </dialog>
+  <dialog id="sample-preview-dialog"><button class="dialog-close" data-close="sample-preview-dialog" aria-label="Close sample preview">×</button><img id="sample-preview-image" alt="Sample preview"><p id="sample-preview-name"></p></dialog>
+  <dialog id="dataset-media-dialog" class="dataset-media-dialog">
+    <button class="dialog-close" data-close="dataset-media-dialog" aria-label="Close media inspector">×</button>
+    <div class="dataset-inspector-layout">
+      <div class="dataset-inspector-preview"><div id="dataset-inspector-media"></div><div class="dataset-inspector-nav"><button class="quiet" id="dataset-media-prev">← Previous</button><span id="dataset-media-position"></span><button class="quiet" id="dataset-media-next">Next →</button></div></div>
+      <aside class="dataset-inspector-copy">
+        <p class="kicker" id="dataset-inspector-kicker">TRAINING ITEM</p>
+        <h2 id="dataset-inspector-name"></h2>
+        <p id="dataset-inspector-meta" class="dataset-inspector-meta"></p>
+        <div id="dataset-inspector-status"></div>
+        <div class="field dataset-caption-field"><label for="dataset-caption-editor">Caption</label><textarea id="dataset-caption-editor"></textarea><small id="dataset-caption-help"></small></div>
+        <div id="dataset-inspector-controls"></div>
+        <div class="dataset-caption-actions"><span id="dataset-caption-state">No changes</span><button class="primary" id="save-dataset-caption">Save caption</button></div>
+      </aside>
+    </div>
+  </dialog>
+  <div id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

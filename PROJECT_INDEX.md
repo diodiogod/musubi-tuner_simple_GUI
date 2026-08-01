@@ -4,15 +4,16 @@
 
 ## Architecture Overview
 
-**Two-layer architecture** - the repo is split between a local desktop GUI layer and the upstream musubi-tuner training/runtime layer:
+**Multi-interface architecture** - the repo is split between local GUI/orchestration layers and the upstream musubi-tuner training/runtime layer:
 
 1. **Desktop GUI** (`musubi_tuner_gui.py`) - Tkinter application, mode-aware forms, monitor, samples, job history, conversion tools
-2. **GUI Backend Adapters** (`backends/`) - translate GUI settings into cache/train command lines per supported mode
-3. **Root Wrapper Scripts** (`*_train_network.py`, `*_cache_*.py`, `*_generate_*.py`) - thin entrypoints that call the packaged `src/` modules
-4. **Packaged Training Core** (`src/musubi_tuner/training/`) - shared parser, trainer, logging, checkpointing, sampling hooks
-5. **Model-Family Implementations** (`src/musubi_tuner/<family>/`, `src/musubi_tuner/*_train*.py`) - architecture-specific training, caching, and inference flows
-6. **Shared Utilities** (`src/musubi_tuner/utils/`, `dataset/`, `modules/`, `networks/`) - dataset loading, LoRA handling, save logic, model utilities
-7. **Docs + Assets** (`docs/`) - upstream musubi-tuner docs plus GUI screenshots and user-facing references
+2. **Experimental Web GUI** (`modern_gui/`, `LAUNCH_MODERN_GUI.bat`) - local AI Toolkit-inspired browser workspace using the same settings and Musubi backend adapters
+3. **GUI Backend Adapters** (`backends/`) - translate GUI settings into cache/train command lines per supported mode
+4. **Root Wrapper Scripts** (`*_train_network.py`, `*_cache_*.py`, `*_generate_*.py`) - thin entrypoints that call the packaged `src/` modules
+5. **Packaged Training Core** (`src/musubi_tuner/training/`) - shared parser, trainer, logging, checkpointing, sampling hooks
+6. **Model-Family Implementations** (`src/musubi_tuner/<family>/`, `src/musubi_tuner/*_train*.py`) - architecture-specific training, caching, and inference flows
+7. **Shared Utilities** (`src/musubi_tuner/utils/`, `dataset/`, `modules/`, `networks/`) - dataset loading, LoRA handling, save logic, model utilities
+8. **Docs + Assets** (`docs/`) - upstream musubi-tuner docs plus GUI screenshots and user-facing references
 
 **Key architectural rules:**
 
@@ -100,6 +101,23 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - Do not infer these two workflows from `--resume` alone. Preserve the explicit opt-in flag, state-folder validation, and tests when importing upstream trainer/parser changes.
 - `dataset_config_builder.py` - standalone dataset-config editor used from the Models page
 - `prompt_library.py` - user-level prompt gallery stored outside the repo; prompts remain copied into run snapshots for reproducibility
+
+### Experimental Web App (`modern_gui/`)
+
+- `server.py` - localhost standard-library HTTP service and static frontend host
+- `settings.py` - complete dynamic settings schema with mode-aware visual metadata and unknown-key preservation
+- `dataset_documents.py` - headless TOML editing, validation, atomic saves, and media/caption/resolution audits
+- `commands.py` - read-only command previews and launch plans through existing backend adapters
+- `jobs.py` - bounded-log process supervisor, typed staged execution, history, and metrics
+- `stages.py` / `face_stages.py` - standard-state and face-LoRA handoffs plus stage manifests
+- `sample_prompts.py` / `training_notes.py` - validated Musubi prompt snapshots and reproducible generated run summaries
+- `recovery.py` - additive continuation versus verified exact failed-run recovery
+- `monitor.py` / `samples.py` - training metrics, GPU snapshots, and protected sample discovery/serving
+- `static/` - dependency-free responsive browser application
+- `README.md` - launch, capability, compatibility, and safety reference
+- `PARITY.md` - audited classic-to-modern feature contract and preserved invariants
+
+The web app is parallel to—not a replacement for—the established Tkinter GUI and preserves the existing Musubi backend contract.
 
 ### GUI Backend Adapters (`backends/`)
 
