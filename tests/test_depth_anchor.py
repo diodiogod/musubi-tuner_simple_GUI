@@ -3,7 +3,12 @@ from collections import OrderedDict
 
 import torch
 
-from musubi_tuner.perceptual.depth_anchor import DepthAnchor, reconstruct_clean_latents, resize_latents_for_depth_decode
+from musubi_tuner.perceptual.depth_anchor import (
+    DepthAnchor,
+    reconstruct_clean_latents,
+    reconstruct_clean_latents_h3,
+    resize_latents_for_depth_decode,
+)
 
 
 class DepthAnchorTests(unittest.TestCase):
@@ -27,6 +32,15 @@ class DepthAnchorTests(unittest.TestCase):
         self.assertIsNotNone(predicted.grad)
         self.assertGreater(predicted.grad.abs().sum().item(), 0)
         self.assertIsNone(target.grad)
+
+    def test_h3_clean_latent_reconstruction_uses_clean_minus_noise_velocity(self):
+        clean = torch.randn(2, 24, 1, 3, 3)
+        noise = torch.randn_like(clean)
+        timesteps = torch.tensor([251.0, 751.0])
+        sigma = ((timesteps - 1) / 1000).view(2, 1, 1, 1, 1)
+        noisy = (1 - sigma) * clean + sigma * noise
+        recovered = reconstruct_clean_latents_h3(noisy, clean - noise, timesteps)
+        self.assertTrue(torch.allclose(recovered, clean, atol=1e-6))
 
     def test_depth_decode_resize_limits_long_side_and_preserves_gradient(self):
         latents = torch.randn(1, 4, 1, 360, 182, requires_grad=True)

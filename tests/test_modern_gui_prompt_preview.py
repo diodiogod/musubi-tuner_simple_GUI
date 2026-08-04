@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from modern_gui.prompt_preview import build_krea_preview, serialize_prompt
+import pytest
+
+from modern_gui.prompt_preview import build_krea_preview, build_minimax_h3_preview, serialize_prompt
 from modern_gui.sample_prompts import serialize_sample_prompt
 
 
@@ -77,3 +79,51 @@ def test_build_krea_preview_uses_turbo_and_batch_file(tmp_path: Path):
     assert second_prompt_file != prompt_file
     assert prompt_file.read_text(encoding="utf-8") == "one\ntwo"
     assert second_prompt_file.read_text(encoding="utf-8") == "replacement\nbatch"
+
+
+def test_build_minimax_h3_preview_uses_compact_models_and_latest_lora(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "portrait"
+    run.mkdir()
+    lora = run / "portrait-000002.safetensors"
+    lora.write_bytes(b"lora")
+    command, save_path = build_minimax_h3_preview(
+        {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_dit_model": paths["dit.safetensors"],
+            "vae_model": paths["vae.safetensors"],
+            "minimax_h3_text_encoder": paths["te.safetensors"],
+            "output_dir": str(tmp_path),
+            "output_name": "portrait",
+            "blocks_to_swap": "30",
+            "attention_mechanism": "sdpa",
+        },
+        [{"prompt": "portrait", "width": 768, "height": 768, "steps": 28, "guidance": 1}],
+    )
+    assert command[1].endswith("minimax_h3_image_generate.py")
+    assert command[command.index("--network_weights") + 1] == str(lora)
+    assert command[command.index("--shift") + 1] == "12.0"
+    assert save_path == run / "sample_test"
+
+
+def test_build_minimax_h3_preview_rejects_cfg_and_batch(tmp_path: Path):
+    paths = []
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths.append(str(path))
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "minimax_h3_dit_model": paths[0],
+        "vae_model": paths[1],
+        "minimax_h3_text_encoder": paths[2],
+        "output_dir": str(tmp_path),
+    }
+    with pytest.raises(ValueError, match="one prompt at a time"):
+        build_minimax_h3_preview(settings, [{"prompt": "one"}, {"prompt": "two"}])
+    with pytest.raises(ValueError, match="negative prompts"):
+        build_minimax_h3_preview(settings, [{"prompt": "one", "neg": "blur"}])

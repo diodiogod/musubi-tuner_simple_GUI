@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, minimax_h3_face as minimax_h3_face_backend, krea2_face_eval as krea2_face_eval_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -1129,7 +1129,7 @@ class MusubiTunerGUI:
         self.staged_config_btn.pack(side="right", padx=(8, 0))
         ToolTip(
             self.staged_config_btn,
-            "Opens the stage-plan editor. Standard stages use a dataset TOML; Krea Face Refinement stages use the saved settings from the Face Refinement workspace.",
+            "Opens the stage-plan editor. Standard stages use a dataset TOML; Krea 2 and MiniMax H3 Face Refinement stages use the saved settings from the Face Refinement workspace.",
         )
 
         cache_frame = ttk.LabelFrame(frame, text="Cache preparation")
@@ -1531,7 +1531,7 @@ class MusubiTunerGUI:
         self._add_page_intro(
             frame,
             "Face Refinement",
-            "Evaluate an existing Krea 2 LoRA, analyze identity references and viewing angles, build a focused refinement plan, then run it as a staged-training step.",
+            "Analyze identity references and viewing angles, then refine an existing Krea 2 or MiniMax H3 LoRA as a focused staged-training step.",
         )
         self.face_workspace_mode_var = tk.StringVar()
         mode_label = ttk.Label(frame, textvariable=self.face_workspace_mode_var, style="PageHelp.TLabel", wraplength=920)
@@ -1560,6 +1560,8 @@ class MusubiTunerGUI:
             button = ttk.Button(content, text=button_text, command=command)
             button.pack(side="right", pady=(4, 0)); ToolTip(button, tooltip)
             self._face_workspace_buttons.append(button)
+            if key == "evaluation":
+                self._face_evaluation_button = button
 
         results_card = ttk.LabelFrame(frame, text="Latest Turbo evaluation report")
         results_card.pack(fill="x", padx=10, pady=6)
@@ -1607,12 +1609,18 @@ class MusubiTunerGUI:
         for key, variable in self.face_workspace_vars.items():
             variable.set(state[key])
         is_krea = self.training_mode_var.get() == "Krea 2"
+        is_h3 = self.training_mode_var.get() == "MiniMax H3 (Experimental)"
         self.face_workspace_mode_var.set(
             "Ready for Krea 2. Configure and evaluate here; start the actual staged run from Monitor."
-            if is_krea else "Face Refinement currently supports Krea 2 only. Switch Training mode to Krea 2 to configure or run it."
+            if is_krea else (
+                "Ready for experimental MiniMax H3 refinement. Use 512px, DRaFT-K 1, and at least 30 swapped blocks."
+                if is_h3 else "Face Refinement supports Krea 2 and experimental MiniMax H3. Switch training mode to configure it."
+            )
         )
         for button in getattr(self, "_face_workspace_buttons", []):
-            button.configure(state="normal" if is_krea else "disabled")
+            button.configure(state="normal" if is_krea or is_h3 else "disabled")
+        if hasattr(self, "_face_evaluation_button") and is_h3:
+            self._face_evaluation_button.configure(state="disabled")
         latest = str(
             (self._face_refinement_config or {}).get("evaluation_last_result")
             or (self._face_refinement_config or {}).get("evaluation_baseline_result")
@@ -1731,8 +1739,8 @@ class MusubiTunerGUI:
         self._open_pose_training_plan_dialog(config, config.get("trigger_word", ""), save, self.root)
 
     def _add_face_refinement_final_stage(self):
-        if self.training_mode_var.get() != "Krea 2":
-            messagebox.showerror("Face Refinement", "Switch Training mode to Krea 2 first.")
+        if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
+            messagebox.showerror("Face Refinement", "Switch Training mode to Krea 2 or MiniMax H3 first.")
             return
         config = self._face_refinement_config or {}
         if not config.get("preflight_report"):
@@ -1866,7 +1874,7 @@ class MusubiTunerGUI:
             params = []
             if p.get("width") or p.get("height"):
                 params.append(f"{p.get('width','?')}×{p.get('height','?')}")
-            if self.training_mode_var.get() != "Krea 2" and p.get("frames"): params.append(f"{p['frames']}f")
+            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)") and p.get("frames"): params.append(f"{p['frames']}f")
             if p.get("steps"): params.append(f"s{p['steps']}")
             if p.get("guidance"): params.append(f"g{p['guidance']}")
             if self.training_mode_var.get() == "Krea 2":
@@ -1881,9 +1889,9 @@ class MusubiTunerGUI:
             preview_btn = ttk.Button(row, text="Preview", width=7,
                        command=lambda i=idx: self._test_sample_prompt(i))
             preview_btn.pack(side="right", padx=(3, 0))
-            if self.training_mode_var.get() != "Krea 2":
+            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
                 preview_btn.configure(state="disabled")
-                ToolTip(preview_btn, "Standalone preview generation is currently available for Krea 2.")
+                ToolTip(preview_btn, "Standalone preview generation is available for Krea 2 and experimental MiniMax H3.")
             ttk.Button(row, text="Duplicate", width=9,
                        command=lambda i=idx: self._duplicate_sample_prompt(i)).pack(side="right", padx=(3, 0))
             ttk.Button(row, text="Edit", width=5,
@@ -1956,7 +1964,7 @@ class MusubiTunerGUI:
     def _test_sample_prompt(self, idx):
         prompt_data = self._sample_prompts_data[idx]
         prompt_summary = prompt_data.get("prompt", "")[:120]
-        self._test_sample_prompts([prompt_data], "Krea 2 Test Sample", prompt_summary)
+        self._test_sample_prompts([prompt_data], f"{self.training_mode_var.get()} Test Sample", prompt_summary)
 
     def _test_enabled_sample_prompts(self):
         enabled_prompts = [prompt for prompt in self._sample_prompts_data if prompt.get("enabled", True)]
@@ -1965,6 +1973,12 @@ class MusubiTunerGUI:
             return
 
         note = f"{len(enabled_prompts)} enabled prompt" + ("s" if len(enabled_prompts) != 1 else "")
+        if self.training_mode_var.get() == "MiniMax H3 (Experimental)" and len(enabled_prompts) > 1:
+            messagebox.showinfo(
+                "MiniMax H3 Batch Preview",
+                "The experimental standalone H3 tester currently generates one prompt at a time. Use each prompt card's Preview button; in-training scheduled previews can still contain multiple prompts.",
+            )
+            return
         self._test_sample_prompts(enabled_prompts, "Krea 2 Batch Sample Preview", note)
 
     def _test_sample_prompts(self, prompt_items, job_title, job_note):
@@ -1974,18 +1988,25 @@ class MusubiTunerGUI:
 
         settings = self.get_settings()
         mode = settings.get("training_mode", "Wan 2.2")
-        if mode != "Krea 2":
-            messagebox.showinfo("Not Available", "Sample test generation is currently implemented for Krea 2 only.")
+        if mode not in ("Krea 2", "MiniMax H3 (Experimental)"):
+            messagebox.showinfo("Not Available", "Sample test generation is available for Krea 2 and experimental MiniMax H3.")
             return
 
         try:
-            command = self._build_krea2_test_sample_command(settings, prompt_items)
+            command = (
+                self._build_minimax_h3_test_sample_command(settings, prompt_items)
+                if mode == "MiniMax H3 (Experimental)"
+                else self._build_krea2_test_sample_command(settings, prompt_items)
+            )
         except ValueError as e:
-            messagebox.showerror("Krea 2 Test Sample", str(e))
+            messagebox.showerror(f"{mode} Test Sample", str(e))
             return
 
         try:
-            save_path = Path(command[command.index("--save_path") + 1])
+            if "--save_path" in command:
+                save_path = Path(command[command.index("--save_path") + 1])
+            else:
+                save_path = Path(command[command.index("--output") + 1]).parent
         except (ValueError, IndexError):
             save_path = None
         existing_outputs = {
@@ -1996,7 +2017,7 @@ class MusubiTunerGUI:
             "prompts": copy.deepcopy(prompt_items),
             "save_path": str(save_path),
             "existing_outputs": existing_outputs,
-            "mode": "Krea 2 Turbo" if "--turbo" in command else "Krea 2",
+            "mode": "Krea 2 Turbo" if "--turbo" in command else mode,
             "output_name": settings.get("output_name", ""),
             "network_weights": self._resolve_krea2_preview_lora(settings),
         } if save_path else None
@@ -2006,6 +2027,55 @@ class MusubiTunerGUI:
         self.progress_label_var.set("Running test generation...")
         self._begin_job("sample_test", job_title, settings=settings, note=job_note)
         self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
+
+    def _build_minimax_h3_test_sample_command(self, settings, prompt_items):
+        if len(prompt_items) != 1:
+            raise ValueError("Experimental MiniMax-H3 standalone previews currently accept one prompt at a time.")
+        required = {
+            "ConvRot INT8 DiT": settings.get("minimax_h3_dit_model"),
+            "MiniMax H3 VAE": settings.get("vae_model"),
+            "compact text encoder": settings.get("minimax_h3_text_encoder"),
+        }
+        missing = [name for name, path in required.items() if not path or not os.path.exists(path)]
+        if missing:
+            raise ValueError("Missing required MiniMax-H3 paths:\n- " + "\n- ".join(missing))
+        prompt = prompt_items[0]
+        if str(prompt.get("neg") or "").strip():
+            raise ValueError("MiniMax-H3 is guidance-distilled and does not use a negative prompt.")
+        guidance = str(prompt.get("guidance") or "1").strip()
+        if guidance and float(guidance) != 1.0:
+            raise ValueError("MiniMax-H3 guidance must be 1.0; CFG is not supported.")
+        output_name = str(settings.get("output_name") or "minimax_h3_test").strip()
+        save_dir = Path(settings.get("output_dir", "")).expanduser() / output_name / "sample_test"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        seed = int(str(prompt.get("seed") or settings.get("seed") or 42))
+        output = save_dir / f"{output_name}_preview_{seed}_{int(time.time())}.png"
+        attention = {"sdpa": "torch", "flash_attn": "flash", "sage_attn": "sageattn"}.get(
+            settings.get("attention_mechanism"), "torch"
+        )
+        command = [
+            sys.executable or "python",
+            "src/musubi_tuner/minimax_h3_image_generate.py",
+            "--dit", settings["minimax_h3_dit_model"],
+            "--vae", settings["vae_model"],
+            "--text_encoder", settings["minimax_h3_text_encoder"],
+            "--tokenizer", settings.get("minimax_h3_tokenizer") or "Qwen/Qwen3-VL-32B-Instruct",
+            "--prompt", str(prompt.get("prompt") or ""),
+            "--output", str(output),
+            "--width", str(prompt.get("width") or 768),
+            "--height", str(prompt.get("height") or 768),
+            "--steps", str(prompt.get("steps") or 28),
+            "--seed", str(seed),
+            "--blocks_to_swap", str(settings.get("blocks_to_swap") or 30),
+            "--block_swap_ring_size", str(settings.get("block_swap_ring_size") or 2),
+            "--attn_mode", attention,
+        ]
+        if settings.get("use_pinned_memory_for_block_swap"):
+            command.append("--use_pinned_memory_for_block_swap")
+        lora = self._resolve_krea2_preview_lora(settings)
+        if lora:
+            command.extend(["--network_weights", lora, "--lora_multiplier", "1.0"])
+        return command
 
     def _build_krea2_test_sample_command(self, settings, prompt_items):
         required = {
@@ -2214,6 +2284,8 @@ class MusubiTunerGUI:
         existing = self._sample_prompts_data[idx] if idx is not None else {}
         mode = self.training_mode_var.get()
         is_krea2 = mode == "Krea 2"
+        is_h3 = mode == "MiniMax H3 (Experimental)"
+        is_image_mode = is_krea2 or is_h3
         is_krea2_turbo = is_krea2 and bool(self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
         field_tooltips = {
             "guidance": "Classifier-free guidance scale. For Krea 2 RAW, leaving it empty uses the default 5.5. For Turbo previews, 1.0 is usually the safer value.",
@@ -2224,7 +2296,7 @@ class MusubiTunerGUI:
         }
         dlg = tk.Toplevel(self.root)
         dlg.title("Edit Sample Prompt" if idx is not None else "Add Sample Prompt")
-        dlg.geometry("720x650" if is_krea2 else "680x650")
+        dlg.geometry("720x650" if is_image_mode else "680x650")
         dlg.minsize(620, 600)
         dlg.configure(bg=self.colors["page"])
         dlg.resizable(True, False)
@@ -2253,15 +2325,18 @@ class MusubiTunerGUI:
                         relief=tk.FLAT, padx=8, pady=6, font=("Segoe UI", 10))
         e_neg.insert("1.0", existing.get("neg", ""))
         e_neg.pack(fill="x", padx=10, pady=(0, 2))
+        if is_h3:
+            e_neg.configure(state="disabled")
+            ToolTip(e_neg, "MiniMax H3 is guidance-distilled and does not use negative prompts or CFG.")
 
         row1 = ttk.Frame(dlg); row1.pack(fill="x", padx=10, pady=(8, 0))
         row1_fields = [
-            ("Width", "width", "1024" if is_krea2 else "512", 6),
-            ("Height", "height", "1024" if is_krea2 else "512", 6),
-            ("Steps", "steps", ("8" if is_krea2_turbo else "28") if is_krea2 else "20", 5),
-            ("Guidance", "guidance", ("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0", 6),
+            ("Width", "width", "768" if is_h3 else ("1024" if is_krea2 else "512"), 6),
+            ("Height", "height", "768" if is_h3 else ("1024" if is_krea2 else "512"), 6),
+            ("Steps", "steps", "28" if is_h3 else (("8" if is_krea2_turbo else "28") if is_krea2 else "20"), 5),
+            ("Guidance", "guidance", "1.0" if is_h3 else (("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0"), 6),
         ]
-        if not is_krea2:
+        if not is_image_mode:
             row1_fields.insert(2, ("Frames", "frames", "25", 5))
         for text, key, default, w in row1_fields:
             col = ttk.Frame(row1); col.pack(side="left", padx=(0, 12))
@@ -2270,6 +2345,9 @@ class MusubiTunerGUI:
             e = ttk.Entry(col, width=w)
             e.insert(0, str(existing.get(key, default)))
             e.pack()
+            if is_h3 and key == "guidance":
+                e.configure(state="disabled")
+                ToolTip(e, "MiniMax H3 guidance is fixed at 1.0 because the model is guidance-distilled.")
             if is_krea2 and key in field_tooltips:
                 ToolTip(label_widget, field_tooltips[key])
                 ToolTip(e, field_tooltips[key])
@@ -2282,6 +2360,11 @@ class MusubiTunerGUI:
                 ("Y1", "y1", existing.get("y1", ""), 6),
                 ("Y2", "y2", existing.get("y2", ""), 6),
                 ("Seed", "seed", existing.get("seed", ""), 8),
+            ]
+        elif is_h3:
+            row2_fields = [
+                ("H3 Shift", "flow_shift", existing.get("flow_shift", "12.0"), 7),
+                ("Seed", "seed", existing.get("seed", "42"), 10),
             ]
         else:
             row2_fields = [
@@ -2311,6 +2394,14 @@ class MusubiTunerGUI:
                 font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
+        elif is_h3:
+            ttk.Label(
+                dlg,
+                text="MiniMax H3 image notes: guidance is fixed at 1.0, negative prompts and CFG are unused, and shift 12 is recommended.",
+                foreground=self.colors["muted"],
+                font=("Segoe UI", 9, "italic"),
+                wraplength=580,
+            ).pack(anchor="w", padx=10, pady=(12, 0))
         else:
             lbl(dlg, "Image path  (I2V only — optional)")
             e_img = ttk.Frame(dlg); e_img.pack(fill="x", padx=10, pady=(0, 2))
@@ -2327,19 +2418,21 @@ class MusubiTunerGUI:
             if not prompt_text:
                 messagebox.showerror("Validation", "Prompt text cannot be empty.", parent=dlg); return
             data = {"prompt": prompt_text}
-            data["neg"]        = " ".join(line.strip() for line in e_neg.get("1.0", "end-1c").splitlines() if line.strip())
+            data["neg"]        = "" if is_h3 else " ".join(line.strip() for line in e_neg.get("1.0", "end-1c").splitlines() if line.strip())
             data["width"]      = row1.e_width.get().strip()
             data["height"]     = row1.e_height.get().strip()
             data["steps"]      = row1.e_steps.get().strip()
-            data["guidance"]   = row1.e_guidance.get().strip()
-            if not is_krea2:
+            data["guidance"]   = "1.0" if is_h3 else row1.e_guidance.get().strip()
+            if not is_image_mode:
                 data["frames"]     = row1.e_frames.get().strip()
                 data["flow_shift"] = row2.e_flow_shift.get().strip()
                 data["cfg_scale"]  = row2.e_cfg_scale.get().strip()
-            else:
+            elif is_krea2:
                 data["mu"]         = row2.e_mu.get().strip()
                 data["y1"]         = row2.e_y1.get().strip()
                 data["y2"]         = row2.e_y2.get().strip()
+            else:
+                data["flow_shift"] = row2.e_flow_shift.get().strip()
             data["seed"]       = row2.e_seed.get().strip()
             data["image_path"] = e_img_entry.get().strip() if e_img_entry is not None else ""
             data["enabled"]    = existing.get("enabled", True)
@@ -3074,10 +3167,13 @@ class MusubiTunerGUI:
         }
 
     def _open_face_refinement_dialog(self, on_save=None):
+        face_mode = self.training_mode_var.get()
         config = self._default_face_refinement_config()
         config.update(self._face_refinement_config or {})
+        if face_mode == "MiniMax H3 (Experimental)" and not self._face_refinement_config:
+            config.update({"blocks_to_swap": 35, "cfg_scale": 1.0})
         dialog = tk.Toplevel(self.root)
-        dialog.title("Krea 2 · Face Refinement (Experimental)")
+        dialog.title(f"{face_mode} · Face Refinement (Experimental)")
         dialog.transient(self.root); dialog.grab_set(); dialog.minsize(760, 720)
         canvas = tk.Canvas(dialog, highlightthickness=0)
         scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
@@ -3090,7 +3186,7 @@ class MusubiTunerGUI:
         ttk.Label(host, text="Face identity refinement", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(
             host,
-            text="A final-stage polish: Krea generates temporary images from prompts and the LoRA is rewarded when their faces resemble your references. It does not use a dataset TOML.",
+            text=f"A final-stage polish: {face_mode} generates temporary images and the LoRA is rewarded when their faces resemble your references. It does not use a dataset TOML.",
             style="PageHelp.TLabel", wraplength=700,
         ).pack(anchor="w", pady=(3, 12))
 
@@ -3099,7 +3195,7 @@ class MusubiTunerGUI:
         input_lora_var = tk.StringVar(value=config.get("input_lora", ""))
         trigger_var = tk.StringVar(value=config.get("trigger_word", ""))
         ttk.Radiobutton(source, text="Use the LoRA produced by the previous stage", variable=input_mode_var, value="previous_stage").pack(anchor="w", padx=8, pady=(7, 2))
-        ttk.Radiobutton(source, text="Refine an existing Krea 2 LoRA", variable=input_mode_var, value="existing_lora").pack(anchor="w", padx=8, pady=2)
+        ttk.Radiobutton(source, text=f"Refine an existing {face_mode} LoRA", variable=input_mode_var, value="existing_lora").pack(anchor="w", padx=8, pady=2)
         lora_row = ttk.Frame(source); lora_row.pack(fill="x", padx=8, pady=5)
         ttk.Label(lora_row, text="Existing LoRA", width=22).pack(side="left")
         input_lora_entry = ttk.Entry(lora_row, textvariable=input_lora_var); input_lora_entry.pack(side="left", fill="x", expand=True)
@@ -3409,11 +3505,15 @@ class MusubiTunerGUI:
                 if not updated["prompts"] or not os.path.isdir(updated["reference_dir"]): raise ValueError("Choose a reference folder and provide at least one prompt.")
                 if not updated["license_acknowledged"]: raise ValueError("Acknowledge the third-party face-model notice.")
                 if updated["input_mode"] == "existing_lora":
-                    from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
-                    updated["input_lora_report"] = validate_krea2_lora(updated["input_lora"])
+                    from musubi_tuner.face_refinement.lora_validation import validate_face_lora
+                    updated["input_lora_report"] = validate_face_lora(updated["input_lora"], face_mode)
                 if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
                     raise ValueError("Run Analyze Faces & Poses successfully for this reference folder before saving.")
-                if updated["steps"] < 1 or updated["resolution"] % 16 or not 1 <= updated["draft_k"] <= updated["denoise_steps"] or not 0 <= updated["blocks_to_swap"] <= 26: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value.")
+                if face_mode == "MiniMax H3 (Experimental)":
+                    valid_runtime = updated["resolution"] % 32 == 0 and 30 <= updated["blocks_to_swap"] <= 48
+                else:
+                    valid_runtime = updated["resolution"] % 16 == 0 and 0 <= updated["blocks_to_swap"] <= 26
+                if updated["steps"] < 1 or not valid_runtime or not 1 <= updated["draft_k"] <= updated["denoise_steps"]: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value. MiniMax H3 requires a multiple of 32 and 30–48 swapped blocks on a 24 GB GPU.")
                 if updated["save_every"] < 0: raise ValueError("Save LoRA every N steps must be 0 or greater.")
                 if not 0 <= updated["pose_reward_weight"] <= 0.35 or updated["pose_min_references"] < 2: raise ValueError("Pose influence must be 0–0.35 and each pose bucket must require at least 2 references.")
                 if updated["gpu_id"] != "auto" and (not updated["gpu_id"].isdigit() or int(updated["gpu_id"]) < 0): raise ValueError("GPU index must be 'auto' or a non-negative number.")
@@ -3698,7 +3798,7 @@ class MusubiTunerGUI:
         header_save_button.pack(side="right")
         ttk.Label(
             host,
-            text="Standard stages use a dataset TOML and may inherit or override DOP. Krea Face Refinement is a separate prompt-and-reference stage and uses its saved GUI settings.",
+            text="Standard stages use a dataset TOML and may inherit or override DOP. Krea 2 and MiniMax H3 Face Refinement are separate prompt-and-reference stages using the saved Face workspace settings.",
             style="PageHelp.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(3, 14))
 
@@ -3844,7 +3944,7 @@ class MusubiTunerGUI:
                 memory_box.pack(side="left", fill="x", expand=True)
                 ToolTip(
                     memory_box,
-                    "Krea 2 only. Inherit follows the main Keep Depth Helpers on GPU checkbox. Keeping them on GPU is faster but needs more VRAM; offloading is safer for 2K stages. This does not change the loss.",
+                    "Krea 2 and MiniMax H3 only. Inherit follows the main Keep Depth Helpers on GPU checkbox. Keeping helpers on GPU is faster but needs more VRAM; CPU offload is much safer for MiniMax H3 and high-resolution stages. This does not change the loss.",
                 )
 
                 def refresh_fields(*_):
@@ -3883,7 +3983,7 @@ class MusubiTunerGUI:
                 steps_widget.configure(state="normal")
                 path_widget.configure(state="disabled" if face else "normal")
                 for child in browse_parent.winfo_children()[1:]: child.configure(state="disabled" if face else "normal")
-                dop_supported_here = self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein")
+                dop_supported_here = self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)")
                 button.configure(
                     text="Face Settings…" if face else "Stage Settings…",
                     state="normal" if face or dop_supported_here else "disabled",
@@ -4625,7 +4725,7 @@ class MusubiTunerGUI:
         can_refine_face = bool(
             can_repeat
             and isinstance(job.get("settings_snapshot"), dict)
-            and job.get("settings_snapshot", {}).get("training_mode") == "Krea 2"
+            and job.get("settings_snapshot", {}).get("training_mode") in ("Krea 2", "MiniMax H3 (Experimental)")
             and self._resolve_job_face_lora(job) is not None
         )
         self._jobs_context_menu.entryconfigure(
@@ -4863,7 +4963,7 @@ class MusubiTunerGUI:
         return None, rejected
 
     def _resolve_job_face_lora(self, job):
-        """Find a complete Krea LoRA produced by a recorded job."""
+        """Find a complete face-refinable LoRA produced by a recorded job."""
         candidates = []
         settings = job.get("settings_snapshot")
         if isinstance(settings, dict):
@@ -4876,7 +4976,8 @@ class MusubiTunerGUI:
         for state_dir in self._continuation_state_candidates(job):
             candidates.append(state_dir / "model.safetensors")
 
-        from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+        from musubi_tuner.face_refinement.lora_validation import validate_face_lora
+        mode = settings.get("training_mode") if isinstance(settings, dict) else "Krea 2"
         seen = set()
         for candidate in candidates:
             try:
@@ -4884,7 +4985,7 @@ class MusubiTunerGUI:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                validate_krea2_lora(resolved)
+                validate_face_lora(resolved, mode)
                 return resolved
             except (OSError, ValueError):
                 continue
@@ -5285,21 +5386,23 @@ class MusubiTunerGUI:
         if not job:
             return
         snapshot = job.get("settings_snapshot")
-        if not isinstance(snapshot, dict) or snapshot.get("training_mode") != "Krea 2":
-            messagebox.showerror("Face Refinement unavailable", "Select a recorded Krea 2 training job with a complete settings snapshot.")
+        if not isinstance(snapshot, dict) or snapshot.get("training_mode") not in ("Krea 2", "MiniMax H3 (Experimental)"):
+            messagebox.showerror("Face Refinement unavailable", "Select a recorded Krea 2 or MiniMax H3 training job with a complete settings snapshot.")
             return
         input_lora = self._resolve_job_face_lora(job)
         if input_lora is None:
-            messagebox.showerror("Face Refinement unavailable", "No complete Krea 2 LoRA could be found for this job.")
+            messagebox.showerror("Face Refinement unavailable", "No complete face-refinable LoRA could be found for this job.")
             return
 
         settings = copy.deepcopy(snapshot)
-        source_name = str(settings.get("output_name") or job.get("output_name") or "krea-lora")
+        source_name = str(settings.get("output_name") or job.get("output_name") or "face-lora")
         settings["output_name"] = self._next_repeat_output_name(settings, f"{source_name}-face")
         settings["resume_path"] = ""
         settings["network_weights"] = ""
         face_config = self._default_face_refinement_config()
         face_config.update(copy.deepcopy(snapshot.get("face_refinement_config") or {}))
+        if snapshot.get("training_mode") == "MiniMax H3 (Experimental)" and not snapshot.get("face_refinement_config"):
+            face_config.update({"blocks_to_swap": 35, "cfg_scale": 1.0})
         face_config.update({"input_mode": "existing_lora", "input_lora": str(input_lora)})
         settings["use_staged_training"] = True
         settings["staged_training_config"] = [{
@@ -6487,7 +6590,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
         is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
-        supports_dop = is_krea2 or mode == "Flux.2 Klein"
+        supports_dop = is_krea2 or is_minimax_h3 or mode == "Flux.2 Klein"
         dop_active = bool(supports_dop and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
         invalid_fields = []
@@ -6504,6 +6607,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             and self.entries["use_staged_training"].var.get()
             and next((item for item in self._staged_training_config if item.get("enabled")), {}).get("type") == "face_refinement"
             and (self._face_refinement_config or {}).get("input_mode") == "existing_lora"
+        )
+        has_face_stage = bool(
+            self.entries.get("use_staged_training")
+            and self.entries["use_staged_training"].var.get()
+            and any(item.get("enabled", True) and item.get("type") == "face_refinement" for item in self._staged_training_config)
         )
         self.entries["dataset_config"].is_required = not refinement_only
         # A first-stage existing-LoRA face refinement has its own step count,
@@ -6529,9 +6637,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["flux2_dit_model"].is_required = is_flux2
             self.entries["flux2_text_encoder"].is_required = is_flux2
             self.entries["krea2_dit_model"].is_required = is_krea2
-            self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples or refinement_only)
+            self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples or has_face_stage)
             self.entries["minimax_h3_dit_model"].is_required = is_minimax_h3
-            self.entries["minimax_h3_text_encoder"].is_required = is_minimax_h3 and self.entries["recache_text"].var.get()
+            self.entries["minimax_h3_text_encoder"].is_required = is_minimax_h3 and (
+                self.entries["recache_text"].var.get() or wants_samples or has_face_stage
+            )
             self.entries["t5_model"].is_required = False
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
@@ -6687,7 +6797,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else: self.hidden_frames['fp8_t5_frame'].pack_forget()
         except KeyError: pass
         try:
-            if is_krea2:
+            if is_krea2 or is_minimax_h3:
+                self.hidden_frames['krea2_regularization'].configure(
+                    text=("MiniMax H3 · Generalization (Experimental)" if is_minimax_h3 else "Krea 2 · Generalization (Experimental)")
+                )
                 self.hidden_frames['krea2_regularization'].pack(fill="x", padx=10, pady=10)
             else:
                 self.hidden_frames['krea2_regularization'].pack_forget()
@@ -6695,10 +6808,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             pass
         self._refresh_training_notes_preview()
         try:
-            supports_dop = is_krea2 or mode == "Flux.2 Klein"
+            supports_dop = is_krea2 or is_minimax_h3 or mode == "Flux.2 Klein"
             if is_krea2:
                 self.regularization_availability_var.set(
                     "Krea 2 supports DOP, weight noise, and the optional depth anchor. All methods are disabled by default."
+                )
+            elif is_minimax_h3:
+                self.regularization_availability_var.set(
+                    "MiniMax H3 supports experimental DOP, adapter weight noise, and depth anchoring. Depth should start with at least 30 swapped blocks."
                 )
             elif mode == "Flux.2 Klein":
                 self.regularization_availability_var.set(
@@ -6859,7 +6976,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 dop_text += f" ({class_word})"
             parts.append(dop_text)
 
-        if str(settings.get("training_mode")) == "Krea 2":
+        if str(settings.get("training_mode")) in ("Krea 2", "MiniMax H3 (Experimental)"):
             depth = enabled_number("krea2_depth_anchor_weight")
             if depth:
                 depth_text = f"depth {depth}@{settings.get('krea2_depth_anchor_input_size') or 518}"
@@ -7452,10 +7569,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.depth_anchor_status_var.set(
                 f"Depth anchor: waiting for first training step · strength {depth_strength:g} · "
                 f"{'helpers kept on GPU' if keep_depth_helpers else 'low-VRAM helper offload'}"
-                if self.training_mode_var.get() == "Krea 2" and depth_strength > 0 else "Depth anchor: Off"
+                if self.training_mode_var.get() in ("Krea 2", "MiniMax H3 (Experimental)") and depth_strength > 0 else "Depth anchor: Off"
             )
             try:
-                dop_active = self.entries["dop_enabled"].var.get() and self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein")
+                dop_active = self.entries["dop_enabled"].var.get() and self.training_mode_var.get() in ("Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)")
                 dop_strength = float(self.entries["dop_loss_weight"].get() or 0)
             except (KeyError, ValueError):
                 dop_active, dop_strength = False, 0.0
@@ -7863,16 +7980,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if face_config.get("input_mode") != "existing_lora":
                 messagebox.showerror(
                     "Staged Run",
-                    "Face Refinement can be the first stage only when ‘Refine an existing Krea 2 LoRA’ is selected in its settings.",
+                    "Face Refinement can be the first stage only when ‘Refine an existing LoRA’ is selected in its settings.",
                 )
                 return
             try:
-                from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
-                validate_krea2_lora(face_config.get("input_lora", ""))
+                from musubi_tuner.face_refinement.lora_validation import validate_face_lora
+                validate_face_lora(face_config.get("input_lora", ""), self.training_mode_var.get())
             except ValueError as exc:
                 messagebox.showerror("Staged Run", str(exc)); return
-        if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() != "Krea 2":
-            messagebox.showerror("Staged Run", "Face Refinement is currently available only in Krea 2 mode.")
+        if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
+            messagebox.showerror("Staged Run", "Face Refinement is available in Krea 2 and experimental MiniMax H3 modes.")
             return
         if any(item.get("type") == "face_refinement" for item in stages):
             if not self._check_face_refinement_dependencies():
@@ -7898,7 +8015,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return
 
         base_settings = self.get_settings()
-        dop_supported = base_settings.get("training_mode") in ("Krea 2", "Flux.2 Klein")
+        dop_supported = base_settings.get("training_mode") in ("Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)")
         any_stage_dop = any(
             item.get("type", "standard") == "standard"
             and (
@@ -7908,10 +8025,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             for item in stages
         )
         if any_stage_dop and not dop_supported:
-            messagebox.showerror("Staged Run", "DOP stages are currently supported only for Krea 2 and FLUX.2 Klein.")
+            messagebox.showerror("Staged Run", "DOP stages are supported for Krea 2, MiniMax H3, and FLUX.2 Klein.")
             return
         if any_stage_dop:
-            text_encoder_key = "krea2_text_encoder" if base_settings.get("training_mode") == "Krea 2" else "flux2_text_encoder"
+            text_encoder_key = (
+                "krea2_text_encoder" if base_settings.get("training_mode") == "Krea 2"
+                else "minimax_h3_text_encoder" if base_settings.get("training_mode") == "MiniMax H3 (Experimental)"
+                else "flux2_text_encoder"
+            )
             text_encoder_path = str(base_settings.get(text_encoder_key) or "").strip()
             if not text_encoder_path or not os.path.exists(text_encoder_path):
                 messagebox.showerror(
@@ -8086,13 +8207,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             f"Handoff: {settings['resume_path'] or settings.get('network_weights') or input_lora or 'new training state'}\n",
         )
         if stage_type == "face_refinement":
+            face_backend = (
+                minimax_h3_face_backend
+                if run["base_settings"].get("training_mode") == "MiniMax H3 (Experimental)"
+                else krea2_face_backend
+            )
             face_config = dict(self._face_refinement_config)
             face_config["steps"] = int(stage_steps)
             self.current_step = 0; self.current_total_steps = int(stage_steps)
             self.current_epoch_num = 0; self.current_epoch_total = 0
             self.update_training_counters(0, int(stage_steps), 0, 0)
             self.progress_var.set(0)
-            output_path = krea2_face_backend.output_path(run["base_settings"], stage_label)
+            output_path = face_backend.output_path(run["base_settings"], stage_label)
             if input_lora is None:
                 raise RuntimeError("Face Refinement has no input LoRA. Select an existing LoRA or place it after a standard stage.")
             if output_path.resolve() == input_lora.resolve():
@@ -8131,7 +8257,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             settings["python_executable"] = sys.executable or "python"
             settings["face_output_path"] = str(output_path)
             run["previous_settings"] = settings
-            self.command_sequence = [krea2_face_backend.build_command(settings, face_config, input_lora, output_path, prompts_path)]
+            self.command_sequence = [face_backend.build_command(settings, face_config, input_lora, output_path, prompts_path)]
         else:
             self.command_sequence = self._commands_for_settings(settings)
         self._run_next_command_in_sequence(0)
@@ -8246,20 +8372,53 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     "MiniMax H3 on a 24 GB card requires block swapping. Choose 1–48 blocks; 30 is the conservative default.",
                 )
                 return
+            try:
+                noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
+                depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
+                depth_size = int(settings.get("krea2_depth_anchor_input_size") or 518)
+                if noise_strength < 0 or depth_strength < 0:
+                    raise ValueError("strengths cannot be negative")
+                if depth_size <= 0 or depth_size % 14:
+                    raise ValueError("depth resolution must be a positive multiple of 14")
+            except ValueError as exc:
+                messagebox.showerror("Validation Error", f"Invalid MiniMax H3 generalization setting: {exc}.")
+                return
             wants_minimax_samples = bool(
                 settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first")
             )
-            if wants_minimax_samples:
-                messagebox.showerror(
-                    "Validation Error",
-                    "In-training sample generation is not implemented for experimental MiniMax H3 yet. Clear the sample schedule before starting.",
-                )
+            if wants_minimax_samples and self._count_enabled_sample_prompts():
+                if not settings.get("minimax_h3_text_encoder") or not os.path.isfile(settings["minimax_h3_text_encoder"]):
+                    messagebox.showerror("Validation Error", "MiniMax H3 training previews need the compact text encoder path.")
+                    return
+                for index, prompt in enumerate(self._sample_prompts_data):
+                    if not prompt.get("enabled", True):
+                        continue
+                    try:
+                        width = int(prompt.get("width") or 768)
+                        height = int(prompt.get("height") or 768)
+                        guidance = float(prompt.get("guidance") or 1.0)
+                        cfg_scale = float(prompt.get("cfg_scale") or 1.0)
+                    except (TypeError, ValueError):
+                        messagebox.showerror("Validation Error", f"MiniMax H3 sample prompt {index + 1} has invalid numeric settings.")
+                        return
+                    if width % 32 or height % 32 or guidance != 1.0 or cfg_scale != 1.0 or str(prompt.get("neg") or "").strip():
+                        messagebox.showerror(
+                            "Validation Error",
+                            f"MiniMax H3 sample prompt {index + 1} must use a size divisible by 32, guidance/CFG 1.0, and no negative prompt.",
+                        )
+                        return
+            if depth_strength > 0 and not messagebox.askokcancel(
+                "Experimental MiniMax H3 Depth Anchor",
+                "MiniMax H3 depth anchoring is experimental and holds the DiT graph, VAE decoder, and depth checker during each step. "
+                "It may be substantially slower and can exceed 24 GB. Use at least 30 swapped blocks, leave depth helpers offloaded, "
+                "and begin with a one- or two-step comparison. Continue?",
+            ):
                 return
             if not messagebox.askokcancel(
                 "Experimental MiniMax H3",
-                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 one-step run "
-                "completed on a 24 GB RTX 4090, but long-run stability and training quality are not established yet. Use batch size 1, "
-                "keep the original checkpoint, and begin with a short test run. Continue?",
+                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 two-epoch run "
+                "completed on a 24 GB RTX 4090 and produced a working likeness LoRA. In-training previews and advanced regularizers are "
+                "newer and still need short-run validation. Use batch size 1 and keep the original checkpoint. Continue?",
             ):
                 return
         # Warn if sample frequency is set but no prompts were added

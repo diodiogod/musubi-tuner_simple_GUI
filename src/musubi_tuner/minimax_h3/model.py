@@ -626,6 +626,67 @@ class MiniMaxH3Model(nn.Module):
             self.offloader.set_forward_only(False)
             self.prepare_block_swap_before_forward()
 
+    def park_resident_block_weights_for_decode(self, minimum_free_bytes: int) -> list[tuple[nn.Module, torch.device]]:
+        """Temporarily move frozen resident block weights to CPU for VAE decode.
+
+        H2D-only block swap owns CPU masters only for its streamed blocks.  A
+        training preview at a faster, lower swap count can otherwise leave too
+        little VRAM for the 5 GB video VAE.  This moves only as many unmanaged
+        resident Linear weights as needed and leaves the offloader's masters and
+        ring bindings untouched.  The returned list must be restored with
+        :meth:`restore_parked_block_weights` before the next DiT forward.
+        """
+        execution_device = self._execution_device or self.device
+        execution_device = torch.device(execution_device)
+        if execution_device.type != "cuda" or not torch.cuda.is_available():
+            return []
+        if self.offloader is not None and hasattr(self.offloader, "copier"):
+            self.offloader.copier.sync()
+
+        def free_bytes() -> int:
+            torch.cuda.empty_cache()
+            return int(torch.cuda.mem_get_info(execution_device)[0])
+
+        if free_bytes() >= int(minimum_free_bytes):
+            return []
+
+        is_stream = getattr(self.offloader, "is_stream", [False] * len(self.blocks))
+        parked: list[tuple[nn.Module, torch.device]] = []
+        seen: set[int] = set()
+        for index in reversed(range(len(self.blocks))):
+            if index < len(is_stream) and is_stream[index]:
+                continue
+            for module in self.blocks[index].modules():
+                weight = getattr(module, "weight", None)
+                if (
+                    weight is None
+                    or id(weight) in seen
+                    or weight.device.type != "cuda"
+                    or weight.requires_grad
+                    or not module.__class__.__name__.endswith("Linear")
+                ):
+                    continue
+                seen.add(id(weight))
+                original_device = weight.device
+                weight.data = weight.data.to("cpu")
+                parked.append((module, original_device))
+            if free_bytes() >= int(minimum_free_bytes):
+                break
+        if free_bytes() < int(minimum_free_bytes):
+            self.restore_parked_block_weights(parked)
+            raise torch.OutOfMemoryError(
+                "MiniMax-H3 could not free enough VRAM for preview VAE decode; "
+                "increase blocks_to_swap or lower the preview resolution"
+            )
+        return parked
+
+    @staticmethod
+    def restore_parked_block_weights(parked: list[tuple[nn.Module, torch.device]]) -> None:
+        for module, device in parked:
+            module.weight.data = module.weight.data.to(device)
+        if parked and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     def _assert_block_device(self, block: nn.Module, index: int) -> None:
         expected = self._execution_device
         if expected is None:

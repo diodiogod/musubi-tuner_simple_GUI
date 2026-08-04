@@ -5,6 +5,9 @@ from backends._common import (
     build_attention_arg,
     build_common_train_args,
     build_output_dir,
+    build_sample_args,
+    build_dop_cache_args,
+    build_dop_train_args,
 )
 
 
@@ -22,7 +25,16 @@ def build_commands(settings):
     ]
     add_arg(cmd, "--mixed_precision", settings.get("mixed_precision"))
     add_arg(cmd, "--dit", settings.get("minimax_h3_dit_model"), is_path=True)
+    add_arg(cmd, "--vae", settings.get("vae_model"), is_path=True)
     add_arg(cmd, "--dataset_config", settings.get("dataset_config"), is_path=True)
+    add_arg(cmd, "--text_encoder", settings.get("minimax_h3_text_encoder"), is_path=True)
+    add_arg(cmd, "--tokenizer", settings.get("minimax_h3_tokenizer"))
+    add_arg(cmd, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
+    add_arg(
+        cmd,
+        "--minimax_h3_preview_decode_min_free_gb",
+        settings.get("minimax_h3_preview_decode_min_free_gb") or "9.0",
+    )
     add_arg(cmd, "--network_module", "networks.lora_minimax_h3")
     add_arg(cmd, "--network_dim", settings.get("network_dim_low"))
     add_arg(cmd, "--network_alpha", settings.get("network_alpha_low"))
@@ -31,7 +43,19 @@ def build_commands(settings):
     add_arg(cmd, "--block_swap_ring_size", settings.get("block_swap_ring_size"))
     add_arg(cmd, "--use_pinned_memory_for_block_swap", settings.get("use_pinned_memory_for_block_swap"))
     add_arg(cmd, "--convrot_bwd_mode", settings.get("minimax_h3_convrot_bwd_mode") or "bf16")
+    add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
+    add_arg(cmd, "--weight_noise_mode", settings.get("krea2_weight_noise_mode"))
+    add_arg(cmd, "--weight_noise_bound_norm", settings.get("krea2_weight_noise_bound_norm"))
+    add_arg(cmd, "--depth_anchor_weight", settings.get("krea2_depth_anchor_weight"))
+    add_arg(cmd, "--depth_anchor_model", settings.get("krea2_depth_anchor_model"))
+    add_arg(cmd, "--depth_anchor_input_size", settings.get("krea2_depth_anchor_input_size"))
+    add_arg(cmd, "--depth_anchor_gradient_weight", settings.get("krea2_depth_anchor_gradient_weight"))
+    if not settings.get("krea2_depth_anchor_grad_checkpoint", True):
+        cmd.append("--no-depth_anchor_grad_checkpoint")
+    add_arg(cmd, "--keep_depth_helpers_on_gpu", settings.get("krea2_keep_depth_helpers_on_gpu"))
     build_attention_arg(cmd, settings)
+    build_sample_args(cmd, settings)
+    build_dop_train_args(cmd, settings)
     build_common_train_args(cmd, settings)
 
     output_dir, output_name = build_output_dir(settings)
@@ -51,6 +75,8 @@ def build_cache_commands(settings, python_executable):
                 settings["dataset_config"],
                 "--vae",
                 settings["vae_model"],
+                "--vae_dtype",
+                "float32",
             ]
         )
     if settings.get("recache_text"):
@@ -65,5 +91,7 @@ def build_cache_commands(settings, python_executable):
         tokenizer = settings.get("minimax_h3_tokenizer")
         if tokenizer:
             command.extend(["--tokenizer", tokenizer])
+        add_arg(command, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
+        build_dop_cache_args(command, settings)
         commands.append(command)
     return commands

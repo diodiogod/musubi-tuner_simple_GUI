@@ -71,7 +71,15 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("blocks_to_swap", "Krea Turbo sampling cannot be combined with Blocks to Swap.")
     elif mode == "MiniMax H3 (Experimental)":
         require("minimax_h3_dit_model", "MiniMax H3 pruned ConvRot INT8 DiT")
-        if settings.get("recache_text"):
+        cadence_enabled = any(
+            (
+                _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),
+                _positive_integer(str(settings.get("sample_every_n_steps") or "").strip()),
+                bool(settings.get("sample_at_first")),
+            )
+        )
+        has_face_stage = any(stage.get("type") == "face_refinement" for stage in configured_stages)
+        if settings.get("recache_text") or cadence_enabled or has_face_stage:
             require("minimax_h3_text_encoder", "MiniMax H3 compact Qwen3-VL text encoder")
         if settings.get("network_type", "LoRA") != "LoRA":
             error("network_type", "Experimental MiniMax H3 currently supports LoRA only.")
@@ -89,17 +97,9 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             blocks_to_swap = 0
         if not 1 <= blocks_to_swap <= 48:
             error("blocks_to_swap", "Use 1–48 swapped blocks for MiniMax H3; 30 is the conservative 24 GB default.")
-        if any(
-            (
-                _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),
-                _positive_integer(str(settings.get("sample_every_n_steps") or "").strip()),
-                bool(settings.get("sample_at_first")),
-            )
-        ):
-            error("sample_every_n_epochs", "In-training samples are not implemented for experimental MiniMax H3 yet.")
         warning(
             "training_mode",
-            "Experimental image-only path: direct pruned ConvRot INT8 base and batch size 1. A 1024px rank-16 one-step run was validated on a 24 GB RTX 4090; start with a short run because long-run stability and training quality are not established yet.",
+            "Experimental image-only path: direct pruned ConvRot INT8 base and batch size 1. A 1024px rank-16 two-epoch run and its LoRA were validated on a 24 GB RTX 4090; previews and advanced regularizers remain experimental, so start them with a short run.",
         )
     else:
         error("training_mode", f"Unsupported training mode: {mode}")
@@ -128,8 +128,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         error("max_train_epochs", "Set a positive epoch or step limit.")
 
     if settings.get("dop_enabled"):
-        if mode not in {"Krea 2", "Flux.2 Klein"}:
-            error("dop_enabled", "DOP is supported only for Krea 2 and FLUX.2 Klein.")
+        if mode not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)"}:
+            error("dop_enabled", "DOP is supported only for Krea 2, FLUX.2 Klein, and experimental MiniMax H3.")
         try:
             from musubi_tuner.training.dop import validate_dop_config
 
@@ -182,6 +182,25 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
 
     for message in validate_sample_prompts(settings):
         error("sample_prompts_data", message)
+    if mode == "MiniMax H3 (Experimental)":
+        for index, prompt in enumerate(enabled_sample_prompts(settings), start=1):
+            label = f"Sample prompt {index}"
+            if str(prompt.get("neg") or "").strip():
+                error("sample_prompts_data", f"{label} cannot use a negative prompt with MiniMax H3.")
+            try:
+                guidance = float(prompt.get("guidance") or 1.0)
+                cfg_scale = float(prompt.get("cfg_scale") or 1.0)
+                frames = int(prompt.get("frames") or 1)
+                width = int(prompt.get("width") or 768)
+                height = int(prompt.get("height") or 768)
+            except (TypeError, ValueError):
+                continue  # The generic prompt validator reports the malformed field.
+            if guidance != 1.0 or cfg_scale != 1.0:
+                error("sample_prompts_data", f"{label} must keep MiniMax H3 guidance and CFG at 1.0.")
+            if frames != 1:
+                error("sample_prompts_data", f"{label} must use one frame for MiniMax H3 image preview.")
+            if width % 32 or height % 32:
+                error("sample_prompts_data", f"{label} MiniMax H3 width and height must be multiples of 32.")
     cadence_enabled = any(
         (
             _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),

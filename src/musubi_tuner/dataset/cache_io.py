@@ -195,15 +195,48 @@ def save_latent_cache_krea2(item_info: ItemInfo, latent: torch.Tensor):
     save_latent_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
 
 
+MINIMAX_H3_IMAGE_POSTERIOR_POLICY = "video_vae=fp32"
+
+
 def save_latent_cache_minimax_h3_image(item_info: ItemInfo, latent: torch.Tensor):
     """Save one H3 video-VAE frame for the experimental image-only trainer."""
     if latent.ndim != 4 or tuple(latent.shape[:2]) != (24, 1):
         raise ValueError(f"MiniMax-H3 image latent must be [24,1,H,W], got {tuple(latent.shape)}")
     if latent.shape[-2] % 2 or latent.shape[-1] % 2:
         raise ValueError("MiniMax-H3 image latent height and width must be divisible by 2")
+    if latent.dtype != torch.float32:
+        raise ValueError(
+            f"MiniMax-H3 image latents must come from the FP32 VAE posterior policy, got {latent.dtype}"
+        )
     dtype = dtype_to_str(latent.dtype)
     sd = {f"latents_1x{latent.shape[-2]}x{latent.shape[-1]}_{dtype}": latent}
-    save_latent_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL)
+    save_latent_cache_common(
+        item_info,
+        sd,
+        ARCHITECTURE_MINIMAX_H3_FULL,
+        extra_metadata={"posterior_policy": MINIMAX_H3_IMAGE_POSTERIOR_POLICY},
+    )
+
+
+def is_latent_cache_minimax_h3_image_current(path: str) -> bool:
+    """Return whether an H3 image cache was encoded with the FP32 VAE policy.
+
+    Older experimental caches did not record a posterior policy and were
+    produced with an FP16 VAE by default.  They remain readable for completed
+    runs, but ``--skip_existing`` must not silently reuse them for new runs.
+    """
+    if not os.path.exists(path):
+        return False
+    try:
+        with safetensors_utils.MemoryEfficientSafeOpen(path) as cache:
+            metadata = cache.metadata() or {}
+            return (
+                metadata.get("architecture") == ARCHITECTURE_MINIMAX_H3_FULL
+                and metadata.get("posterior_policy") == MINIMAX_H3_IMAGE_POSTERIOR_POLICY
+            )
+    except Exception as exc:
+        logger.warning("Could not validate MiniMax-H3 latent cache %s: %s", path, exc)
+        return False
 
 
 def save_latent_cache_kandinsky5(
@@ -314,7 +347,12 @@ def save_latent_cache_ideogram4(item_info: ItemInfo, latent: torch.Tensor):
     save_latent_cache_common(item_info, sd, ARCHITECTURE_IDEOGRAM4_FULL)
 
 
-def save_latent_cache_common(item_info: ItemInfo, sd: dict[str, torch.Tensor], arch_fullname: str):
+def save_latent_cache_common(
+    item_info: ItemInfo,
+    sd: dict[str, torch.Tensor],
+    arch_fullname: str,
+    extra_metadata: Optional[dict[str, str]] = None,
+):
     metadata = {
         "architecture": arch_fullname,
         "width": f"{item_info.original_size[0]}",
@@ -323,6 +361,8 @@ def save_latent_cache_common(item_info: ItemInfo, sd: dict[str, torch.Tensor], a
     }
     if item_info.frame_count is not None:
         metadata["frame_count"] = f"{item_info.frame_count}"
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     for key, value in sd.items():
         # NaN check and show warning, replace NaN with 0
@@ -450,7 +490,12 @@ def save_text_encoder_output_cache_krea2(
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
 
 
-def save_text_encoder_output_cache_minimax_h3_image(item_info: ItemInfo, hidden_states: torch.Tensor):
+def save_text_encoder_output_cache_minimax_h3_image(
+    item_info: ItemInfo,
+    hidden_states: torch.Tensor,
+    dop_hidden_states: Optional[torch.Tensor] = None,
+    dop_signature: Optional[torch.Tensor] = None,
+):
     """Save raw layer-50 Qwen3-VL states; image-caption rows use text modality tag 1."""
     if hidden_states.ndim != 2 or hidden_states.shape[1] != 5120:
         raise ValueError(f"MiniMax-H3 hidden states must be [L,5120], got {tuple(hidden_states.shape)}")
@@ -459,6 +504,13 @@ def save_text_encoder_output_cache_minimax_h3_image(item_info: ItemInfo, hidden_
         f"varlen_mmh3_hidden_states_{dtype}": hidden_states,
         "varlen_mmh3_token_tags_int64": torch.ones(hidden_states.shape[0], dtype=torch.int64),
     }
+    if dop_hidden_states is not None:
+        if dop_hidden_states.ndim != 2 or dop_hidden_states.shape[1] != 5120:
+            raise ValueError(f"MiniMax-H3 DOP hidden states must be [L,5120], got {tuple(dop_hidden_states.shape)}")
+        dop_dtype = dtype_to_str(dop_hidden_states.dtype)
+        sd[f"varlen_dop_mmh3_hidden_states_{dop_dtype}"] = dop_hidden_states
+    if dop_signature is not None:
+        sd["dop_signature"] = dop_signature
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL, merge_existing=False)
 
 

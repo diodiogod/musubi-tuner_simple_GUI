@@ -39,6 +39,10 @@ Example of command line options for training with sampling / 記述例:
 
 Sample images and videos are saved in the `sample` directory in the directory specified by `--output_dir`. They are saved as `.png` for still images and `.mp4` for videos.
 
+### MiniMax H3 image-only notes
+
+Experimental MiniMax H3 training previews require the compact text encoder and MiniMax H3 video VAE paths in addition to the cached training data. Use one still frame, dimensions divisible by 32, guidance/CFG `1.0`, no negative prompt, and shift `12`. The GUI defaults to 768x768 and 28 steps. Preview generation temporarily changes model residency and is slower than an ordinary training step, so begin with one prompt and a conservative epoch cadence.
+
 <details>
 <summary>日本語</summary>
 

@@ -37,7 +37,7 @@ def test_mode_specific_fields_are_tagged_for_frontend_filtering():
 
     assert fields["dit_high_noise"]["modes"] == ["Wan 2.2"]
     assert fields["flux2_dit_model"]["modes"] == ["Flux.2 Klein", "Flux.2 Dev"]
-    assert fields["krea2_depth_anchor_weight"]["modes"] == ["Krea 2"]
+    assert fields["krea2_depth_anchor_weight"]["modes"] == ["Krea 2", settings.MINIMAX_H3_MODE]
     assert "modes" not in fields["learning_rate"]
 
 

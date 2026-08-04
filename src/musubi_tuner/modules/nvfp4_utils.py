@@ -211,7 +211,7 @@ class PackedNVFP4Linear(nn.Module):
 
 
 class PackedInt8Embedding(nn.Module):
-    """Frozen tensorwise-INT8 embedding that dequantizes only selected token rows."""
+    """Frozen INT8 embedding that dequantizes only selected token rows."""
 
     def __init__(self, num_embeddings: int, embedding_dim: int, device: str | torch.device = "meta"):
         super().__init__()
@@ -240,4 +240,18 @@ class PackedInt8Embedding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         selected = F.embedding(input_ids, self.weight).to(self.compute_dtype)
-        return selected * self.weight_scale.to(dtype=self.compute_dtype)
+        scale = self.weight_scale
+        if scale.numel() == 1:
+            selected_scale = scale.reshape(()).to(dtype=self.compute_dtype)
+        elif scale.shape[0] == self.num_embeddings and scale.numel() == self.num_embeddings:
+            # ComfyUI may store tensorwise-INT8 embedding scales per vocabulary row as
+            # [num_embeddings, 1]. Select only the requested rows, just like the packed weight.
+            selected_scale = F.embedding(input_ids, scale.reshape(self.num_embeddings, 1)).to(
+                dtype=self.compute_dtype
+            )
+        else:
+            raise ValueError(
+                "INT8 embedding scale must be scalar or contain one value per vocabulary row, "
+                f"got {tuple(scale.shape)}"
+            )
+        return selected * selected_scale

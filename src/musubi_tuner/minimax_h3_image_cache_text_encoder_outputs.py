@@ -14,16 +14,41 @@ from musubi_tuner.dataset.cache_io import save_text_encoder_output_cache_minimax
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
 from musubi_tuner.minimax_h3.image_text_encoder import DEFAULT_PROCESSOR_ID, load_minimax_h3_te
+from musubi_tuner.training.dop import (
+    add_cache_arguments,
+    dop_signature,
+    is_valid_dop_cache,
+    make_class_caption,
+    validate_dop_config,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-def encode_and_save_batch(encoder, batch: list[ItemInfo]) -> None:
+def encode_and_save_batch(
+    encoder,
+    batch: list[ItemInfo],
+    dop_trigger_word: str = "",
+    dop_class_word: str = "",
+) -> None:
+    use_dop = bool(dop_trigger_word or dop_class_word)
+    signature = None
+    if use_dop:
+        validate_dop_config(dop_trigger_word, dop_class_word)
+        signature = dop_signature(dop_trigger_word, dop_class_word)
     for item in batch:
         logger.info("Encoding MiniMax-H3 caption for %s", item.item_key)
         hidden_states = encoder.encode(item.caption)[0]
-        save_text_encoder_output_cache_minimax_h3_image(item, hidden_states)
+        dop_hidden_states = None
+        if use_dop:
+            try:
+                class_caption = make_class_caption(item.caption, dop_trigger_word, dop_class_word)
+            except ValueError as exc:
+                raise ValueError(f"DOP caption error for {item.item_key}: {exc}") from exc
+            logger.info("Encoding MiniMax-H3 DOP class caption for %s", item.item_key)
+            dop_hidden_states = encoder.encode(class_caption)[0]
+        save_text_encoder_output_cache_minimax_h3_image(item, hidden_states, dop_hidden_states, signature)
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -46,6 +71,7 @@ def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "nf4 selects the slower legacy conversion path"
         ),
     )
+    add_cache_arguments(parser)
     return parser
 
 
@@ -75,7 +101,16 @@ def main() -> None:
     )
 
     def encode(batch: list[ItemInfo]):
-        encode_and_save_batch(encoder, batch)
+        encode_and_save_batch(encoder, batch, args.dop_trigger_word, args.dop_class_word)
+
+    cache_validator = None
+    if args.dop_trigger_word or args.dop_class_word:
+        cache_validator = lambda item: is_valid_dop_cache(
+            item,
+            args.dop_trigger_word,
+            args.dop_class_word,
+            "varlen_dop_mmh3_hidden_states_",
+        )
 
     cache_text_encoder_outputs.process_text_encoder_batches(
         args.num_workers,
@@ -85,6 +120,7 @@ def main() -> None:
         all_cache_files,
         all_cache_paths,
         encode,
+        cache_validator=cache_validator,
     )
     del encoder
     cache_text_encoder_outputs.post_process_cache_files(datasets, all_cache_files, all_cache_paths, args.keep_cache)

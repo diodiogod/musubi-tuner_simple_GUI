@@ -65,6 +65,18 @@ def test_packed_int8_embedding_dequantizes_only_selected_rows():
     torch.testing.assert_close(actual.float(), torch.tensor([[[2.0, -3.0, 4.0], [-1.0, 0.0, 1.0]]]))
 
 
+def test_packed_int8_embedding_selects_per_row_scales():
+    layer = PackedInt8Embedding(4, 2, device="cpu")
+    weight = torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=torch.int8)
+    scales = torch.tensor([[0.5], [1.0], [1.5], [2.0]], dtype=torch.float32)
+    layer.load_quantized(weight, scales, torch.device("cpu"), torch.bfloat16)
+
+    actual = layer(torch.tensor([[2, 0, 3]]))
+
+    expected = torch.tensor([[[7.5, 9.0], [0.5, 1.0], [14.0, 16.0]]])
+    torch.testing.assert_close(actual.float(), expected)
+
+
 def test_packed_nvfp4_linear_keeps_weight_packed_between_forwards():
     packed = torch.full((128, 32), 0x23, dtype=torch.uint8)
     blocked_scales = torch.ones(128, 4, dtype=torch.float8_e4m3fn)

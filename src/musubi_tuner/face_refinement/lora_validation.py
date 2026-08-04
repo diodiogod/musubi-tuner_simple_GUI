@@ -1,4 +1,4 @@
-"""Lightweight validation for Krea 2 LoRAs used by face refinement."""
+"""Lightweight architecture-aware LoRA validation for face refinement."""
 
 from pathlib import Path
 
@@ -6,6 +6,14 @@ from safetensors import safe_open
 
 
 def validate_krea2_lora(path: str | Path) -> dict:
+    return validate_face_lora(path, "Krea 2")
+
+
+def validate_minimax_h3_lora(path: str | Path) -> dict:
+    return validate_face_lora(path, "MiniMax H3 (Experimental)")
+
+
+def validate_face_lora(path: str | Path, mode: str) -> dict:
     candidate = Path(path).expanduser()
     if not candidate.is_file():
         raise ValueError("Choose an existing LoRA .safetensors file.")
@@ -20,13 +28,18 @@ def validate_krea2_lora(path: str | Path) -> dict:
 
     down = [key for key in keys if key.startswith("lora_unet_blocks_") and key.endswith(".lora_down.weight")]
     up = [key for key in keys if key.startswith("lora_unet_blocks_") and key.endswith(".lora_up.weight")]
-    krea_attention = [key for key in down if any(part in key for part in ("_attn_wq.", "_attn_wk.", "_attn_wv.", "_attn_wo."))]
-    if not down or len(down) != len(up) or not krea_attention:
+    if mode == "MiniMax H3 (Experimental)":
+        attention = [key for key in down if any(part in key for part in ("_attn_qkv_proj.", "_attn_out_proj."))]
+        label = "MiniMax-H3"
+    else:
+        attention = [key for key in down if any(part in key for part in ("_attn_wq.", "_attn_wk.", "_attn_wv.", "_attn_wo."))]
+        label = "Krea 2"
+    if not down or len(down) != len(up) or not attention:
         raise ValueError(
-            "This file does not look like a complete Musubi Krea 2 LoRA. "
+            f"This file does not look like a complete Musubi {label} LoRA. "
             "Select LoRA weights, not a base model, optimizer file, or LoRA for another architecture."
         )
-    return {"path": str(candidate.resolve()), "modules": len(down), "attention_modules": len(krea_attention)}
+    return {"path": str(candidate.resolve()), "modules": len(down), "attention_modules": len(attention), "mode": mode}
 
 
 def render_trigger_prompts(prompts: list[str], trigger_word: str) -> list[str]:

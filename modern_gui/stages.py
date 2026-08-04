@@ -68,10 +68,10 @@ def validate_stage_plan(settings: dict[str, Any]) -> list[dict[str, Any]]:
             effective = dict(settings)
             apply_dop_overrides(effective, stage)
             if effective.get("dop_enabled"):
-                if settings.get("training_mode") not in {"Krea 2", "Flux.2 Klein"}:
+                if settings.get("training_mode") not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)"}:
                     raise ValueError(
                         f"{stage_label(stage, index)} enables DOP, but DOP is supported only for "
-                        "Krea 2 and FLUX.2 Klein."
+                        "Krea 2, MiniMax H3, and FLUX.2 Klein."
                     )
                 try:
                     from musubi_tuner.training.dop import validate_dop_config
@@ -91,22 +91,26 @@ def validate_stage_plan(settings: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"{stage_label(stage, index)} has an unsupported depth-helper policy: {depth_mode}"
                 )
-            if depth_mode != "inherit" and settings.get("training_mode") != "Krea 2":
+            if depth_mode != "inherit" and settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)"}:
                 raise ValueError(
-                    f"{stage_label(stage, index)} can override depth-helper memory only in Krea 2."
+                    f"{stage_label(stage, index)} can override depth-helper memory only in Krea 2 or MiniMax H3."
                 )
-        elif settings.get("training_mode") != "Krea 2":
-            raise ValueError("Face Refinement stages are supported only in Krea 2 mode.")
-        elif index == 0:
+        elif settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)"}:
+            raise ValueError("Face Refinement stages are supported only in Krea 2 or MiniMax H3 mode.")
+        else:
             face_config = settings.get("face_refinement_config") or {}
-            if face_config.get("input_mode") != "existing_lora":
-                raise ValueError(
-                    "Face Refinement can be the first enabled stage only when its input mode is "
-                    "“Refine an existing LoRA.”"
-                )
-            input_lora = Path(str(face_config.get("input_lora") or "")).expanduser()
-            if not input_lora.is_file():
-                raise ValueError(f"First-stage Face Refinement input LoRA does not exist: {input_lora}")
+            from modern_gui.face_stages import validate_face_recipe_for_mode
+
+            validate_face_recipe_for_mode(str(settings.get("training_mode")), face_config)
+            if index == 0:
+                if face_config.get("input_mode") != "existing_lora":
+                    raise ValueError(
+                        "Face Refinement can be the first enabled stage only when its input mode is "
+                        "“Refine an existing LoRA.”"
+                    )
+                input_lora = Path(str(face_config.get("input_lora") or "")).expanduser()
+                if not input_lora.is_file():
+                    raise ValueError(f"First-stage Face Refinement input LoRA does not exist: {input_lora}")
     return stages
 
 

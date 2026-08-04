@@ -486,14 +486,14 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     raise KeyError("The library prompt no longer exists.")
                 return self._json({"deleted": True})
             if self.path == "/api/prompts/preview":
-                from modern_gui.prompt_preview import build_krea_preview
+                from modern_gui.prompt_preview import build_prompt_preview
 
                 active = SUPERVISOR.snapshot(after=2**63 - 1).get("active")
                 if active and active.get("status") in {"starting", "running", "stopping"}:
                     raise RuntimeError("A web GUI job is already active.")
                 settings = dict(body.get("settings", {}))
                 prompts = [item for item in body.get("prompts", []) if item.get("enabled", True)]
-                command, save_path = build_krea_preview(settings, prompts)
+                command, save_path = build_prompt_preview(settings, prompts)
                 prompt_file = (
                     Path(command[command.index("--from_file") + 1])
                     if "--from_file" in command
@@ -502,9 +502,12 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 resolved_lora = (
                     str(command[command.index("--lora_weight") + 1])
                     if "--lora_weight" in command
+                    else str(command[command.index("--network_weights") + 1])
+                    if "--network_weights" in command
                     else ""
                 )
-                preview_mode = "Krea 2 Turbo" if "--turbo" in command else "Krea 2"
+                is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
+                preview_mode = "MiniMax H3 (Experimental)" if is_h3 else ("Krea 2 Turbo" if "--turbo" in command else "Krea 2")
                 try:
                     existing_outputs = [
                         str(path.resolve()) for path in save_path.glob("*")
@@ -512,7 +515,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     ]
                     job = SUPERVISOR.start_commands(
                         [command],
-                        name=f"{settings.get('output_name') or 'Krea 2'} sample preview",
+                        name=f"{settings.get('output_name') or preview_mode} sample preview",
                         mode=preview_mode,
                         kind="sample_test",
                         settings=settings,
@@ -584,6 +587,11 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 from backends.krea2_face_eval import prepare
 
                 settings = dict(body.get("settings", {}))
+                if settings.get("training_mode") != "Krea 2":
+                    raise ValueError(
+                        "Fixed Turbo face evaluation is Krea 2-only. MiniMax H3 face refinement is available, "
+                        "but its fixed evaluation recipe has not been validated yet."
+                    )
                 config = dict(settings.get("face_refinement_config") or {})
                 input_lora = str(body.get("input_lora") or config.get("input_lora") or "")
                 baseline = body.get("baseline_result") or None

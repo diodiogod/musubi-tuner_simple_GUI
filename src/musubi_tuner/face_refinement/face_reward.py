@@ -30,6 +30,8 @@ import torch.nn.functional as F
 from musubi_tuner.face_refinement.pose import estimate_pose, parse_pose_prompt
 from insightface.model_zoo.scrfd import SCRFD
 
+from musubi_tuner.face_refinement.face_models import resolve_model_paths
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".avif"}
 ARCFACE_DST = np.array(
     [
@@ -395,12 +397,9 @@ class FaceSimilarityReward(nn.Module):
         if self.expression_diversity_margin < 0.0:
             raise ValueError("expression_diversity_margin must be non-negative")
 
-        detection_path = self.model_dir / "detection" / "model.onnx"
-        recognition_path = self.model_dir / "recognition" / "model.onnx"
-        if not detection_path.exists():
-            raise FileNotFoundError(detection_path)
-        if not recognition_path.exists():
-            raise FileNotFoundError(recognition_path)
+        model_paths = resolve_model_paths(self.model_dir)
+        detection_path = model_paths.detection
+        recognition_path = model_paths.recognition
 
         selected_providers = _providers(providers)
         session = ort.InferenceSession(

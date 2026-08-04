@@ -101,7 +101,7 @@ const LONG_HELP_COPY = {
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
   timestep_sampling: "This controls which noise levels the model practices during training. You normally do not need to choose it yourself because each training mode selects an appropriate value.\n\nFor MiniMax H3, leave it on krea2_shift. This is the setting used by the successful 24 GB test. Despite the name, it does not load or train a Krea model; MiniMax H3 simply uses the same style of noise schedule. Change it only when following a specific advanced recipe.",
   dop_enabled: "Differential Output Preservation adds a preservation objective beside the normal training loss. It can reduce unwanted changes outside the trained concept, especially for small or narrow datasets.\n\nIt costs additional compute and depends on correct trigger and class captions. Review the DOP weight and words under Regularization before enabling it.",
-  krea2_generalization_preset: "This preset coordinates several Krea 2 regularization controls to trade exact dataset matching for broader prompt and pose behavior.\n\nGentle stays close to baseline training. Balanced is a practical starting point for small identity datasets. Strong applies more regularization and should be evaluated carefully against fixed prompts.",
+  krea2_generalization_preset: "This preset coordinates DOP, adapter weight noise, and depth anchoring to trade exact dataset matching for broader prompt and pose behavior. It is available for Krea 2 and experimental MiniMax H3.\n\nGentle stays close to baseline training. Balanced is a practical starting point for small identity datasets. Strong applies more regularization and should be evaluated carefully against fixed prompts. MiniMax H3 support is new, so begin with Gentle and a short run.",
   blocks_to_swap: "Block swapping reduces peak VRAM by moving inactive transformer blocks between GPU and system memory. More swapped blocks generally use less VRAM but increase transfer overhead and slow each step.\n\nStart with the lowest value that fits your GPU. If a run still runs out of memory, increase gradually; if there is comfortable headroom, lower it for speed.",
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
@@ -285,6 +285,9 @@ function selectMode(mode) {
       minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"Qwen/Qwen3-VL-32B-Instruct",
       minimax_h3_convrot_bwd_mode:"bf16",
     });
+    const face=faceConfig(),faceBlocks=Number(face.blocks_to_swap);
+    face.cfg_scale=1;
+    if(!Number.isInteger(faceBlocks)||faceBlocks<30||faceBlocks>48)face.blocks_to_swap=35;
   }
   renderGuided(); renderAllSettings(); sync();
 }
@@ -369,6 +372,7 @@ function uniqueStageLabel(base="Stage"){
 function defaultPromptForMode(){
   const mode=state.settings.training_mode||"Wan 2.2",turbo=mode==="Krea 2"&&String(state.settings.krea2_turbo_dit||"").trim();
   if(mode==="Krea 2")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:turbo?8:28,seed:42,guidance:turbo?1:5.5,...(turbo?{mu:1.15}:{})};
+  if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:1,steps:28,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
   if(mode==="Wan 2.2")return {enabled:true,prompt:"",neg:"",width:832,height:480,frames:25,steps:20,seed:42,guidance:5,cfg_scale:1};
   return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:20,seed:42,guidance:5,cfg_scale:1};
 }
@@ -386,6 +390,12 @@ function promptCardIssues(prompt,index){
     const value=String(prompt[key]??"").trim();
     if(value&&!Number.isFinite(Number(value)))issues.push(`${prefix} has invalid ${label}`);
   });
+  if(state.settings.training_mode==="MiniMax H3 (Experimental)"){
+    if(String(prompt.neg||"").trim())issues.push(`${prefix} cannot use a negative prompt with MiniMax H3`);
+    if(Number(prompt.guidance??1)!==1||Number(prompt.cfg_scale??1)!==1)issues.push(`${prefix} must keep MiniMax H3 guidance and CFG at 1.0`);
+    if(Number(prompt.frames??1)!==1)issues.push(`${prefix} must use one frame for MiniMax H3 image preview`);
+    if(Number(prompt.width||0)%32||Number(prompt.height||0)%32)issues.push(`${prefix} MiniMax H3 size must be a multiple of 32`);
+  }
   return issues;
 }
 function stageCardIssues(stage,index){
@@ -399,7 +409,7 @@ function stageCardIssues(stage,index){
   if(!/^\d+$/.test(limit)||Number(limit)<1)issues.push(`${name} needs a positive limit`);
   if(stage.type!=="face_refinement"&&!String(stage.dataset_config||"").trim())issues.push(`${name} needs a dataset TOML`);
   if(stage.type!=="face_refinement"&&stage.dop_mode==="enable"){
-    if(!["Krea 2","Flux.2 Klein"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
+    if(!["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
     const strength=Number(stage.dop_loss_weight||state.settings.dop_loss_weight||0),trigger=String(stage.dop_trigger_word||state.settings.dop_trigger_word||"").trim(),classWord=String(stage.dop_class_word||state.settings.dop_class_word||"").trim();
     if(!Number.isFinite(strength)||strength<=0)issues.push(`${name} needs a positive DOP strength`);
     if(!trigger||!classWord||trigger.toLowerCase()===classWord.toLowerCase())issues.push(`${name} needs distinct DOP trigger and class words`);
@@ -438,8 +448,10 @@ function renderPlanOverview(){
   $("#plan-overview").classList.toggle("has-issues",issues.length>0);
   $("#prompt-tab-count").textContent=String(prompts.length);$("#stage-tab-count").textContent=String(stages.length);
   $("#plan-save-note").textContent=state.dirty?"Plan has unsaved changes":"Changes stay in this workspace";
-  const preview=$("#preview-prompts");preview.textContent=included.length?`Generate ${included.length} enabled`:"Generate enabled";preview.disabled=!included.length||Boolean(invalidIncluded.length)||state.settings.training_mode!=="Krea 2";
-  preview.title=state.settings.training_mode!=="Krea 2"?"Standalone prompt preview is currently available for Krea 2.":invalidIncluded.length?"Fix the included prompt cards marked Needs attention before generating previews.":"Generate standalone previews without leaving this plan.";
+  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3=state.settings.training_mode==="MiniMax H3 (Experimental)";
+  preview.textContent=h3?"Preview one prompt at a time":included.length?`Generate ${included.length} enabled`:"Generate enabled";
+  preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3;
+  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":h3?"Use Generate preview on an individual MiniMax H3 prompt card; each run reloads the large models safely in sequence.":invalidIncluded.length?"Fix the included prompt cards marked Needs attention before generating previews.":"Generate standalone previews without leaving this plan.";
 }
 function promptMeta(prompt){
   const values=[`${prompt.width||"—"} × ${prompt.height||"—"}`,`${prompt.steps||"—"} steps`,String(prompt.seed??"").trim()?`Seed ${prompt.seed}`:"Random seed"];
@@ -465,7 +477,7 @@ function renderPromptCards(){
     const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
     const thumbnail=linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
-    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" ${state.settings.training_mode!=="Krea 2"||cardIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" ${!["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode)||cardIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
     card.querySelector("img")?.addEventListener("error",event=>event.currentTarget.remove());
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
     card.querySelectorAll('[data-action="edit"]').forEach(button=>button.addEventListener("click",()=>openPlanPromptEditor(index,button)));
@@ -504,7 +516,7 @@ function renderPlanPromptEditor(){
   const words=planEditorSection("Prompt text","This is the content you will compare across checkpoints.");
   words.querySelector(".guided-fields").append(
     objectField("Positive prompt","prompt",prompt.prompt||"",value=>prompt.prompt=value,{type:"textarea",wide:true,help:"Describe the result Musubi should generate. Hover or focus this label for help."}),
-    objectField("Negative prompt","neg",prompt.neg||"",value=>prompt.neg=value,{type:"textarea",wide:true,help:"Optional concepts or defects to discourage in this comparison sample."})
+    objectField("Negative prompt","neg",prompt.neg||"",value=>prompt.neg=value,{type:"textarea",wide:true,help:mode==="MiniMax H3 (Experimental)"?"MiniMax H3 does not use classifier-free guidance. Leave this blank.":"Optional concepts or defects to discourage in this comparison sample."})
   );
   const resolution=planEditorSection("Frame and composition","Use a preset or enter an exact size. The selected values are preserved in Musubi's prompt file.");
   const presets=document.createElement("div");presets.className="resolution-presets";
@@ -518,8 +530,8 @@ function renderPlanPromptEditor(){
   );
   const sampling=planEditorSection("Sampling behavior","Keep the seed fixed for a direct checkpoint comparison, or leave it blank for a random seed.");
   sampling.querySelector(".guided-fields").append(
-    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":"Number of denoising steps for this sample."}),
-    objectField("Guidance","guidance",prompt.guidance??"",value=>prompt.guidance=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses 5.5; Turbo usually uses 1.0.":"Classifier-free guidance for this sample."}),
+    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":mode==="MiniMax H3 (Experimental)"?"28 steps is the experimental MiniMax H3 default.":"Number of denoising steps for this sample."}),
+    objectField("Guidance","guidance",prompt.guidance??"",value=>prompt.guidance=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses 5.5; Turbo usually uses 1.0.":mode==="MiniMax H3 (Experimental)"?"MiniMax H3 is guidance-distilled. Keep this at 1.0.":"Classifier-free guidance for this sample."}),
     objectField("Seed","seed",prompt.seed??"",value=>prompt.seed=value,{type:"number",help:"A fixed seed makes visual changes across checkpoints easier to attribute to training."})
   );
   const seedActions=document.createElement("div");seedActions.className="seed-actions";seedActions.innerHTML=`<span>Seed mode</span><button type="button" class="${String(prompt.seed??"").trim()?"active":""}" data-seed-mode="fixed">Fixed</button><button type="button" class="${String(prompt.seed??"").trim()?"":"active"}" data-seed-mode="random">Random</button>`;
@@ -541,7 +553,7 @@ function renderPlanPromptEditor(){
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${prompt.enabled!==false?"checked":""}><span><strong>Include in scheduled training samples</strong><small>Turning this off keeps the card and its settings without sending it to Musubi.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{prompt.enabled=event.target.checked;$("#plan-prompt-editor-state").textContent=prompt.enabled?"Included in scheduled samples":"Not included in scheduled samples";sync()});host.append(include);
-  const refreshPreviewAction=()=>{$("#plan-prompt-preview").disabled=mode!=="Krea 2"||Boolean(promptCardIssues(prompt,index).length)};
+  const refreshPreviewAction=()=>{$("#plan-prompt-preview").disabled=!["Krea 2","MiniMax H3 (Experimental)"].includes(mode)||Boolean(promptCardIssues(prompt,index).length)};
   host.oninput=refreshPreviewAction;host.onchange=refreshPreviewAction;refreshPreviewAction();
 }
 function stageHandoff(previous,current){
@@ -595,10 +607,10 @@ function renderStageEditor(){
     scheduleFields.append(limitMode==="steps"?objectField("Maximum steps","steps",stage.steps||1,value=>{stage.steps=value;stage.epochs=""},{type:"number"}):objectField("Epochs","epochs",stage.epochs||1,value=>{stage.epochs=value;stage.steps=""},{type:"number"}));
   }
   host.append(schedule);
-  if(!face&&["Krea 2","Flux.2 Klein"].includes(mode)){
+  if(!face&&["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode)){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.innerHTML='<summary>Stage regularization overrides</summary><p>Inherit follows the main recipe. An explicit setting affects only this stage.</p><div class="guided-fields"></div>';
     const fields=advanced.querySelector(".guided-fields");fields.append(objectField("DOP behavior","dop_mode",stage.dop_mode||"inherit",value=>stage.dop_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Enable for this stage",value:"enable"},{label:"Disable for this stage",value:"disable"}]}),objectField("DOP strength","dop_loss_weight",stage.dop_loss_weight||"",value=>stage.dop_loss_weight=value,{type:"number"}),objectField("DOP trigger word","dop_trigger_word",stage.dop_trigger_word||"",value=>stage.dop_trigger_word=value),objectField("DOP class word","dop_class_word",stage.dop_class_word||"",value=>stage.dop_class_word=value));
-    if(mode==="Krea 2")fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
+    if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode))fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${stage.enabled!==false?"checked":""}><span><strong>Include this stage</strong><small>Disabled stages stay in the plan but are skipped during training.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{stage.enabled=event.target.checked;$("#stage-editor-state").textContent=stage.enabled?"Included in the staged run":"Not included in the staged run";sync()});host.append(include);
@@ -650,10 +662,10 @@ function clientTrainingSettingsSummary(){
     let dop=`DOP ${Number(settings.dop_loss_weight)>0?Number(settings.dop_loss_weight):"?"}`;
     if(String(settings.dop_class_word||"").trim())dop+=` (${settings.dop_class_word})`;parts.push(dop);
   }
-  if(settings.training_mode==="Krea 2"){
+  if(["Krea 2","MiniMax H3 (Experimental)"].includes(settings.training_mode)){
     if(Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
     if(Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
-    if(String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
+    if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
   }
   const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
   return `Settings: ${parts.join("; ")}`;
@@ -694,11 +706,15 @@ function renderLibrary(){
 function openLibraryEditor(entry){$("#library-edit-id").value=entry.id;$("#library-edit-name").value=entry.name||"";$("#library-edit-prompt").value=entry.prompt_data?.prompt||"";$("#library-edit-collection").value=entry.collection||"";$("#library-edit-tags").value=(entry.tags||[]).join(", ");$("#prompt-editor-dialog").showModal()}
 function faceConfig(){state.settings.face_refinement_config=state.settings.face_refinement_config&&typeof state.settings.face_refinement_config==="object"?state.settings.face_refinement_config:{};return state.settings.face_refinement_config}
 function renderFaceWorkspace(){
-  const config=faceConfig(),set=(key,value)=>{config[key]=value};
+  const config=faceConfig(),set=(key,value)=>{config[key]=value},isH3=state.settings.training_mode==="MiniMax H3 (Experimental)",supportsFace=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
   config.pose_plan ||= {enabled:false,preset:"balanced_identity",overall_anchor_weight:.8,variations:["natural","studio","cinematic","expression"],buckets:{}};
   ["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"].forEach(name=>{config.pose_plan.buckets[name]||={enabled:true,share:14.286,target:.55,patience:2,plateau_patience:4,min_evaluations:2,prompts:[]}});
-  $("#face-mode-warning").style.display=state.settings.training_mode==="Krea 2"?"none":"";
-  const setup=$("#face-setup-fields");setup.innerHTML="";setup.append(objectField("Starting LoRA source","input_mode",config.input_mode||"previous_stage",v=>set("input_mode",v),{type:"select",options:[{label:"Use LoRA from previous stage",value:"previous_stage"},{label:"Refine an existing LoRA",value:"existing_lora"}]}),objectField("Input LoRA","input_lora",config.input_lora||state.settings.network_weights||"",v=>set("input_lora",v),{wide:true,browseKind:"file",help:"Required when refinement is the first stage; later face stages can consume the previous stage automatically."}),objectField("Trigger word","trigger_word",config.trigger_word||"",v=>set("trigger_word",v),{help:"The unique subject token used by reference and evaluation prompts."}),objectField("Reference directory","reference_dir",config.reference_dir||"",v=>set("reference_dir",v),{wide:true,browseKind:"directory"}),objectField("Face model directory","face_model_dir",config.face_model_dir||"",v=>set("face_model_dir",v),{wide:true,browseKind:"directory"}),objectField("License acknowledged","license_acknowledged",config.license_acknowledged||false,v=>set("license_acknowledged",v),{type:"boolean"}));
+  $("#face-mode-warning").style.display=supportsFace?"none":"";
+  const evaluationTab=$('[data-face-step="evaluation"]');
+  evaluationTab.disabled=isH3;
+  evaluationTab.title=isH3?"Fixed Turbo evaluation is Krea 2-only; MiniMax H3 refinement itself is available.":"";
+  const setup=$("#face-setup-fields");setup.innerHTML="";setup.append(objectField("Starting LoRA source","input_mode",config.input_mode||"previous_stage",v=>set("input_mode",v),{type:"select",options:[{label:"Use LoRA from previous stage",value:"previous_stage"},{label:"Refine an existing LoRA",value:"existing_lora"}]}),objectField("Input LoRA","input_lora",config.input_lora||state.settings.network_weights||"",v=>set("input_lora",v),{wide:true,browseKind:"file",help:"Required when refinement is the first stage; later face stages can consume the previous stage automatically."}),objectField("Trigger word","trigger_word",config.trigger_word||"",v=>set("trigger_word",v),{help:"The unique subject token used by reference and evaluation prompts."}),objectField("Reference directory","reference_dir",config.reference_dir||"",v=>set("reference_dir",v),{wide:true,browseKind:"directory",help:"Folder containing clear reference photographs of the person whose identity should be preserved."}),objectField("AntelopeV2 model folder","face_model_dir",config.face_model_dir||"",v=>set("face_model_dir",v),{wide:true,browseKind:"directory",help:"Click Browse and choose the AntelopeV2 folder itself. Existing InsightFace folders with glintr100.onnx and scrfd_10g_bnkps.onnx work, as do folders downloaded by this GUI."}),objectField("I acknowledge the AntelopeV2 model terms","license_acknowledged",config.license_acknowledged||false,v=>set("license_acknowledged",v),{type:"boolean",help:"Required only before this GUI downloads third-party model files. It is not needed merely to select models you already have."}));
+  const modelFolderHelp=document.createElement("div");modelFolderHelp.className="plan-card-note";modelFolderHelp.innerHTML="<strong>Already have InsightFace or ReActor models?</strong> Use Browse and select the folder containing <code>glintr100.onnx</code> and <code>scrfd_10g_bnkps.onnx</code>. Select the folder, not an individual ONNX file. Otherwise, leave the default folder selected, acknowledge the model terms, and use the download button below.";setup.append(modelFolderHelp);
   const recipe=$("#face-recipe-fields");recipe.innerHTML="";recipe.className="face-recipe-groups";
   const addRecipeGroup=(title,copy,controls,open=false)=>{
     const group=document.createElement("details");group.className="recipe-group";group.open=open;
@@ -711,7 +727,7 @@ function renderFaceWorkspace(){
     objectField("Learning rate","learning_rate",config.learning_rate??1e-4,v=>set("learning_rate",v),{type:"number"}),
     objectField("Denoising steps","denoise_steps",config.denoise_steps??12,v=>set("denoise_steps",v),{type:"number"}),
     objectField("DRaFT truncation K","draft_k",config.draft_k??1,v=>set("draft_k",v),{type:"number"}),
-    objectField("CFG scale","cfg_scale",config.cfg_scale??5.5,v=>set("cfg_scale",v),{type:"number"})
+    objectField("CFG scale","cfg_scale",isH3?1:(config.cfg_scale??5.5),v=>set("cfg_scale",v),{type:"number",help:isH3?"MiniMax H3 is guidance-distilled, so this is fixed at 1.0.":"Krea 2 face-refinement classifier-free guidance."})
   ],true);
   addRecipeGroup("Quality and stopping","Identity targets, anti-copy pressure, and automatic stopping.",[
     objectField("Target similarity","target_similarity",config.target_similarity??.45,v=>set("target_similarity",v),{type:"number"}),
@@ -730,7 +746,7 @@ function renderFaceWorkspace(){
   addRecipeGroup("Runtime and checkpoints","Memory, previews, and saved refinement checkpoints.",[
     objectField("Preview every","preview_every",config.preview_every??5,v=>set("preview_every",v),{type:"number"}),
     objectField("Save every","save_every",config.save_every??10,v=>set("save_every",v),{type:"number"}),
-    objectField("Blocks to swap","blocks_to_swap",config.blocks_to_swap??10,v=>set("blocks_to_swap",v),{type:"number"}),
+    objectField("Blocks to swap","blocks_to_swap",config.blocks_to_swap??(isH3?35:10),v=>set("blocks_to_swap",v),{type:"number",help:isH3?"MiniMax H3 face refinement is substantially heavier than normal LoRA training. Start at 35 on 24 GB.":"Move inactive transformer blocks through CPU memory to reduce VRAM."}),
     objectField("GPU","gpu_id",config.gpu_id||"auto",v=>set("gpu_id",v)),
     objectField("Q/K/V/O only","qkvo_only",config.qkvo_only??true,v=>set("qkvo_only",v),{type:"boolean"}),
     objectField("Checkpoint VAE","checkpoint_vae",config.checkpoint_vae??true,v=>set("checkpoint_vae",v),{type:"boolean"})
@@ -747,7 +763,8 @@ function renderFaceWorkspace(){
     row.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${name}] ${phrases[name]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderFaceWorkspace();sync()});
     poseHost.append(row);
   });
-  const evalHost=$("#face-eval-fields");evalHost.innerHTML="";evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
+  const evalHost=$("#face-eval-fields");evalHost.innerHTML=isH3?'<div class="issue warning">MiniMax H3 DRaFT refinement is available, but the fixed comparison recipe is not validated yet. Use standalone MiniMax H3 prompt previews to inspect checkpoints.</div>':"";if(!isH3)evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
+  ["#face-baseline","#face-compare","#load-face-result","#open-face-results","#build-weak-pose-plan"].forEach(selector=>{$(selector).disabled=isH3});
   const report=config.preflight_report,excluded=new Set(config.excluded_reference_images||[]),poseNames=["uncertain","frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
   const reportHost=$("#face-preflight-report");
   if(report){
@@ -1537,10 +1554,10 @@ $("#add-face-stage").addEventListener("click",addOrUpdateFaceStage);$("#review-f
 $("#download-face-models").addEventListener("click",async()=>{
   const config=faceConfig();
   if(!config.license_acknowledged)return toast("Acknowledge the third-party model license before downloading.");
-  if(!confirm("Download the AntelopeV2 detection and recognition models (about 220 MB) into the selected model directory?"))return;
+  if(!confirm("Download the AntelopeV2 detection and recognition models (about 280 MB) into the selected model folder?"))return;
   const button=$("#download-face-models");button.disabled=true;button.textContent="Downloading AntelopeV2…";
   try{const payload=await api("/api/face/models/download",{method:"POST",body:JSON.stringify({face_model_dir:config.face_model_dir})});config.face_model_dir=payload.model_dir;renderFaceWorkspace();sync();toast("AntelopeV2 models are ready.")}
-  catch(e){toast(e.message)}finally{button.disabled=false;button.textContent="Download AntelopeV2 models"}
+  catch(e){toast(e.message)}finally{button.disabled=false;button.textContent="Download models to selected folder"}
 });
 $("#apply-pose-preset").addEventListener("click",async()=>{try{const config=faceConfig(),payload=await api("/api/face/pose-preset",{method:"POST",body:JSON.stringify({preset:$("#pose-preset").value,plan:config.pose_plan})});config.pose_plan=payload.pose_plan;config.pose_aware=true;renderFaceWorkspace();sync();toast("Pose preset applied.")}catch(e){toast(e.message)}});
 $("#import-pose-prompts").addEventListener("click",()=>$("#pose-prompt-file").click());

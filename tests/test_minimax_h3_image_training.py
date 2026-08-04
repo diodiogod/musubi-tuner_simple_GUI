@@ -1,11 +1,14 @@
 from contextlib import nullcontext
 
+import pytest
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file
 
 from musubi_tuner.dataset.cache_io import (
     save_latent_cache_minimax_h3_image,
     save_text_encoder_output_cache_minimax_h3_image,
+    is_latent_cache_minimax_h3_image_current,
 )
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
 from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
@@ -68,7 +71,7 @@ def test_image_cache_contract_uses_shared_dataset_keys(tmp_path):
     item = ItemInfo("item", "caption", (32, 32), (32, 32))
     item.latent_cache_path = str(tmp_path / "item_0032x0032_mmh3.safetensors")
     item.text_encoder_output_cache_path = str(tmp_path / "item_mmh3_te.safetensors")
-    latent = torch.zeros(24, 1, 2, 2, dtype=torch.float16)
+    latent = torch.zeros(24, 1, 2, 2, dtype=torch.float32)
     hidden = torch.zeros(3, 5120, dtype=torch.bfloat16)
 
     save_latent_cache_minimax_h3_image(item, latent)
@@ -76,12 +79,22 @@ def test_image_cache_contract_uses_shared_dataset_keys(tmp_path):
     latent_state = load_file(item.latent_cache_path)
     text_state = load_file(item.text_encoder_output_cache_path)
 
-    assert set(latent_state) == {"latents_1x2x2_float16"}
+    assert set(latent_state) == {"latents_1x2x2_float32"}
+    with safe_open(item.latent_cache_path, framework="pt", device="cpu") as cache:
+        assert cache.metadata()["posterior_policy"] == "video_vae=fp32"
+    assert is_latent_cache_minimax_h3_image_current(item.latent_cache_path)
     assert set(text_state) == {
         "varlen_mmh3_hidden_states_bfloat16",
         "varlen_mmh3_token_tags_int64",
     }
     assert torch.equal(text_state["varlen_mmh3_token_tags_int64"], torch.ones(3, dtype=torch.int64))
+
+
+def test_h3_latent_cache_rejects_unmarked_precision(tmp_path):
+    item = ItemInfo("item", "caption", (32, 32), (32, 32))
+    item.latent_cache_path = str(tmp_path / "item_0032x0032_mmh3.safetensors")
+    with pytest.raises(ValueError, match="FP32 VAE posterior"):
+        save_latent_cache_minimax_h3_image(item, torch.zeros(24, 1, 2, 2, dtype=torch.float16))
 
 
 def test_minimax_h3_lora_modelspec_metadata():

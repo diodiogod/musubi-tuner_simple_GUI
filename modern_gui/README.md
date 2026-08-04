@@ -44,9 +44,9 @@ remote-access mode in the launcher.
   handoffs, cache policy, stage-specific validation, and dedicated editors;
 - user notes plus the same generated settings summary that is attached to the
   actual run;
-- Krea standalone prompt previews and automatically refreshed sample outputs;
-- dedicated face-refinement setup, reference analysis/review, pose plan,
-  fixed Turbo evaluation, and result galleries;
+- Krea batch previews plus one-at-a-time MiniMax H3 standalone previews and automatically refreshed sample outputs;
+- dedicated Krea/MiniMax face-refinement setup, reference analysis/review, and pose plan,
+  plus Krea-only fixed Turbo evaluation and result galleries;
 - Musubi command previews through the existing backend adapters;
 - normal and typed staged process execution with bounded live logs;
 - standard-state and face-LoRA stage handoffs;

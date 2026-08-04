@@ -10,11 +10,13 @@ import torch
 import musubi_tuner.cache_latents as cache_latents
 from musubi_tuner.dataset import config_utils
 from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
-from musubi_tuner.dataset.cache_io import save_latent_cache_minimax_h3_image
+from musubi_tuner.dataset.cache_io import (
+    is_latent_cache_minimax_h3_image_current,
+    save_latent_cache_minimax_h3_image,
+)
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
 from musubi_tuner.minimax_h3.video_vae import encode_video_target, load_video_vae
-from musubi_tuner.utils.model_utils import str_to_dtype
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,12 @@ def main() -> None:
     if args.disable_cudnn_backend:
         torch.backends.cudnn.enabled = False
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    dtype = torch.float16 if args.vae_dtype is None else str_to_dtype(args.vae_dtype)
+    if args.vae_dtype not in {None, "float32", "fp32"}:
+        raise ValueError(
+            "MiniMax-H3 target latents must be encoded with the VAE in FP32; "
+            "remove --vae_dtype or set it to float32"
+        )
+    dtype = torch.float32
 
     blueprint = BlueprintGenerator(ConfigSanitizer()).generate(
         config_utils.load_user_config(args.dataset_config),
@@ -70,7 +77,12 @@ def main() -> None:
     def encode(batch: list[ItemInfo]):
         encode_and_save_batch(vae, batch, args.cache_seed)
 
-    cache_latents.encode_datasets(group.datasets, encode, args)
+    cache_latents.encode_datasets(
+        group.datasets,
+        encode,
+        args,
+        skip_existing_validator=is_latent_cache_minimax_h3_image_current,
+    )
 
 
 if __name__ == "__main__":

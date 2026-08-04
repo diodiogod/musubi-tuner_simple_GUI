@@ -16,6 +16,21 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_text_encoder": "",
     "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
     "minimax_h3_convrot_bwd_mode": "bf16",
+    "minimax_h3_text_encoder_load_mode": "auto",
+    "minimax_h3_preview_decode_min_free_gb": "9.0",
+}
+
+MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
+    "krea2_generalization_preset",
+    "krea2_weight_noise_sigma",
+    "krea2_weight_noise_mode",
+    "krea2_weight_noise_bound_norm",
+    "krea2_depth_anchor_weight",
+    "krea2_depth_anchor_model",
+    "krea2_depth_anchor_input_size",
+    "krea2_depth_anchor_gradient_weight",
+    "krea2_depth_anchor_grad_checkpoint",
+    "krea2_keep_depth_helpers_on_gpu",
 }
 
 FIELD_LABELS = {
@@ -210,8 +225,10 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     modes = MODE_RULES.get(key)
     if key.startswith("flux2_") or key == "fp8_text_encoder":
         modes = ["Flux.2 Klein", "Flux.2 Dev"]
+    elif key in MINIMAX_H3_SHARED_REGULARIZATION_KEYS:
+        modes = ["Krea 2", MINIMAX_H3_MODE]
     elif key.startswith("krea2_") or key.startswith("dop_"):
-        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein"]
+        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein", MINIMAX_H3_MODE]
     elif key.startswith("minimax_h3_"):
         modes = [MINIMAX_H3_MODE]
     if key in {"network_type", "mixed_precision", "compile", "fp8_base", "fp8_scaled"}:
