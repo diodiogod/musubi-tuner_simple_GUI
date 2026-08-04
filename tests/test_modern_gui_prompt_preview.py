@@ -102,12 +102,154 @@ def test_build_minimax_h3_preview_uses_compact_models_and_latest_lora(tmp_path: 
             "blocks_to_swap": "30",
             "attention_mechanism": "sdpa",
         },
-        [{"prompt": "portrait", "width": 768, "height": 768, "steps": 28, "guidance": 1}],
+        [{"prompt": "portrait", "width": 768, "height": 768, "guidance": 1}],
     )
-    assert command[1].endswith("minimax_h3_image_generate.py")
+    assert command[1].endswith("minimax_h3_video_generate.py")
     assert command[command.index("--network_weights") + 1] == str(lora)
-    assert command[command.index("--shift") + 1] == "12.0"
+    assert command[command.index("--lora_multiplier") + 1] == "1.0"
+    assert command[command.index("--video_shift") + 1] == "12.0"
+    assert command[command.index("--frames") + 1] == "39"
+    assert command[command.index("--steps") + 1] == "20"
+    assert Path(command[command.index("--output") + 1]).suffix == ".mp4"
     assert save_path == run / "sample_test"
+
+
+def test_build_minimax_h3_preview_finds_lora_when_output_dir_is_run_folder(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "portrait-run"
+    run.mkdir()
+    lora = run / "portrait-000002.safetensors"
+    lora.write_bytes(b"lora")
+
+    command, _ = build_minimax_h3_preview(
+        {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_dit_model": paths["dit.safetensors"],
+            "vae_model": paths["vae.safetensors"],
+            "minimax_h3_text_encoder": paths["te.safetensors"],
+            "output_dir": str(run),
+            "output_name": "portrait",
+            "preview_use_lora": True,
+        },
+        [{"prompt": "portrait", "width": 768, "height": 768, "guidance": 1}],
+    )
+
+    assert command[command.index("--network_weights") + 1] == str(lora)
+
+
+def test_build_minimax_h3_preview_can_explicitly_disable_lora(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "portrait"
+    run.mkdir()
+    (run / "portrait-000002.safetensors").write_bytes(b"lora")
+
+    command, _ = build_minimax_h3_preview(
+        {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_dit_model": paths["dit.safetensors"],
+            "vae_model": paths["vae.safetensors"],
+            "minimax_h3_text_encoder": paths["te.safetensors"],
+            "output_dir": str(tmp_path),
+            "output_name": "portrait",
+            "preview_use_lora": False,
+        },
+        [{"prompt": "portrait", "width": 768, "height": 768, "guidance": 1}],
+    )
+
+    assert "--network_weights" not in command
+
+
+def test_build_minimax_h3_preview_uses_selected_lora_and_strength(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors", "identity.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+
+    command, _ = build_minimax_h3_preview(
+        {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_dit_model": paths["dit.safetensors"],
+            "vae_model": paths["vae.safetensors"],
+            "minimax_h3_text_encoder": paths["te.safetensors"],
+            "output_dir": str(tmp_path),
+            "preview_use_lora": True,
+            "preview_lora_path": paths["identity.safetensors"],
+            "preview_lora_multiplier": "0.75",
+        },
+        [{"prompt": "portrait", "width": 768, "height": 768, "guidance": 1}],
+    )
+
+    assert command[command.index("--network_weights") + 1] == paths["identity.safetensors"]
+    assert command[command.index("--lora_multiplier") + 1] == "0.75"
+
+
+def test_build_minimax_h3_preview_uses_selected_resume_state_model(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "portrait"
+    run.mkdir()
+    older = run / "portrait-000001.safetensors"
+    older.write_bytes(b"older")
+    state = run / "portrait-state"
+    state.mkdir()
+    resumed = state / "model.safetensors"
+    resumed.write_bytes(b"completed")
+
+    command, _ = build_minimax_h3_preview(
+        {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_dit_model": paths["dit.safetensors"],
+            "vae_model": paths["vae.safetensors"],
+            "minimax_h3_text_encoder": paths["te.safetensors"],
+            "output_dir": str(tmp_path),
+            "output_name": "portrait",
+            "starting_point_mode": "state",
+            "resume_path": str(state),
+            "preview_use_lora": True,
+        },
+        [{"prompt": "portrait", "guidance": 1}],
+    )
+
+    assert command[command.index("--network_weights") + 1] == str(resumed)
+
+
+def test_build_minimax_h3_preview_does_not_fallback_from_broken_resume_state(tmp_path: Path):
+    paths = {}
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "portrait"
+    run.mkdir()
+    (run / "portrait-000001.safetensors").write_bytes(b"older")
+    state = run / "portrait-state"
+    state.mkdir()
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "minimax_h3_dit_model": paths["dit.safetensors"],
+        "vae_model": paths["vae.safetensors"],
+        "minimax_h3_text_encoder": paths["te.safetensors"],
+        "output_dir": str(tmp_path),
+        "output_name": "portrait",
+        "starting_point_mode": "state",
+        "resume_path": str(state),
+        "preview_use_lora": True,
+    }
+
+    with pytest.raises(ValueError, match="no model.safetensors"):
+        build_minimax_h3_preview(settings, [{"prompt": "portrait", "guidance": 1}])
 
 
 def test_build_minimax_h3_preview_rejects_cfg_and_batch(tmp_path: Path):
@@ -127,3 +269,44 @@ def test_build_minimax_h3_preview_rejects_cfg_and_batch(tmp_path: Path):
         build_minimax_h3_preview(settings, [{"prompt": "one"}, {"prompt": "two"}])
     with pytest.raises(ValueError, match="negative prompts"):
         build_minimax_h3_preview(settings, [{"prompt": "one", "neg": "blur"}])
+
+
+def test_build_minimax_h3_preview_keeps_explicit_legacy_still(tmp_path: Path):
+    paths = []
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths.append(str(path))
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "minimax_h3_dit_model": paths[0],
+        "vae_model": paths[1],
+        "minimax_h3_text_encoder": paths[2],
+        "output_dir": str(tmp_path),
+        "preview_use_lora": False,
+    }
+
+    command, _ = build_minimax_h3_preview(settings, [{"prompt": "one", "frames": 1}])
+
+    assert command[1].endswith("minimax_h3_image_generate.py")
+    assert "--frames" not in command
+    assert "--shift" in command
+    assert Path(command[command.index("--output") + 1]).suffix == ".png"
+
+
+def test_build_minimax_h3_preview_rejects_non_native_video_length(tmp_path: Path):
+    paths = []
+    for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths.append(str(path))
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "minimax_h3_dit_model": paths[0],
+        "vae_model": paths[1],
+        "minimax_h3_text_encoder": paths[2],
+        "output_dir": str(tmp_path),
+    }
+
+    with pytest.raises(ValueError, match="5, 22, 39"):
+        build_minimax_h3_preview(settings, [{"prompt": "one", "frames": 12}])

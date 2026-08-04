@@ -154,7 +154,23 @@ def test_sample_test_completion_captures_new_prompt_thumbnail(monkeypatch, tmp_p
 
     snapshot = wait_until_finished(supervisor)
     assert snapshot["active"]["captured_thumbnails"] == 1
+    assert snapshot["active"]["sample_outputs"] == [str(image.resolve())]
     assert prompt_library.PromptLibraryStore().prompts[0]["prompt_data"]["prompt"] == "portrait"
+
+
+def test_supervisor_discovers_new_video_preview_outputs(tmp_path):
+    output = tmp_path / "sample_test"
+    output.mkdir()
+    old = output / "old.mp4"
+    old.write_bytes(b"old")
+    generated = output / "generated.mp4"
+    generated.write_bytes(b"video")
+
+    outputs = jobs.JobSupervisor._find_new_sample_outputs(
+        {"save_path": str(output), "existing_outputs": [str(old.resolve())]}
+    )
+
+    assert outputs == [str(generated.resolve())]
 
 
 def test_supervisor_preflights_typed_face_environment(monkeypatch, tmp_path):

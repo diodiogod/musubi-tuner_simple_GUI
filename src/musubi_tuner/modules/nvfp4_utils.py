@@ -239,19 +239,17 @@ class PackedInt8Embedding(nn.Module):
         self.compute_dtype = compute_dtype
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        selected = F.embedding(input_ids, self.weight).to(self.compute_dtype)
+        selected = F.embedding(input_ids, self.weight).to(torch.float32)
         scale = self.weight_scale
         if scale.numel() == 1:
-            selected_scale = scale.reshape(()).to(dtype=self.compute_dtype)
+            selected_scale = scale.reshape(()).to(dtype=torch.float32)
         elif scale.shape[0] == self.num_embeddings and scale.numel() == self.num_embeddings:
             # ComfyUI may store tensorwise-INT8 embedding scales per vocabulary row as
             # [num_embeddings, 1]. Select only the requested rows, just like the packed weight.
-            selected_scale = F.embedding(input_ids, scale.reshape(self.num_embeddings, 1)).to(
-                dtype=self.compute_dtype
-            )
+            selected_scale = F.embedding(input_ids, scale.reshape(self.num_embeddings, 1)).to(dtype=torch.float32)
         else:
             raise ValueError(
                 "INT8 embedding scale must be scalar or contain one value per vocabulary row, "
                 f"got {tuple(scale.shape)}"
             )
-        return selected * selected_scale
+        return (selected * selected_scale).to(self.compute_dtype)

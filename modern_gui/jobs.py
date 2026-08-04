@@ -414,9 +414,11 @@ class JobSupervisor:
 
     def _finish(self, return_code: int) -> None:
         captured = 0
+        sample_outputs: list[str] = []
         with self._lock:
             context = dict((self._active or {}).get("_completion_context") or {})
         if return_code == 0 and context.get("kind") == "sample_test":
+            sample_outputs = self._find_new_sample_outputs(context)
             captured = self._capture_sample_test_thumbnails(context)
         with self._lock:
             stopped = self._stop_requested
@@ -425,6 +427,8 @@ class JobSupervisor:
                 self._active["finished_at"] = _utc_now()
                 self._active["return_code"] = return_code
                 self._active["phase"] = "finished"
+                if sample_outputs:
+                    self._active["sample_outputs"] = sample_outputs
                 if captured:
                     self._active["captured_thumbnails"] = captured
                 record = {key: value for key, value in self._active.items() if key not in {"settings", "stage_settings", "_completion_context"}}
@@ -435,6 +439,18 @@ class JobSupervisor:
                 history.insert(0, record)
                 _write_history(history)
             self._process = None
+
+    @staticmethod
+    def _find_new_sample_outputs(context: dict[str, Any]) -> list[str]:
+        save_path = Path(str(context.get("save_path") or ""))
+        before = set(context.get("existing_outputs") or [])
+        supported = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
+        outputs = [
+            path for path in save_path.glob("*")
+            if path.is_file() and path.suffix.lower() in supported and str(path.resolve()) not in before
+        ]
+        outputs.sort(key=lambda path: (path.stat().st_mtime, path.name))
+        return [str(path.resolve()) for path in outputs]
 
     @staticmethod
     def _capture_sample_test_thumbnails(context: dict[str, Any]) -> int:

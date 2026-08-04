@@ -16,6 +16,7 @@ from musubi_tuner.minimax_h3_image_train_network import (
     MiniMaxH3ImageNetworkTrainer,
     minimax_h3_image_setup_parser,
 )
+from musubi_tuner.minimax_h3_image_cache_text_encoder_outputs import is_valid_minimax_h3_text_cache
 from musubi_tuner.training.parser_common import setup_parser_common
 from musubi_tuner.utils.sai_model_spec import build_metadata
 
@@ -88,6 +89,17 @@ def test_image_cache_contract_uses_shared_dataset_keys(tmp_path):
         "varlen_mmh3_token_tags_int64",
     }
     assert torch.equal(text_state["varlen_mmh3_token_tags_int64"], torch.ones(3, dtype=torch.int64))
+
+
+def test_h3_text_cache_validator_rejects_legacy_bf16_and_accepts_fp32(tmp_path):
+    item = ItemInfo("item", "caption", (32, 32), (32, 32))
+    item.text_encoder_output_cache_path = str(tmp_path / "item_mmh3_te.safetensors")
+
+    save_text_encoder_output_cache_minimax_h3_image(item, torch.zeros(3, 5120, dtype=torch.bfloat16))
+    assert not is_valid_minimax_h3_text_cache(item)
+
+    save_text_encoder_output_cache_minimax_h3_image(item, torch.zeros(3, 5120, dtype=torch.float32))
+    assert is_valid_minimax_h3_text_cache(item)
 
 
 def test_h3_latent_cache_rejects_unmarked_precision(tmp_path):

@@ -6,17 +6,17 @@
 
 The DiT is conditioned on the **unnormalized hidden state after language layer 50** — the
 last-layer output of the truncated checkpoint, with NO final norm (comfy applies none). We
-build a transformers Qwen3Model (its layout matches the checkpoint's `model.layers.*` 1:1),
-strip the `model.` prefix, skip the vision tower (`visual.*` — unused for text-only captions),
-keep the compact checkpoint's NVFP4/INT8 tensors packed between forwards, and replace the final
-norm with Identity so last_hidden_state IS the raw layer-50 output. The older BF16-to-NF4 load
-path remains available as a compatibility fallback.
+build a standalone text-only Qwen3-VL tower whose execution follows ComfyUI's Qwen/Llama
+runtime, strip the `model.` prefix, skip the vision tower (`visual.*` — unused for text-only
+captions), and keep the compact checkpoint's NVFP4/INT8 tensors packed between forwards. The
+older BF16-to-NF4 load path remains available as a compatibility fallback.
 
 Image LoRA training uses text-only captions (no vision blocks), tokenized raw with NO special
 tokens — the H3 convention. The tokenizer is loaded from Qwen3-VL-32B or a user-provided
 local processor directory.
 
-Output: [1, L, 5120] bf16, exactly what the DiT's condition_proj expects.
+Output: [1, L, 5120] fp32. ComfyUI runs this language tower in fp32; preserving that precision
+avoids a large error amplification in the deeper Qwen layers. The DiT casts conditioning as needed.
 """
 
 import torch
@@ -43,6 +43,7 @@ _QWEN3_32B_TRUNC50 = dict(
     hidden_size=5120, num_hidden_layers=50, num_attention_heads=64, num_key_value_heads=8,
     head_dim=128, intermediate_size=25600, vocab_size=151936, max_position_embeddings=262144,
     rms_norm_eps=1e-6, rope_theta=5000000.0, attention_bias=False, tie_word_embeddings=False,
+    rope_scaling={"rope_type": "default", "mrope_section": [24, 20, 20], "mrope_interleaved": True},
 )
 
 # The Qwen3 decoder linears that use packed NVFP4 or legacy NF4 (the matmul bulk).
@@ -124,14 +125,13 @@ def _dequant_comfy_weight(f, file_mod, ckpt):
 
 
 def build_qwen3_te(config_overrides=None):
-    """A Qwen3Model text encoder with no final norm (returns the raw layer-50 output)."""
-    from transformers import Qwen3Config, Qwen3Model
+    """Standalone Qwen3-VL text tower with Comfy-compatible execution."""
+    from musubi_tuner.minimax_h3.qwen3vl_text import MiniMaxQwen3VLTextConfig, MiniMaxQwen3VLTextModel
     cfg = dict(_QWEN3_32B_TRUNC50)
     if config_overrides:
         cfg.update(config_overrides)
-    model = Qwen3Model(Qwen3Config(**cfg))
-    model.norm = nn.Identity()          # comfy applies NO final norm to the layer-50 conditioning
-    return model
+    cfg.pop("rope_scaling", None)
+    return MiniMaxQwen3VLTextModel(MiniMaxQwen3VLTextConfig(**cfg))
 
 
 class MiniMaxH3TextEncoder:
@@ -154,14 +154,14 @@ class MiniMaxH3TextEncoder:
         return out.last_hidden_state.to(self.compute_dtype)   # [1, L, 5120]
 
 
-def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.bfloat16,
+def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
                        quantize=True, tokenizer_dir=None, load_mode="auto") -> MiniMaxH3TextEncoder:
     """Load the text-only Qwen3-VL-32B language tower while skipping ``visual.*``."""
     from bitsandbytes.nn import Linear4bit, Params4bit
     # Import Qwen before entering the meta-device context. Importing transformers
     # itself constructs a few scalar tensors and PyTorch 2.6 cannot call item()
     # on those if the global default device is already meta.
-    from transformers import AutoTokenizer, Qwen3Config, Qwen3Model  # noqa: F401
+    from transformers import AutoTokenizer  # noqa: F401
 
     if load_mode not in ("auto", "direct", "nf4"):
         raise ValueError(f"Unknown MiniMax-H3 text-encoder load mode: {load_mode}")
@@ -277,8 +277,6 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.bfloat16,
     # Computed (non-checkpoint) buffers stayed on meta from the meta-build. The rotary
     # embedding's inv_freq is the load-bearing one — rebuild it on the real device. A general
     # sweep materializes any other stray meta buffers to be safe.
-    from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding
-    model.rotary_emb = Qwen3RotaryEmbedding(model.config).to(dev)
     for mod in model.modules():
         for bname, buf in list(mod.named_buffers(recurse=False)):
             if buf is not None and buf.is_meta:

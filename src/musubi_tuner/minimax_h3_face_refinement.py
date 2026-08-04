@@ -42,7 +42,7 @@ def cache_prompt_embeddings(args, prompts: list[str], device: torch.device) -> l
     encoder = load_minimax_h3_te(
         args.text_encoder,
         device=device,
-        compute_dtype=torch.bfloat16,
+        compute_dtype=torch.float32,
         quantize=True,
         tokenizer_dir=args.tokenizer,
         load_mode=args.text_encoder_load_mode,

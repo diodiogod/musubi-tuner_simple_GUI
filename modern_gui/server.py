@@ -249,15 +249,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 requested = unquote(query.get("path", [""])[0])
                 settings = load_settings()
                 history = SUPERVISOR.history() + load_desktop_history()
-                sample, content_type = resolve_sample_file(requested, allowed_sample_roots(settings, history))
-                content = sample.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Cache-Control", "private, max-age=30")
-                self.end_headers()
-                self.wfile.write(content)
-                return
+                sample, _content_type = resolve_sample_file(requested, allowed_sample_roots(settings, history))
+                return self._send_file(sample, allow_ranges=sample.suffix.lower() in {".mp4", ".webm", ".mov", ".m4v"})
             if parsed.path == "/api/face-image":
                 query = parse_qs(parsed.query)
                 requested = Path(unquote(query.get("path", [""])[0])).expanduser().resolve()
@@ -506,12 +499,17 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     if "--network_weights" in command
                     else ""
                 )
+                resolved_lora_multiplier = (
+                    str(command[command.index("--lora_multiplier") + 1])
+                    if "--lora_multiplier" in command
+                    else ""
+                )
                 is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
                 preview_mode = "MiniMax H3 (Experimental)" if is_h3 else ("Krea 2 Turbo" if "--turbo" in command else "Krea 2")
                 try:
                     existing_outputs = [
                         str(path.resolve()) for path in save_path.glob("*")
-                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
                     ]
                     job = SUPERVISOR.start_commands(
                         [command],
@@ -536,6 +534,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                         "save_path": str(save_path),
                         "preview_mode": preview_mode,
                         "network_weights": resolved_lora,
+                        "lora_multiplier": resolved_lora_multiplier,
                     }
                 )
             if self.path == "/api/path/select":

@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from musubi_tuner.minimax_h3.image_text_encoder import _dequant_comfy_weight, _nvfp4_dequant
+from musubi_tuner.minimax_h3.qwen3vl_text import MiniMaxQwen3VLTextConfig, MiniMaxQwen3VLTextModel
 from musubi_tuner.modules.nvfp4_utils import PackedInt8Embedding, PackedNVFP4Linear
 
 
@@ -100,3 +101,43 @@ def test_packed_nvfp4_linear_keeps_weight_packed_between_forwards():
     assert layer.weight.dtype == torch.uint8
     assert tuple(layer.weight.shape) == (128, 32)
     torch.testing.assert_close(actual, expected)
+
+
+def _tiny_text_model():
+    config = MiniMaxQwen3VLTextConfig(
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=4,
+        vocab_size=32,
+        max_position_embeddings=64,
+        rope_dims=(1, 1, 0),
+    )
+    torch.manual_seed(7)
+    model = MiniMaxQwen3VLTextModel(config, device="cpu", dtype=torch.float32).eval()
+    for parameter in model.parameters():
+        if parameter.ndim == 1:
+            torch.nn.init.ones_(parameter)
+        else:
+            torch.nn.init.normal_(parameter, std=0.05)
+    return model
+
+
+def test_standalone_qwen3vl_tower_has_checkpoint_compatible_names_and_shape():
+    model = _tiny_text_model()
+    output = model(torch.tensor([[1, 2, 3]])).last_hidden_state
+
+    assert output.shape == (1, 3, 16)
+    names = dict(model.named_parameters())
+    assert "layers.0.self_attn.q_proj.weight" in names
+    assert "layers.1.mlp.down_proj.weight" in names
+
+
+def test_standalone_qwen3vl_tower_is_causal():
+    model = _tiny_text_model()
+    first = model(torch.tensor([[1, 2, 3]])).last_hidden_state
+    changed_future = model(torch.tensor([[1, 9, 10]])).last_hidden_state
+
+    torch.testing.assert_close(first[:, 0], changed_future[:, 0], rtol=0, atol=1e-7)

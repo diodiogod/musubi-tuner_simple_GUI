@@ -372,12 +372,23 @@ function uniqueStageLabel(base="Stage"){
 function defaultPromptForMode(){
   const mode=state.settings.training_mode||"Wan 2.2",turbo=mode==="Krea 2"&&String(state.settings.krea2_turbo_dit||"").trim();
   if(mode==="Krea 2")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:turbo?8:28,seed:42,guidance:turbo?1:5.5,...(turbo?{mu:1.15}:{})};
-  if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:1,steps:28,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
+  if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:39,fps:24,steps:20,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
   if(mode==="Wan 2.2")return {enabled:true,prompt:"",neg:"",width:832,height:480,frames:25,steps:20,seed:42,guidance:5,cfg_scale:1};
   return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:20,seed:42,guidance:5,cfg_scale:1};
 }
-function promptCardIssues(prompt,index){
-  if(prompt.enabled===false)return [];
+function ensurePreviewSettings(){
+  if(typeof state.settings.preview_use_lora!=="boolean")state.settings.preview_use_lora=true;
+  if(state.settings.preview_lora_multiplier==null||state.settings.preview_lora_multiplier==="")state.settings.preview_lora_multiplier="1.0";
+}
+function promptPreviewUsesLora(prompt){ensurePreviewSettings();return typeof prompt?._preview_use_lora==="boolean"?prompt._preview_use_lora:state.settings.preview_use_lora}
+function applyPromptModelDefaults(index){
+  const prompt=state.settings.sample_prompts_data?.[index];if(!prompt)return;
+  const mode=state.settings.training_mode||"current model",preserved=Object.fromEntries(Object.entries(prompt).filter(([key])=>key==="prompt"||key==="enabled"||key.startsWith("_library_")||key.startsWith("_preview_")));
+  Object.keys(prompt).forEach(key=>delete prompt[key]);Object.assign(prompt,defaultPromptForMode(),preserved);
+  renderPlan();sync();toast(`${mode} defaults applied to prompt ${index+1}.`);
+}
+function promptCardIssues(prompt,index,{includeDisabled=false}={}){
+  if(prompt.enabled===false&&!includeDisabled)return [];
   const issues=[],prefix=`Prompt ${index+1}`;
   if(!String(prompt.prompt||"").trim())issues.push(`${prefix} needs text`);
   [["width","width"],["height","height"],["steps","steps"],["frames","frame count"]].forEach(([key,label])=>{
@@ -393,7 +404,8 @@ function promptCardIssues(prompt,index){
   if(state.settings.training_mode==="MiniMax H3 (Experimental)"){
     if(String(prompt.neg||"").trim())issues.push(`${prefix} cannot use a negative prompt with MiniMax H3`);
     if(Number(prompt.guidance??1)!==1||Number(prompt.cfg_scale??1)!==1)issues.push(`${prefix} must keep MiniMax H3 guidance and CFG at 1.0`);
-    if(Number(prompt.frames??1)!==1)issues.push(`${prefix} must use one frame for MiniMax H3 image preview`);
+    const frames=Number(prompt.frames??39);
+    if(frames!==1&&(frames<5||(frames-5)%17!==0))issues.push(`${prefix} frames must be 5, 22, 39, ... (or 1 for the legacy still preview)`);
     if(Number(prompt.width||0)%32||Number(prompt.height||0)%32)issues.push(`${prefix} MiniMax H3 size must be a multiple of 32`);
   }
   return issues;
@@ -448,10 +460,10 @@ function renderPlanOverview(){
   $("#plan-overview").classList.toggle("has-issues",issues.length>0);
   $("#prompt-tab-count").textContent=String(prompts.length);$("#stage-tab-count").textContent=String(stages.length);
   $("#plan-save-note").textContent=state.dirty?"Plan has unsaved changes":"Changes stay in this workspace";
-  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3=state.settings.training_mode==="MiniMax H3 (Experimental)";
-  preview.textContent=h3?"Preview one prompt at a time":included.length?`Generate ${included.length} enabled`:"Generate enabled";
-  preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3;
-  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":h3?"Use Generate preview on an individual MiniMax H3 prompt card; each run reloads the large models safely in sequence.":invalidIncluded.length?"Fix the included prompt cards marked Needs attention before generating previews.":"Generate standalone previews without leaving this plan.";
+  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3=state.settings.training_mode==="MiniMax H3 (Experimental)",h3SelectionInvalid=h3&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
+  preview.textContent=h3?(included.length===1?`Generate selected with ${sourceLabel}`:included.length?"Generate individually below":"Enable one prompt to generate"):included.length?`Generate ${included.length} with ${mixedSources?"one source":sourceLabel}`:"Generate enabled";
+  preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3SelectionInvalid||mixedSources;
+  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":!included.length?"Enable one prompt before generating a preview.":invalidIncluded.length?"Fix the included prompt card marked Needs attention before generating its preview.":h3&&included.length>1?"MiniMax H3 safely loads its large models once per prompt. Generate from an individual card, or enable only one prompt.":mixedSources?"Enabled cards mix Base and LoRA. Generate them individually, or set them to the same preview source.":`Generate with ${sourceLabel}.`;
 }
 function promptMeta(prompt){
   const values=[`${prompt.width||"—"} × ${prompt.height||"—"}`,`${prompt.steps||"—"} steps`,String(prompt.seed??"").trim()?`Seed ${prompt.seed}`:"Random seed"];
@@ -473,13 +485,22 @@ function renderPromptCards(){
     return;
   }
   prompts.forEach((prompt,index)=>{
-    const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index);
-    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id);
+    const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index),previewIssues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),previewKind=state.settings.training_mode==="MiniMax H3 (Experimental)"&&Number(prompt.frames??39)>1?"video":"preview";
+    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
-    const thumbnail=linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
-    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" ${!["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode)||cardIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewUrl=previewPath?`/api/sample-file?path=${encodeURIComponent(previewPath)}`:"",previewIsVideo=/\.(mp4|webm|mov|m4v)$/i.test(previewPath||"");
+    const thumbnail=previewUrl?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated preview">`):linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
+    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    const footerActions=card.querySelector(".prompt-card-footer>div"),defaults=document.createElement("button"),source=document.createElement("label"),previewButton=card.querySelector('[data-action="preview"]');
+    defaults.type="button";defaults.className="text-action";defaults.dataset.action="defaults";defaults.textContent=`Use ${modelLabel} defaults`;defaults.title=`Reset only this prompt's sampling values to the recommended ${modelLabel} settings. Prompt text is preserved.`;
+    source.className="preview-card-toggle";source.title=useLora?"This card generates with the selected/current LoRA. Turn it off for the base model; use Edit to choose the LoRA file and strength.":"This card generates with the base model. Turn it on for the selected/current LoRA; use Edit to choose the file and strength.";source.innerHTML=`<input type="checkbox" data-action="preview-lora" ${useLora?"checked":""}><span>${useLora?"LoRA":"Base"}</span>`;
+    if(previewSupported){previewButton.textContent=previewing?"Previewing…":previewReady?`Again: ${previewKind} with ${useLora?"LoRA":"base"}`:`Generate ${previewKind} with ${useLora?"LoRA":"base"}`;footerActions.prepend(defaults,source)}else footerActions.prepend(defaults);
     card.querySelector("img")?.addEventListener("error",event=>event.currentTarget.remove());
+    const cardVideo=card.querySelector(".prompt-card-visual video");
+    if(cardVideo){cardVideo.addEventListener("canplay",()=>cardVideo.play().catch(()=>{}),{once:true});cardVideo.addEventListener("error",()=>cardVideo.remove())}
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
+    card.querySelector('[data-action="defaults"]').addEventListener("click",()=>applyPromptModelDefaults(index));
+    card.querySelector('[data-action="preview-lora"]')?.addEventListener("change",event=>{prompt._preview_use_lora=event.target.checked;renderPlan();sync()});
     card.querySelectorAll('[data-action="edit"]').forEach(button=>button.addEventListener("click",()=>openPlanPromptEditor(index,button)));
     card.querySelector('[data-action="preview"]').addEventListener("click",()=>startPromptPreview([{...prompt,enabled:true}],{indices:[index],stayInPlan:true}));
     card.querySelector('[data-action="view-run"]')?.addEventListener("click",()=>go("run"));
@@ -530,7 +551,7 @@ function renderPlanPromptEditor(){
   );
   const sampling=planEditorSection("Sampling behavior","Keep the seed fixed for a direct checkpoint comparison, or leave it blank for a random seed.");
   sampling.querySelector(".guided-fields").append(
-    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":mode==="MiniMax H3 (Experimental)"?"28 steps is the experimental MiniMax H3 default.":"Number of denoising steps for this sample."}),
+    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":mode==="MiniMax H3 (Experimental)"?"20 steps matches the current ComfyUI MiniMax H3 workflow default.":"Number of denoising steps for this sample."}),
     objectField("Guidance","guidance",prompt.guidance??"",value=>prompt.guidance=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses 5.5; Turbo usually uses 1.0.":mode==="MiniMax H3 (Experimental)"?"MiniMax H3 is guidance-distilled. Keep this at 1.0.":"Classifier-free guidance for this sample."}),
     objectField("Seed","seed",prompt.seed??"",value=>prompt.seed=value,{type:"number",help:"A fixed seed makes visual changes across checkpoints easier to attribute to training."})
   );
@@ -539,6 +560,15 @@ function renderPlanPromptEditor(){
   seedActions.querySelector('[data-seed-mode="random"]').addEventListener("click",()=>{prompt.seed="";renderPlanPromptEditor();sync()});
   sampling.append(seedActions);
   host.append(words,resolution,sampling);
+  if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode)){
+    const previewSource=planEditorSection("Standalone preview source","This affects Generate Preview for this card only. The selected LoRA file and strength are shared so every LoRA-enabled card compares the same checkpoint.");
+    previewSource.querySelector(".guided-fields").append(
+      objectField("Generate this card with","_preview_use_lora",promptPreviewUsesLora(prompt)?"lora":"base",value=>prompt._preview_use_lora=value==="lora",{type:"select",options:[{label:"Current / selected LoRA",value:"lora"},{label:"Base model only",value:"base"}],help:"Choose LoRA to test what training learned, or Base to create a control image without the LoRA."}),
+      objectField("LoRA file (blank = automatic)","preview_lora_path",state.settings.preview_lora_path||"",value=>state.settings.preview_lora_path=value,{wide:true,browseKind:"file",help:"Leave blank to use the continuation LoRA or latest checkpoint matching this run. Browse to test a specific safetensors file."}),
+      objectField("LoRA strength","preview_lora_multiplier",state.settings.preview_lora_multiplier||"1.0",value=>state.settings.preview_lora_multiplier=value,{type:"number",help:"1.0 applies the LoRA at its normal strength. This shared value is used by every prompt card set to LoRA."})
+    );
+    host.append(previewSource);
+  }
   if(mode==="Krea 2"){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.innerHTML='<summary>Standalone preview timestep controls</summary><p>Mu, Y1, and Y2 are honored by standalone Krea preview generation. Musubi training samples currently use the trainer’s RAW shift defaults.</p><div class="guided-fields"></div>';
     advanced.querySelector(".guided-fields").append(objectField("Mu","mu",prompt.mu??"",value=>prompt.mu=value,{type:"number",help:"Direct shift override for standalone preview."}),objectField("Y1","y1",prompt.y1??"",value=>prompt.y1=value,{type:"number",help:"Low-resolution shift endpoint for standalone preview."}),objectField("Y2","y2",prompt.y2??"",value=>prompt.y2=value,{type:"number",help:"High-resolution shift endpoint for standalone preview."}));
@@ -547,13 +577,17 @@ function renderPlanPromptEditor(){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.open=mode==="Wan 2.2";advanced.innerHTML='<summary>Model-specific sample controls</summary><div class="guided-fields"></div>';
     const fields=advanced.querySelector(".guided-fields");
     if(mode==="Wan 2.2")fields.append(objectField("Frames","frames",prompt.frames??25,value=>prompt.frames=value,{type:"number",help:"Number of frames in a Wan sample."}));
+    if(mode==="MiniMax H3 (Experimental)")fields.append(
+      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames. One frame keeps the older still-image preview, which can look blurry and is not representative of normal video output."}),
+      objectField("FPS","fps",prompt.fps??24,value=>prompt.fps=value,{type:"number",help:"Playback speed for the silent preview MP4. 24 FPS matches MiniMax H3's normal timing."})
+    );
     fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}),objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
     if(mode==="Wan 2.2")fields.append(objectField("I2V source image","image_path",prompt.image_path||"",value=>prompt.image_path=value,{wide:true,browseKind:"file",help:"Optional starting image for Wan I2V samples."}));
     host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${prompt.enabled!==false?"checked":""}><span><strong>Include in scheduled training samples</strong><small>Turning this off keeps the card and its settings without sending it to Musubi.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{prompt.enabled=event.target.checked;$("#plan-prompt-editor-state").textContent=prompt.enabled?"Included in scheduled samples":"Not included in scheduled samples";sync()});host.append(include);
-  const refreshPreviewAction=()=>{$("#plan-prompt-preview").disabled=!["Krea 2","MiniMax H3 (Experimental)"].includes(mode)||Boolean(promptCardIssues(prompt,index).length)};
+  const refreshPreviewAction=()=>{const button=$("#plan-prompt-preview"),issues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),useLora=promptPreviewUsesLora(prompt);button.disabled=!["Krea 2","MiniMax H3 (Experimental)"].includes(mode)||Boolean(issues.length);button.textContent=`Generate with ${useLora?"LoRA":"base"}`;button.title=issues[0]||`Generate this prompt with ${useLora?"the selected/current LoRA":"the base model only"}.`};
   host.oninput=refreshPreviewAction;host.onchange=refreshPreviewAction;refreshPreviewAction();
 }
 function stageHandoff(previous,current){
@@ -634,7 +668,7 @@ function renderPlan(){
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text"]);
   appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
-  renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
+  ensurePreviewSettings();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
 }
 async function saveTrainingPlan(){
   const issues=promptPlanIssues();renderPlanOverview();
@@ -679,19 +713,24 @@ async function openPromptLibrary(){
   const payload=await api("/api/prompt-library");libraryEntries=payload.prompts||[];renderLibrary();if(!$("#prompt-library-dialog").open)$("#prompt-library-dialog").showModal();
 }
 async function startPromptPreview(prompts,{indices=[],stayInPlan=true}={}){
+  const sources=new Set(prompts.map(prompt=>promptPreviewUsesLora(prompt)));
+  if(sources.size>1)return toast("These cards mix Base and LoRA preview sources. Generate them individually, or set them to the same source first.","error");
+  const previewSettings={...state.settings,preview_use_lora:sources.values().next().value??state.settings.preview_use_lora};
   state.promptPreview={status:"starting",indices:[...indices],jobId:null,message:"Preparing preview"};renderPlan();
   try{
-    const payload=await api("/api/prompts/preview",{method:"POST",body:JSON.stringify({settings:state.settings,prompts})});
+    const payload=await api("/api/prompts/preview",{method:"POST",body:JSON.stringify({settings:previewSettings,prompts})});
     state.promptPreview={status:"running",indices:[...indices],jobId:payload.job?.id||null,message:"Generating preview",savePath:payload.save_path};
     lastLogId=0;renderActive(payload.job);renderPlan();
-    if(!stayInPlan)go("run");toast("Preview started. You can keep editing this plan.");
+    if(!stayInPlan)go("run");
+    const source=payload.network_weights?`LoRA ${String(payload.network_weights).split(/[\\/]/).pop()} at ${payload.lora_multiplier||"1.0"}×`:"the base model (LoRA off)";
+    toast(`Preview started with ${source}. You can keep editing this plan.`);
   }catch(e){
     state.promptPreview={status:"failed",indices:[...indices],jobId:null,message:e.message};renderPlan();toast(e.message,"error");
   }
 }
 function promptIdentityClient(prompt){
   const normalized={};
-  Object.keys(prompt||{}).filter(key=>key!=="enabled"&&!key.startsWith("_library_")).sort().forEach(key=>{const value=prompt[key];normalized[key]=typeof value==="string"?value.trim():value});
+  Object.keys(prompt||{}).filter(key=>key!=="enabled"&&!key.startsWith("_library_")&&!key.startsWith("_preview_")).sort().forEach(key=>{const value=prompt[key];normalized[key]=typeof value==="string"?value.trim():value});
   return JSON.stringify(normalized);
 }
 function renderLibrary(){
@@ -1327,7 +1366,7 @@ async function pollJob() {
     if(state.promptPreview?.jobId&&payload.active?.id===state.promptPreview.jobId){
       const status=payload.active.status;
       if(["completed","failed","stopped"].includes(status)&&state.promptPreview.status!==status){
-        state.promptPreview={...state.promptPreview,status,message:status==="completed"?"Preview ready":`Preview ${status}`};
+        state.promptPreview={...state.promptPreview,status,outputs:payload.active.sample_outputs||state.promptPreview.outputs||[],message:status==="completed"?"Preview ready":`Preview ${status}`};
         renderPlan();
         toast(status==="completed"?"Prompt preview finished. Open Samples to compare it.":`Prompt preview ${status}.`,status==="completed"?"info":"error");
       }
@@ -1376,10 +1415,18 @@ async function loadSamples() {
 }
 function renderSampleGallery(){
   const items=[...state.samples.groups.flatMap(group=>group.items),...(state.samples.ungrouped||[])].sort((a,b)=>b.modified-a.modified);
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} images</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}"><img src="${item.url}" loading="lazy" alt=""><strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
-  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>{const item=items[Number(button.dataset.index)];$("#sample-preview-image").src=item.url;$("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal()}));
+  const media=item=>item.media_kind==="video"?`<video src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" loading="lazy" alt="">`;
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} output${items.length===1?"":"s"}</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}">${media(item)}<strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
+  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>openSamplePreview(items[Number(button.dataset.index)])));
 }
-const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false};
+function openSamplePreview(item){
+  const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
+  video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
+  image.hidden=isVideo;video.hidden=!isVideo;
+  if(isVideo){video.src=item.url;video.load()}else image.src=item.url;
+  $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
+}
+const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
 function renderComparison(index) {
   compareState.group=index;
   $$(".sample-series").forEach((b,i)=>b.classList.toggle("active",i===index));
@@ -1387,26 +1434,46 @@ function renderComparison(index) {
   const restored=(sequence,fallback)=>{const found=sequence?items.findIndex(x=>x.sequence_kind===sequence[0]&&x.sequence===sequence[1]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
   compareState.leftIndex=restored(compareState.leftSequence,Math.max(0,items.length-2));
   compareState.rightIndex=restored(compareState.rightSequence,items.length-1);
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">${esc(items[0]?.prefix||"TRAINING SAMPLE")} · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} versions</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span title="Left/right changes versions. Up/down changes prompts. Touch supports horizontal and vertical swipes.">Keyboard and touch navigation enabled</span></div><div id="compare-viewport"></div><div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B"></select></div>`;
+  const isVideo=items[0]?.media_kind==="video";
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">${esc(items[0]?.prefix||"TRAINING SAMPLE")} · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} versions</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>${isVideo?"Synchronized video comparison":"Keyboard and touch navigation enabled"}</span></div><div id="compare-viewport"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B"></select></div>`;
   const options=items.map((item,i)=>`<option value="${i}">${esc(item.sequence_label||`${item.sequence_kind} ${item.sequence}`)} · ${esc(item.name)}</option>`).join("");
   $("#select-a").innerHTML=options;$("#select-b").innerHTML=options;$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;
   const renderMode=()=>{
     const a=items[compareState.leftIndex],b=items[compareState.rightIndex],host=$("#compare-viewport");
+    const previousMaster=host.querySelector('video[data-video-role="b"]');
+    if(previousMaster&&Number.isFinite(previousMaster.duration)&&previousMaster.duration>0)compareState.videoProgress=previousMaster.currentTime/previousMaster.duration;
     compareState.leftSequence=[a.sequence_kind,a.sequence];compareState.rightSequence=[b.sequence_kind,b.sequence];
     $$("#compare-stage .compare-tools button").forEach(x=>x.classList.toggle("active",x.dataset.mode===compareState.mode));
     $("#wipe-lock").style.display=compareState.mode==="wipe"?"":"none";
+    const media=(item,role)=>isVideo?`<video class="sync-video" data-video-role="${role}" src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" alt="Version ${role.toUpperCase()}">`;
     if(compareState.mode==="side"){
-      host.innerHTML=`<div class="compare-main"><div class="compare-image"><img src="${a.url}" alt="Version A"><label>A · ${esc(a.sequence_label)}</label></div><div class="compare-image"><img src="${b.url}" alt="Version B"><label>B · ${esc(b.sequence_label)}</label></div></div>`;
+      host.innerHTML=`<div class="compare-main"><div class="compare-image">${media(a,"a")}<label>A · ${esc(a.sequence_label)}</label></div><div class="compare-image">${media(b,"b")}<label>B · ${esc(b.sequence_label)}</label></div></div>`;
     }else{
-      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer"><img src="${b.url}" alt="Version B"></div><div class="wipe-layer a" id="wipe-a"><img src="${a.url}" alt="Version A"></div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.sequence_label)}</span></div>`;
+      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer">${media(b,"b")}</div><div class="wipe-layer a" id="wipe-a">${media(a,"a")}</div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.sequence_label)}</span></div>`;
       setWipe(compareState.wipe);bindWipe();
     }
+    if(isVideo)bindVideoSync(host);
     $("#sample-range").value=compareState.rightIndex;
   };
   const setVersion=idx=>{compareState.rightIndex=Math.max(0,Math.min(items.length-1,idx));compareState.leftIndex=Math.max(0,compareState.rightIndex-1);$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;renderMode()};
   const movePrompt=delta=>renderComparison((index+delta+state.samples.groups.length)%state.samples.groups.length);
   const setWipe=value=>{compareState.wipe=Math.max(0,Math.min(100,value));const layer=$("#wipe-a"),line=$("#wipe-divider"),stage=$("#wipe-stage");if(layer)layer.style.clipPath=`inset(0 ${100-compareState.wipe}% 0 0)`;if(line)line.style.left=`${compareState.wipe}%`;stage?.setAttribute("aria-valuenow",String(Math.round(compareState.wipe)))};
   function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",move);stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
+  function bindVideoSync(host){
+    const master=host.querySelector('video[data-video-role="b"]'),slave=host.querySelector('video[data-video-role="a"]'),play=$("#video-play"),progress=$("#video-progress"),time=$("#video-time"),mute=$("#video-mute"),loop=$("#video-loop"),note=$("#video-compare-note");
+    if(!master||!slave)return;
+    const clock=value=>{if(!Number.isFinite(value))return "0:00";const seconds=Math.max(0,Math.floor(value));return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}`};
+    const setRatio=ratio=>{compareState.videoProgress=Math.max(0,Math.min(1,ratio||0));[master,slave].forEach(video=>{if(Number.isFinite(video.duration)&&video.duration>0)video.currentTime=compareState.videoProgress*video.duration});progress.value=String(Math.round(compareState.videoProgress*1000));time.textContent=`${clock(master.currentTime)} / ${clock(master.duration)}`};
+    const align=force=>{if(!Number.isFinite(master.duration)||!Number.isFinite(slave.duration)||master.duration<=0||slave.duration<=0)return;const ratio=master.currentTime/master.duration,target=ratio*slave.duration;if(force||Math.abs(slave.currentTime-target)>.06)slave.currentTime=target;compareState.videoProgress=ratio;progress.value=String(Math.round(ratio*1000));time.textContent=`${clock(master.currentTime)} / ${clock(master.duration)}`};
+    const updateDetails=()=>{if(master.readyState<1||slave.readyState<1)return;const sameSize=master.videoWidth===slave.videoWidth&&master.videoHeight===slave.videoHeight,durationDelta=Math.abs(master.duration-slave.duration);note.textContent=sameSize&&durationDelta<.05?`${master.videoWidth}×${master.videoHeight} · ${clock(master.duration)} · matched previews`:`Previews differ (${master.videoWidth}×${master.videoHeight}, ${clock(master.duration)} versus ${slave.videoWidth}×${slave.videoHeight}, ${clock(slave.duration)}); playback is aligned by progress.`;setRatio(compareState.videoProgress)};
+    const applySound=()=>{master.muted=compareState.videoMuted;slave.muted=true;mute.textContent=compareState.videoMuted?"🔇 Muted":"🔊 B sound"};
+    const applyLoop=()=>{master.loop=compareState.videoLoop;slave.loop=compareState.videoLoop;loop.textContent=compareState.videoLoop?"↻ Loop on":"↻ Loop off"};
+    const pauseBoth=()=>{master.pause();slave.pause();compareState.videoPlaying=false;play.textContent="▶ Play"};
+    const playBoth=async()=>{compareState.videoPlaying=true;play.textContent="❚❚ Pause";align(true);const results=await Promise.allSettled([slave.play(),master.play()]);if(results.some(result=>result.status==="rejected"))pauseBoth()};
+    master.addEventListener("loadedmetadata",updateDetails);slave.addEventListener("loadedmetadata",updateDetails);master.addEventListener("timeupdate",()=>align(false));master.addEventListener("ended",()=>{if(!compareState.videoLoop)pauseBoth()});
+    play.onclick=()=>compareState.videoPlaying?pauseBoth():playBoth();progress.oninput=()=>{const resume=compareState.videoPlaying;pauseBoth();setRatio(Number(progress.value)/1000);if(resume)playBoth()};mute.onclick=()=>{compareState.videoMuted=!compareState.videoMuted;applySound()};loop.onclick=()=>{compareState.videoLoop=!compareState.videoLoop;applyLoop()};
+    applySound();applyLoop();setRatio(compareState.videoProgress);if(compareState.videoPlaying)playBoth();
+  }
   $("#select-a").addEventListener("change",e=>{compareState.leftIndex=Number(e.target.value);renderMode()});$("#select-b").addEventListener("change",e=>{compareState.rightIndex=Number(e.target.value);renderMode()});$("#sample-range").addEventListener("input",e=>setVersion(Number(e.target.value)));
   $$("#compare-stage .compare-tools button").forEach(x=>x.addEventListener("click",()=>{compareState.mode=x.dataset.mode;renderMode()}));
   $("#prev-prompt").addEventListener("click",()=>movePrompt(-1));$("#next-prompt").addEventListener("click",()=>movePrompt(1));$("#prev-version").addEventListener("click",()=>setVersion(compareState.rightIndex-1));$("#next-version").addEventListener("click",()=>setVersion(compareState.rightIndex+1));
@@ -1469,6 +1536,7 @@ $$(".model-tile").forEach(n=>n.addEventListener("click",()=>{selectMode(n.datase
 function closeDialogSafely(dialog){
   if(dialog?.id==="dataset-media-dialog"&&state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))return false;
   if(dialog?.id==="dataset-media-dialog")state.datasetCaptionDirty=false;
+  if(dialog?.id==="sample-preview-dialog"){const video=$("#sample-preview-video"),image=$("#sample-preview-image");video?.pause();if(video)video.hidden=true;if(image)image.hidden=false}
   dialog?.close();return true;
 }
 $$("[data-close]").forEach(n=>n.addEventListener("click",()=>closeDialogSafely(document.getElementById(n.dataset.close))));

@@ -6,6 +6,7 @@ import argparse
 import logging
 
 import torch
+from safetensors import safe_open
 
 import musubi_tuner.cache_text_encoder_outputs as cache_text_encoder_outputs
 from musubi_tuner.dataset import config_utils
@@ -24,6 +25,31 @@ from musubi_tuner.training.dop import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_valid_minimax_h3_text_cache(item: ItemInfo, dop_trigger_word: str = "", dop_class_word: str = "") -> bool:
+    """Accept only caption-matching fp32 caches produced by the corrected Comfy-style tower."""
+    path = str(getattr(item, "text_encoder_output_cache_path", "") or "")
+    if not path:
+        return False
+    try:
+        with safe_open(path, framework="pt", device="cpu") as cache:
+            metadata = cache.metadata() or {}
+            keys = list(cache.keys())
+            if metadata.get("caption1", "") != str(getattr(item, "caption", "") or ""):
+                return False
+            if "varlen_mmh3_hidden_states_float32" not in keys:
+                return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if dop_trigger_word or dop_class_word:
+        return is_valid_dop_cache(
+            item,
+            dop_trigger_word,
+            dop_class_word,
+            "varlen_dop_mmh3_hidden_states_float32",
+        )
+    return True
 
 
 def encode_and_save_batch(
@@ -94,7 +120,7 @@ def main() -> None:
     encoder = load_minimax_h3_te(
         args.text_encoder,
         device=device,
-        compute_dtype=torch.bfloat16,
+        compute_dtype=torch.float32,
         quantize=True,
         tokenizer_dir=args.tokenizer,
         load_mode=args.text_encoder_load_mode,
@@ -103,14 +129,11 @@ def main() -> None:
     def encode(batch: list[ItemInfo]):
         encode_and_save_batch(encoder, batch, args.dop_trigger_word, args.dop_class_word)
 
-    cache_validator = None
-    if args.dop_trigger_word or args.dop_class_word:
-        cache_validator = lambda item: is_valid_dop_cache(
-            item,
-            args.dop_trigger_word,
-            args.dop_class_word,
-            "varlen_dop_mmh3_hidden_states_",
-        )
+    # Even with --skip_existing, transparently rebuild legacy bf16 caches. They were
+    # generated before the standalone Comfy-style fp32 tower and materially change H3 conditioning.
+    cache_validator = lambda item: is_valid_minimax_h3_text_cache(
+        item, args.dop_trigger_word, args.dop_class_word
+    )
 
     cache_text_encoder_outputs.process_text_encoder_batches(
         args.num_workers,
