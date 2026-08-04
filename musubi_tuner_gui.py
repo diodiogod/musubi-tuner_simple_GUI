@@ -3155,6 +3155,7 @@ class MusubiTunerGUI:
             "stop_similarity": 0.55, "early_stop_patience": 5,
             "min_detection_rate": 0.25, "anti_copy_weight": 0.02,
             "preview_every": 5, "save_every": 10, "qkvo_only": True,
+            "quality_preview_mode": "one_frame", "quality_preview_steps": 20, "quality_preview_final": True,
             "checkpoint_vae": True, "license_acknowledged": False,
             "pose_aware": False, "pose_reward_weight": 0.20, "pose_min_references": 2,
             "pose_plan": default_pose_plan(),
@@ -3450,10 +3451,13 @@ class MusubiTunerGUI:
             ("pose_reward_weight", "Matching-pose influence", float),
             ("pose_min_references", "Minimum refs per pose", int),
         ]
+        if face_mode == "MiniMax H3 (Experimental)":
+            fields.insert(fields.index(("save_every", "Save LoRA every N steps", int)), ("quality_preview_steps", "Five-frame preview steps", int))
         field_help = {
             "pose_reward_weight": "How much of each update may focus on the matching viewing angle. 0.20 is a cautious default. The Pose Training Plan's identity anchor may reduce it further for safety.",
             "pose_min_references": "Minimum number of usable photos required before an angle gets its own identity target. Groups below this number safely fall back or are disabled.",
             "save_every": "Saves an intermediate LoRA after this many refinement steps. For example, 10 saves at steps 10, 20, and 30. Use 0 to disable intermediate checkpoints. The final LoRA is always saved.",
+            "quality_preview_steps": "Denoising steps used only by optional MiniMax five-frame quality previews. It does not change refinement updates. More steps increase preview time.",
         }
         grid = ttk.Frame(settings_frame); grid.pack(fill="x", padx=8, pady=8)
         for index, (key, label, _kind) in enumerate(fields):
@@ -3464,6 +3468,33 @@ class MusubiTunerGUI:
             if key in field_help: ToolTip(field_label, field_help[key]); ToolTip(field_entry, field_help[key])
         grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
         qkvo_var = tk.BooleanVar(value=config["qkvo_only"]); checkpoint_var = tk.BooleanVar(value=config["checkpoint_vae"]); pose_aware_var = tk.BooleanVar(value=config.get("pose_aware", False))
+        quality_preview_choices = {
+            "Fast one-frame (recommended)": "one_frame",
+            "Native five-frame + center frame (slower)": "five_frame",
+        }
+        quality_preview_current = next(
+            (label for label, value in quality_preview_choices.items() if value == config.get("quality_preview_mode", "one_frame")),
+            "Fast one-frame (recommended)",
+        )
+        quality_preview_var = tk.StringVar(value=quality_preview_current)
+        quality_preview_final_var = tk.BooleanVar(value=config.get("quality_preview_final", True))
+        if face_mode == "MiniMax H3 (Experimental)":
+            preview_row = ttk.Frame(settings_frame); preview_row.pack(fill="x", padx=12, pady=(2, 6))
+            ttk.Label(preview_row, text="Saved preview quality", width=26).pack(side="left")
+            preview_picker = ttk.Combobox(
+                preview_row, textvariable=quality_preview_var, state="readonly", width=34,
+                values=tuple(quality_preview_choices),
+            )
+            preview_picker.pack(side="left")
+            ToolTip(preview_picker, "Fast one-frame reuses the image already generated for refinement. Native five-frame runs an additional MiniMax preview and saves its center frame plus a tiny video; it is sharper but can add substantial time every time a preview is due.")
+            ttk.Label(
+                settings_frame,
+                text="Refinement updates always stay on the fast one-frame gradient path. This choice changes only saved previews.",
+                style="PageHelp.TLabel", wraplength=680,
+            ).pack(anchor="w", padx=12, pady=(0, 6))
+            final_preview = ttk.Checkbutton(settings_frame, text="Always save a final quality preview", variable=quality_preview_final_var)
+            final_preview.pack(anchor="w", padx=12, pady=(0, 8))
+            ToolTip(final_preview, "Also creates the selected preview type at normal completion or early stop, even when the last step is not on the preview cadence.")
         ttk.Checkbutton(settings_frame, text="Train attention Q/K/V/O adapters only (recommended anti-overfit safeguard)", variable=qkvo_var).pack(anchor="w", padx=12)
         ttk.Checkbutton(settings_frame, text="Checkpoint VAE decode to save VRAM", variable=checkpoint_var).pack(anchor="w", padx=12, pady=(0, 8))
         pose_checkbox = ttk.Checkbutton(settings_frame, text="Use pose-aware identity matching (experimental; optional)", variable=pose_aware_var); pose_checkbox.pack(anchor="w", padx=12, pady=(0, 8))
@@ -3497,6 +3528,7 @@ class MusubiTunerGUI:
                 updated["prompts"] = [line.strip() for line in prompts_text.get("1.0", "end").splitlines() if line.strip()]
                 for key, _label, kind in fields: updated[key] = kind(variables[key].get())
                 updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["pose_aware"] = pose_aware_var.get(); updated["license_acknowledged"] = license_var.get()
+                updated["quality_preview_mode"] = quality_preview_choices.get(quality_preview_var.get(), "one_frame"); updated["quality_preview_final"] = quality_preview_final_var.get()
                 updated["pose_plan"] = copy.deepcopy(config.get("pose_plan") or self._default_face_refinement_config()["pose_plan"])
                 updated["pose_plan"]["enabled"] = updated["pose_aware"]
                 if updated["pose_aware"]:
@@ -3515,6 +3547,7 @@ class MusubiTunerGUI:
                     valid_runtime = updated["resolution"] % 16 == 0 and 0 <= updated["blocks_to_swap"] <= 26
                 if updated["steps"] < 1 or not valid_runtime or not 1 <= updated["draft_k"] <= updated["denoise_steps"]: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value. MiniMax H3 requires a multiple of 32 and 30–48 swapped blocks on a 24 GB GPU.")
                 if updated["save_every"] < 0: raise ValueError("Save LoRA every N steps must be 0 or greater.")
+                if updated["preview_every"] < 0 or updated["quality_preview_steps"] < 1: raise ValueError("Preview cadence must be 0 or greater and five-frame preview steps must be positive.")
                 if not 0 <= updated["pose_reward_weight"] <= 0.35 or updated["pose_min_references"] < 2: raise ValueError("Pose influence must be 0–0.35 and each pose bucket must require at least 2 references.")
                 if updated["gpu_id"] != "auto" and (not updated["gpu_id"].isdigit() or int(updated["gpu_id"]) < 0): raise ValueError("GPU index must be 'auto' or a non-negative number.")
             except Exception as exc:

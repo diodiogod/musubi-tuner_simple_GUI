@@ -80,6 +80,14 @@ The standalone CLI is `src/musubi_tuner/minimax_h3_image_generate.py`. Its decod
 
 All four are disabled by default and have CPU regression coverage. Focused RTX 4090 smokes completed for DOP, weight-noise scheduling, depth anchoring, and the H3 DRaFT differentiable sampler/VAE/real-AntelopeV2-reward/optimizer/save path. The intentionally crude 256px, two-denoising-step face smoke did not produce a detector-quality generated face, but the real reward's missed-detection fallback remained differentiable and completed the update with a finite gradient. Useful full-resolution face-refinement recipes and long runs still need validation. Downloading the separately licensed face models remains an explicit user action when a compatible existing InsightFace folder is not selected.
 
+### Future work: native five-frame differentiable face refinement
+
+The current H3 face-refinement update intentionally uses one temporal token. This keeps the DRaFT backward pass small enough to experiment with on a 24 GB card. The optional **Native five-frame + center frame** setting in the GUI is an inference-only quality preview: it runs an additional no-gradient five-frame decode when a preview is saved, but it does not change the training gradient.
+
+A future training mode could score several native frames in one refinement update and aggregate the identity reward before backpropagation. That would better match the model's native temporal representation, but it would also increase denoising time, VAE memory, and activation pressure. It should remain opt-in, warn clearly about VRAM and speed, preserve the one-frame fallback, and record the frame count and reward aggregation policy in checkpoint metadata. Until that work is validated, use five-frame mode only to inspect preview quality and keep differentiable refinement on one frame.
+
+Tracking issue: [experimental native five-frame differentiable MiniMax H3 face refinement](https://github.com/diodiogod/musubi-tuner_simple_GUI/issues/1). Keep the current one-frame path as the default until that experiment has measured VRAM, speed, and identity-reward stability.
+
 ## Deliberate limitations
 
 - still images only; no video clips, reference media, or audio training

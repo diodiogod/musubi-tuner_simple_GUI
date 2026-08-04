@@ -30,6 +30,8 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
         "min_detection_rate": "min_detection_rate",
         "anti_copy_weight": "anti_copy_weight",
         "preview_every": "preview_every",
+        "quality_preview_mode": "quality_preview_mode",
+        "quality_preview_steps": "quality_preview_steps",
         "save_every": "save_every",
         "blocks_to_swap": "blocks_to_swap",
         "pose_reward_weight": "pose_reward_weight",
@@ -45,6 +47,8 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
         command.append("--no-attention_only")
     if not config.get("checkpoint_vae", True):
         command.append("--no-checkpoint_vae")
+    if not config.get("quality_preview_final", True):
+        command.append("--no-quality_preview_final")
     if config.get("pose_aware", False):
         command.append("--pose_aware")
     attention = settings.get("attention_mechanism", "sdpa")

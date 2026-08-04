@@ -6,6 +6,44 @@ from modern_gui.prompt_preview import build_krea_preview, build_minimax_h3_previ
 from modern_gui.sample_prompts import serialize_sample_prompt
 
 
+def test_modern_plan_uses_full_preview_dialog_hook_for_prompt_cards():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+    assert 'visual.addEventListener("dblclick"' in app_js
+    assert 'openSamplePreview({' in app_js
+    assert 'url:previewUrl' in app_js
+
+
+def test_minimax_face_runtime_group_opens_for_preview_controls():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+    assert '"Runtime and checkpoints"' in app_js
+    assert '],isH3);' in app_js
+
+
+def test_modern_face_pose_plan_uses_comparison_table():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+    index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
+    assert "function renderPosePlanTable" in app_js
+    assert 'role="table" aria-label="Pose training plan"' in app_js
+    assert "data-pose-field" in app_js
+    assert "data-pose-prompts" in app_js
+    assert "Add suggested prompts" in app_js
+    assert "pose-prompt-tabs" in app_js
+    assert 'id="face-fallback-prompts"' in index_html
+    assert 'id="pose-plan-help"' in index_html
+
+
+def test_modern_run_can_persist_split_layout_and_terminal_theme():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+    index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
+    styles_css = Path("modern_gui/static/styles.css").read_text(encoding="utf-8")
+    assert 'id="toggle-run-split"' in index_html
+    assert 'id="run-split-divider"' in index_html
+    assert 'readLocalPreference("musubi-run-split"' in app_js
+    assert 'writeLocalPreference("musubi-log-follow"' in app_js
+    assert "--terminal-bg" in styles_css
+    assert "#run.run-split-view .run-panel-stack" in styles_css
+
+
 def test_serialize_krea_preview_prompt():
     assert serialize_prompt({"prompt": "portrait", "width": 512, "seed": 42, "neg": "blur"}) == (
         "portrait --w 512 --d 42 --n blur"

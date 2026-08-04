@@ -10,6 +10,7 @@ from pathlib import Path
 import random
 
 import torch
+from PIL import Image
 from safetensors.torch import load_file
 
 from musubi_tuner.face_refinement import REFERENCE_IMPLEMENTATION, REFERENCE_PAPER
@@ -20,6 +21,7 @@ from musubi_tuner.face_refinement.pose import parse_pose_prompt
 from musubi_tuner.face_refinement.pose_plan import PoseProgressTracker
 from musubi_tuner.minimax_h3.image_text_encoder import DEFAULT_PROCESSOR_ID, load_minimax_h3_te
 from musubi_tuner.minimax_h3.model import load_h3_transformer
+from musubi_tuner.minimax_h3.video_sampling import decode_video_latent, sample_video_latent, write_silent_video
 from musubi_tuner.minimax_h3.video_vae import load_video_vae
 from musubi_tuner.modules.custom_offloading_utils import BlockSwapConfig
 from musubi_tuner.networks import lora_minimax_h3
@@ -83,6 +85,8 @@ def save_network(network, output: Path, args, step: int) -> None:
         "ss_face_refinement_pose_aware": str(bool(args.pose_aware)),
         "ss_face_refinement_pose_weight": str(args.pose_reward_weight if args.pose_aware else 0.0),
         "ss_face_refinement_pose_plan": getattr(args, "pose_plan_metadata", ""),
+        "ss_face_refinement_quality_preview_mode": args.quality_preview_mode,
+        "ss_face_refinement_quality_preview_steps": str(args.quality_preview_steps),
         "ss_face_refinement_reference": REFERENCE_IMPLEMENTATION,
         "ss_face_refinement_paper": REFERENCE_PAPER,
     }
@@ -109,6 +113,32 @@ def _prepare_pose(args, payload, prompts):
     return pose_plan, tracker, embedding_prompts, weights
 
 
+@torch.no_grad()
+def save_five_frame_quality_preview(model, vae, embedding, output_dir: Path, step: int, args) -> tuple[Path, Path]:
+    """Render an optional native five-frame evaluation preview without changing the refinement gradient."""
+    was_training = model.training
+    model.eval()
+    try:
+        latent = sample_video_latent(
+            model,
+            embedding,
+            frame_count=5,
+            width=args.resolution,
+            height=args.resolution,
+            steps=args.quality_preview_steps,
+            seed=args.seed + step,
+            device=torch.device(args.device or "cuda"),
+        )
+        frames = decode_video_latent(vae, latent.to(device=vae.latents_mean.device, dtype=torch.float16), frame_count=5)
+    finally:
+        model.train(was_training)
+    video_path = output_dir / f"face_preview_{step:06d}_five_frames.mp4"
+    center_path = output_dir / f"face_preview_{step:06d}_center.png"
+    write_silent_video(frames, video_path, fps=24)
+    Image.fromarray(frames[2].numpy()).save(center_path)
+    return video_path, center_path
+
+
 def train(args) -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("MiniMax-H3 face refinement requires an NVIDIA CUDA GPU")
@@ -118,6 +148,8 @@ def train(args) -> None:
         raise ValueError("draft_k must be between 1 and denoise_steps")
     if not 1 <= args.blocks_to_swap <= 48:
         raise ValueError("MiniMax-H3 face refinement requires 1..48 swapped blocks")
+    if args.preview_every < 0 or args.quality_preview_steps < 1:
+        raise ValueError("Preview cadence must be zero or greater and quality-preview steps must be positive")
     if args.blocks_to_swap < 30:
         logger.warning("Fewer than 30 swapped blocks is unlikely to fit MiniMax-H3 DRaFT refinement on 24 GB")
 
@@ -249,14 +281,30 @@ def train(args) -> None:
                 status = pose_tracker.pose_status(pose_bucket)
                 with metrics_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps({"step": step, "pose": pose_bucket, "similarity": pose_similarity, **status}) + "\n")
-        if args.preview_every > 0 and (step == 1 or step % args.preview_every == 0):
-            print(f"face_preview={save_preview(pixels, output.parent, step, prompt)}", flush=True)
         if args.save_every > 0 and step % args.save_every == 0:
             save_network(network, output.with_name(f"{output.stem}-{step:06d}{output.suffix}"), args, step)
         if step >= args.min_steps and detected_steps / step < args.min_detection_rate:
             raise RuntimeError("Face detection rate fell below the configured safety threshold")
         pose_stop_reason = pose_tracker.stop_reason() if pose_tracker else None
-        if pose_stop_reason or (not pose_tracker and consecutive_target >= args.early_stop_patience):
+        stopping = bool(pose_stop_reason or (not pose_tracker and consecutive_target >= args.early_stop_patience))
+        preview_due = bool(
+            (args.preview_every > 0 and (step == 1 or step % args.preview_every == 0))
+            or (args.quality_preview_final and (step == args.train_steps or stopping))
+        )
+        if preview_due and args.quality_preview_mode == "one_frame":
+            print(f"face_preview={save_preview(pixels, output.parent, step, prompt)}", flush=True)
+        if preview_due and args.quality_preview_mode == "five_frame":
+            # The training reward above remains the fast differentiable one-frame path. This is an
+            # additional no-grad quality check and can materially increase wall time at short cadences.
+            del loss, reward_value, pixels
+            gc.collect()
+            clean_memory_on_device(device)
+            video_path, center_path = save_five_frame_quality_preview(
+                model, vae, embeddings[prompt_index], output.parent, step, args
+            )
+            print(f"face_preview={center_path}", flush=True)
+            print(f"face_preview_video={video_path}", flush=True)
+        if stopping:
             print(f"early_stop={pose_stop_reason or 'target_similarity_reached'}", flush=True)
             save_network(network, output, args, step)
             return
@@ -287,6 +335,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_steps", type=int, default=8)
     parser.add_argument("--anti_copy_weight", type=float, default=0.02)
     parser.add_argument("--preview_every", type=int, default=5)
+    parser.add_argument("--quality_preview_mode", choices=("one_frame", "five_frame"), default="one_frame")
+    parser.add_argument("--quality_preview_steps", type=int, default=20)
+    parser.add_argument("--quality_preview_final", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--attention_only", action=argparse.BooleanOptionalAction, default=True)

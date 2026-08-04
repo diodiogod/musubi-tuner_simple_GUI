@@ -498,6 +498,12 @@ function renderPromptCards(){
     card.querySelector("img")?.addEventListener("error",event=>event.currentTarget.remove());
     const cardVideo=card.querySelector(".prompt-card-visual video");
     if(cardVideo){cardVideo.addEventListener("canplay",()=>cardVideo.play().catch(()=>{}),{once:true});cardVideo.addEventListener("error",()=>cardVideo.remove())}
+    const visual=card.querySelector(".prompt-card-visual");
+    if(previewUrl){
+      visual.title="Double-click to open the full preview";
+      visual.setAttribute("aria-label","Double-click to open the full generated preview");
+      visual.addEventListener("dblclick",()=>openSamplePreview({media_kind:previewIsVideo?"video":"image",url:previewUrl,name:prompt._library_name||`Sample prompt ${index+1}`}));
+    }
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
     card.querySelector('[data-action="defaults"]').addEventListener("click",()=>applyPromptModelDefaults(index));
     card.querySelector('[data-action="preview-lora"]')?.addEventListener("change",event=>{prompt._preview_use_lora=event.target.checked;renderPlan();sync()});
@@ -744,10 +750,47 @@ function renderLibrary(){
 }
 function openLibraryEditor(entry){$("#library-edit-id").value=entry.id;$("#library-edit-name").value=entry.name||"";$("#library-edit-prompt").value=entry.prompt_data?.prompt||"";$("#library-edit-collection").value=entry.collection||"";$("#library-edit-tags").value=(entry.tags||[]).join(", ");$("#prompt-editor-dialog").showModal()}
 function faceConfig(){state.settings.face_refinement_config=state.settings.face_refinement_config&&typeof state.settings.face_refinement_config==="object"?state.settings.face_refinement_config:{};return state.settings.face_refinement_config}
+function updateFacePromptModeLabels(config){
+  const poseActive=Boolean(config.pose_aware&&config.pose_plan?.enabled);
+  $("#pose-plan-title").textContent="Per-pose targets and stopping";
+  $("#pose-plan-help").innerHTML=poseActive?"Pose-aware training is on. Set each angle's share, identity target, and stopping rules in the table; edit its training prompts in the matching tab below.":"These rows are prepared but are not used until Pose-aware training is enabled. For a normal all-angle refinement, use the general prompts below.";
+  $("#pose-prompts-help").innerHTML=poseActive?"These are the prompts used for this run. Select an angle tab, then edit one prompt per line; keep the matching <code>[angle]</code> tag at the start.":"Enable Pose-aware training to use separate prompts for each viewing angle.";
+  const fallbackPrompts=$("#face-fallback-prompts");fallbackPrompts.open=!poseActive;fallbackPrompts.classList.toggle("is-inactive",poseActive);
+  $("#face-prompts-title").textContent=poseActive?"General refinement prompts (fallback)":"General refinement prompts";
+  $("#face-prompts-help").textContent=poseActive?"Kept for later; not used while the pose plan is active.":"Used for normal all-angle refinement when the pose plan is off.";
+}
+function renderPosePlanTable(host,config,buckets){
+  const labels={frontal:"Frontal",three_quarter_left:"Three-quarter left",three_quarter_right:"Three-quarter right",profile_left:"Profile left",profile_right:"Profile right",looking_up:"Looking up",looking_down:"Looking down"};
+  const order=["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
+  const counts=config.preflight_report?.pose_bucket_counts||{};
+  host.className="pose-plan-table-wrap";
+  host.innerHTML=`<div class="pose-plan-table" role="table" aria-label="Pose training plan"><div class="pose-plan-row pose-plan-header" role="row"><span>Use</span><span>Viewing angle</span><span>Refs</span><span>Share %</span><span>Target</span><span>Target patience</span><span>Plateau patience</span><span>Min evaluations</span></div></div>`;
+  const table=host.querySelector(".pose-plan-table");
+  order.forEach(name=>{
+    const bucket=buckets[name]||{},count=Number(counts[name]||0),label=labels[name]||name.replaceAll("_"," ");
+    const row=document.createElement("div");row.className=`pose-plan-row${bucket.enabled===false?" is-disabled":""}`;row.dataset.pose=name;row.setAttribute("role","row");
+    row.innerHTML=`<label class="pose-plan-use"><input type="checkbox" data-pose-enabled ${bucket.enabled!==false?"checked":""}><span class="sr-only">Use ${esc(label)}</span></label><div class="pose-plan-name"><strong>${esc(label)}</strong><small>${esc(name)}</small></div><span class="pose-plan-refs ${count<Number(config.pose_min_references??2)?"is-low":""}" title="${esc(`${count} reference face${count===1?"":"s"} assigned to this angle`)}">${count}</span>${[["share",bucket.share??0,"0","100","0.1"],["target",bucket.target??.55,"0","1","0.01"],["patience",bucket.patience??2,"0","","1"],["plateau_patience",bucket.plateau_patience??4,"0","","1"],["min_evaluations",bucket.min_evaluations??2,"1","","1"]].map(([key,value,min,max,step])=>`<input class="pose-plan-input" type="number" min="${min}"${max?` max="${max}"`:""} step="${step}" data-pose-field="${key}" value="${esc(String(Math.round(Number(value)*100)/100))}" aria-label="${esc(`${label} ${key.replaceAll("_"," ")}`)}">`).join("")}`;
+    row.querySelector("[data-pose-enabled]").addEventListener("change",event=>{bucket.enabled=event.target.checked;row.classList.toggle("is-disabled",!event.target.checked);sync()});
+    row.querySelectorAll("[data-pose-field]").forEach(input=>input.addEventListener("change",event=>{const key=event.target.dataset.poseField;const value=Number(event.target.value);if(Number.isFinite(value))bucket[key]=value;sync()}));
+    table.append(row);
+  });
+}
+function renderPosePromptEditor(host,config,buckets){
+  const labels={frontal:"Frontal",three_quarter_left:"Three-quarter left",three_quarter_right:"Three-quarter right",profile_left:"Profile left",profile_right:"Profile right",looking_up:"Looking up",looking_down:"Looking down"};
+  const order=["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
+  const active=order.includes(state.facePosePromptTab)?state.facePosePromptTab:(order.find(name=>buckets[name]?.enabled!==false)||order[0]);
+  state.facePosePromptTab=active;
+  const bucket=buckets[active]||{},label=labels[active]||active.replaceAll("_"," "),prompts=Array.isArray(bucket.prompts)?bucket.prompts:[],count=Number(config.preflight_report?.pose_bucket_counts?.[active]||0);
+  host.innerHTML=`<div class="pose-prompt-tabs" role="tablist" aria-label="Pose prompt tabs">${order.map(name=>{const item=buckets[name]||{},itemLabel=labels[name]||name.replaceAll("_"," "),itemPrompts=Array.isArray(item.prompts)?item.prompts:[];return `<button type="button" role="tab" aria-selected="${name===active}" class="${name===active?"active":""}" data-pose-prompt-tab="${name}"><span>${esc(itemLabel)}</span><small>${itemPrompts.length}</small></button>`}).join("")}</div><div class="pose-prompt-panel" role="tabpanel"><div class="pose-prompt-panel-head"><div><strong>${esc(label)} prompts</strong><small>${count} matching reference${count===1?"":"s"} · one prompt per line</small></div><button type="button" class="quiet" data-pose-ideas>Add suggested prompts</button></div><textarea data-pose-prompts aria-label="${esc(`${label} pose prompts`)}" placeholder="[${esc(active)}] ${esc(label.toLowerCase())} portrait of {trigger}, natural daylight">${esc(prompts.join("\n"))}</textarea><p class="pose-prompt-note">Keep <code>[${esc(active)}]</code> at the start of each line. This tag sends the prompt to the matching viewing-angle references.</p></div>`;
+  host.querySelectorAll("[data-pose-prompt-tab]").forEach(button=>button.addEventListener("click",()=>{state.facePosePromptTab=button.dataset.posePromptTab;renderPosePromptEditor(host,config,buckets)}));
+  host.querySelector("[data-pose-prompts]").addEventListener("change",event=>{bucket.prompts=event.target.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);renderPosePromptEditor(host,config,buckets);sync()});
+  host.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${active}] ${phrases[active]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderPosePromptEditor(host,config,buckets);sync()});
+}
 function renderFaceWorkspace(){
   const config=faceConfig(),set=(key,value)=>{config[key]=value},isH3=state.settings.training_mode==="MiniMax H3 (Experimental)",supportsFace=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
   config.pose_plan ||= {enabled:false,preset:"balanced_identity",overall_anchor_weight:.8,variations:["natural","studio","cinematic","expression"],buckets:{}};
   ["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"].forEach(name=>{config.pose_plan.buckets[name]||={enabled:true,share:14.286,target:.55,patience:2,plateau_patience:4,min_evaluations:2,prompts:[]}});
+  updateFacePromptModeLabels(config);
   $("#face-mode-warning").style.display=supportsFace?"none":"";
   const evaluationTab=$('[data-face-step="evaluation"]');
   evaluationTab.disabled=isH3;
@@ -776,32 +819,25 @@ function renderFaceWorkspace(){
     objectField("Anti-copy weight","anti_copy_weight",config.anti_copy_weight??.02,v=>set("anti_copy_weight",v),{type:"number"})
   ]);
   addRecipeGroup("Pose guidance","How pose buckets affect the identity reward.",[
-    objectField("Pose aware","pose_aware",config.pose_aware||false,v=>set("pose_aware",v),{type:"boolean"}),
+    objectField("Pose aware","pose_aware",config.pose_aware||false,v=>{set("pose_aware",v);updateFacePromptModeLabels(config)},{type:"boolean",help:"When on, training uses only the prompts in the enabled viewing-angle rows. Turn it off to use the general fallback prompts instead."}),
     objectField("Pose reward weight","pose_reward_weight",config.pose_reward_weight??.2,v=>set("pose_reward_weight",v),{type:"number"}),
     objectField("Minimum pose references","pose_min_references",config.pose_min_references??2,v=>set("pose_min_references",v),{type:"number"}),
     objectField("Overall identity anchor","pose_anchor",config.pose_plan?.overall_anchor_weight??.8,v=>{config.pose_plan.overall_anchor_weight=v},{type:"number"}),
-    objectField("Prompt idea styles","pose_variations",(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).join(", "),v=>{config.pose_plan.variations=String(v).split(",").map(x=>x.trim().toLowerCase()).filter(Boolean)},{wide:true,help:"Comma-separated styles used by Create Prompt Ideas: natural, studio, cinematic, expression."})
+    objectField("Prompt idea styles","pose_variations",(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).join(", "),v=>{config.pose_plan.variations=String(v).split(",").map(x=>x.trim().toLowerCase()).filter(Boolean)},{wide:true,help:"Comma-separated styles used by Add suggested prompts: natural, studio, cinematic, expression."})
   ]);
   addRecipeGroup("Runtime and checkpoints","Memory, previews, and saved refinement checkpoints.",[
     objectField("Preview every","preview_every",config.preview_every??5,v=>set("preview_every",v),{type:"number"}),
+    ...(isH3?[objectField("Saved preview quality","quality_preview_mode",config.quality_preview_mode||"one_frame",v=>set("quality_preview_mode",v),{type:"select",options:[{label:"Fast one-frame (recommended for frequent previews)",value:"one_frame"},{label:"Native five-frame + center frame (slower)",value:"five_frame"}],help:"Refinement updates always remain one-frame. Five-frame mode runs an additional no-gradient MiniMax inference whenever a preview is due; it improves decode detail but can substantially increase seconds per iteration."}),objectField("Five-frame preview steps","quality_preview_steps",config.quality_preview_steps??20,v=>set("quality_preview_steps",v),{type:"number",help:"Used only for optional five-frame quality previews, not for the refinement gradient."}),objectField("Always save final preview","quality_preview_final",config.quality_preview_final??true,v=>set("quality_preview_final",v),{type:"boolean",help:"Creates the selected preview at completion or early stop even when the final step is not on the normal cadence."})]:[]),
     objectField("Save every","save_every",config.save_every??10,v=>set("save_every",v),{type:"number"}),
     objectField("Blocks to swap","blocks_to_swap",config.blocks_to_swap??(isH3?35:10),v=>set("blocks_to_swap",v),{type:"number",help:isH3?"MiniMax H3 face refinement is substantially heavier than normal LoRA training. Start at 35 on 24 GB.":"Move inactive transformer blocks through CPU memory to reduce VRAM."}),
     objectField("GPU","gpu_id",config.gpu_id||"auto",v=>set("gpu_id",v)),
     objectField("Q/K/V/O only","qkvo_only",config.qkvo_only??true,v=>set("qkvo_only",v),{type:"boolean"}),
     objectField("Checkpoint VAE","checkpoint_vae",config.checkpoint_vae??true,v=>set("checkpoint_vae",v),{type:"boolean"})
-  ]);
+  ],isH3);
   config.prompts=Array.isArray(config.prompts)?config.prompts:[];const promptHost=$("#face-prompts");promptHost.innerHTML=config.prompts.length?"":'<div class="empty">Add at least one refinement prompt.</div>';config.prompts.forEach((prompt,index)=>{const row=document.createElement("div");row.className="structured-item face-prompt-card";row.innerHTML=`<div class="structured-item-head"><div><strong>Prompt ${index+1}</strong><small>${esc(String(prompt).replace(/\s+/g," ").trim()||"Empty prompt")}</small></div><div class="structured-item-actions"><button>Remove</button></div></div><details class="prompt-details"><summary>Edit prompt</summary><div class="prompt-field-host"></div></details>`;row.querySelector(".prompt-field-host").append(objectField("Prompt","prompt",prompt,v=>{config.prompts[index]=v},{type:"textarea",wide:true}));row.querySelector(".structured-item-actions button").addEventListener("click",()=>{config.prompts.splice(index,1);renderFaceWorkspace();sync()});promptHost.append(row)});
-  const poseHost=$("#pose-plan"),plan=config.pose_plan||{},buckets=plan.buckets||{};poseHost.innerHTML=Object.keys(buckets).length?"":'<div class="empty">Enable pose-aware training to configure pose goals.</div>';
-  Object.entries(buckets).forEach(([name,bucket])=>{
-    const references=(config.preflight_report?.pose_bucket_counts||{})[name]||0,share=Math.round(Number(bucket.share||0)*10)/10;
-    const row=document.createElement("article");row.className="structured-item pose-card";
-    row.innerHTML=`<div class="structured-item-head"><div><strong>${esc(name.replaceAll("_"," "))}</strong><small>${esc(references)} reference${references===1?"":"s"} · ${esc(share)}% share · target ${esc(bucket.target??.55)}</small></div><div class="structured-item-actions"><label class="compact-toggle"><input type="checkbox" data-pose-enabled ${bucket.enabled!==false?"checked":""}> Include</label><button data-pose-ideas>Create prompt ideas</button></div></div><details class="pose-details"><summary>Tune target and prompts</summary><div class="guided-fields"></div></details>`;
-    const fields=row.querySelector(".guided-fields");
-    fields.append(objectField("Share %","share",share,v=>bucket.share=v,{type:"number"}),objectField("Identity target","target",bucket.target??.55,v=>bucket.target=v,{type:"number"}),objectField("Target patience","patience",bucket.patience??2,v=>bucket.patience=v,{type:"number"}),objectField("Plateau patience","plateau_patience",bucket.plateau_patience??4,v=>bucket.plateau_patience=v,{type:"number"}),objectField("Minimum evaluations","min_evaluations",bucket.min_evaluations??2,v=>bucket.min_evaluations=v,{type:"number"}),objectField("Pose-tagged prompts","prompts",(bucket.prompts||[]).join("\n"),v=>bucket.prompts=String(v).split(/\r?\n/).map(x=>x.trim()).filter(Boolean),{type:"textarea",wide:true,help:`Each line must begin with [${name}] so the reward uses the matching reference bucket.`}));
-    row.querySelector("[data-pose-enabled]").addEventListener("change",event=>{bucket.enabled=event.target.checked;renderFaceWorkspace();sync()});
-    row.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${name}] ${phrases[name]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderFaceWorkspace();sync()});
-    poseHost.append(row);
-  });
+  const poseHost=$("#pose-plan"),plan=config.pose_plan||{},buckets=plan.buckets||{};
+  if(Object.keys(buckets).length){renderPosePlanTable(poseHost,config,buckets);renderPosePromptEditor($("#pose-prompt-editor"),config,buckets)}
+  else {poseHost.innerHTML='<div class="empty">Enable pose-aware training to configure pose goals.</div>';$("#pose-prompt-editor").innerHTML=""}
   const evalHost=$("#face-eval-fields");evalHost.innerHTML=isH3?'<div class="issue warning">MiniMax H3 DRaFT refinement is available, but the fixed comparison recipe is not validated yet. Use standalone MiniMax H3 prompt previews to inspect checkpoints.</div>':"";if(!isH3)evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
   ["#face-baseline","#face-compare","#load-face-result","#open-face-results","#build-weak-pose-plan"].forEach(selector=>{$(selector).disabled=isH3});
   const report=config.preflight_report,excluded=new Set(config.excluded_reference_images||[]),poseNames=["uncertain","frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
@@ -1343,7 +1379,9 @@ async function startJob() {
   lastLogId = 0; $("#live-log").textContent = ""; renderActive(payload.job); go("run"); toast("Musubi training started.");
 }
 
-let lastLogId = 0, latestProgressLine = "", followLog = localStorage.getItem("musubi-log-follow") !== "false";
+function readLocalPreference(key,fallback){try{const value=localStorage.getItem(key);return value==null?fallback:value}catch(_){return fallback}}
+function writeLocalPreference(key,value){try{localStorage.setItem(key,String(value))}catch(_){} }
+let lastLogId = 0, latestProgressLine = "", followLog = readLocalPreference("musubi-log-follow","true")==="true";
 function parseProgressLine(message){
   const text=String(message||"").trim(),match=text.match(/^steps:\s*(\d{1,3})%.*?\b(\d+)\s*\/\s*(\d+)\s*\[([^\]]+)\]/i);
   if(!match)return null;
@@ -1587,10 +1625,15 @@ $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{st
 $("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});$("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
 $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));
 function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}
-const wrapLog=localStorage.getItem("musubi-log-wrap")!=="false";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
-$("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);localStorage.setItem("musubi-log-wrap",String(active))});
-$("#follow-log").addEventListener("click",event=>{followLog=!followLog;setTerminalToggle(event.currentTarget,followLog);localStorage.setItem("musubi-log-follow",String(followLog));if(followLog)$("#live-log").scrollTop=$("#live-log").scrollHeight});
-$("#live-log").addEventListener("scroll",event=>{if(!followLog)return;const log=event.currentTarget;if(log.scrollHeight-log.scrollTop-log.clientHeight>80){followLog=false;setTerminalToggle($("#follow-log"),false);localStorage.setItem("musubi-log-follow","false")}});
+const wrapLog=readLocalPreference("musubi-log-wrap","true")==="true";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
+$("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);writeLocalPreference("musubi-log-wrap",active)});
+$("#follow-log").addEventListener("click",event=>{followLog=!followLog;setTerminalToggle(event.currentTarget,followLog);writeLocalPreference("musubi-log-follow",followLog);if(followLog)$("#live-log").scrollTop=$("#live-log").scrollHeight});
+$("#live-log").addEventListener("scroll",event=>{if(!followLog)return;const log=event.currentTarget;if(log.scrollHeight-log.scrollTop-log.clientHeight>80){followLog=false;setTerminalToggle($("#follow-log"),false);writeLocalPreference("musubi-log-follow",false)}});
+function setRunSplitRatio(ratio,persist=true){const value=Math.min(.75,Math.max(.25,Number(ratio)||.5)),percent=Math.round(value*100),stack=$("#run-panel-stack"),divider=$("#run-split-divider");stack.style.gridTemplateColumns=`calc(${percent}% - 5px) 10px calc(${100-percent}% - 5px)`;divider.setAttribute("aria-valuenow",String(percent));if(persist)writeLocalPreference("musubi-run-split-ratio",value)}
+function setRunSplitView(enabled,persist=true){const run=$("#run"),button=$("#toggle-run-split");run.classList.toggle("run-split-view",enabled);button.setAttribute("aria-pressed",String(enabled));button.textContent=enabled?"Use tabs":"Show split view";if(persist)writeLocalPreference("musubi-run-split",enabled)}
+const initialRunSplit=readLocalPreference("musubi-run-split","false")==="true";setRunSplitView(initialRunSplit,false);setRunSplitRatio(Number(readLocalPreference("musubi-run-split-ratio","0.5")),false);
+$("#toggle-run-split").addEventListener("click",()=>setRunSplitView(!$("#run").classList.contains("run-split-view")));
+const runDivider=$("#run-split-divider");runDivider.addEventListener("pointerdown",event=>{if(!$("#run").classList.contains("run-split-view"))return;event.preventDefault();const stack=$("#run-panel-stack"),rect=stack.getBoundingClientRect();const move=moveEvent=>setRunSplitRatio((moveEvent.clientX-rect.left)/rect.width,false),stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);const value=Number(runDivider.getAttribute("aria-valuenow"))/100;writeLocalPreference("musubi-run-split-ratio",value)};window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop)});runDivider.addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight"].includes(event.key))return;event.preventDefault();const current=Number(runDivider.getAttribute("aria-valuenow"))/100;setRunSplitRatio(current+(event.key==="ArrowRight"?.05:-.05))});
 function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   const buttons=$$(buttonSelector),panes=$$(paneSelector);
   buttons[0]?.parentElement?.setAttribute("role","tablist");
