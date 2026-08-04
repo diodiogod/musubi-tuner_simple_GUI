@@ -1287,12 +1287,26 @@ async function startJob() {
   lastLogId = 0; $("#live-log").textContent = ""; renderActive(payload.job); go("run"); toast("Musubi training started.");
 }
 
-let lastLogId = 0;
+let lastLogId = 0, latestProgressLine = "", followLog = localStorage.getItem("musubi-log-follow") !== "false";
+function parseProgressLine(message){
+  const text=String(message||"").trim(),match=text.match(/^steps:\s*(\d{1,3})%.*?\b(\d+)\s*\/\s*(\d+)\s*\[([^\]]+)\]/i);
+  if(!match)return null;
+  const timing=match[4].match(/^(\d+(?::\d+){1,2})<([^,]+),\s*([^,\]]+)/);
+  return {text,percent:Number(match[1]),step:Number(match[2]),total:Number(match[3]),elapsed:timing?.[1]||"",eta:timing?.[2]?.trim()||"",rate:timing?.[3]?.trim()||""};
+}
+function updateLiveProgress(progress){
+  if(!progress)return;latestProgressLine=progress.text;$("#live-progress").hidden=false;$("#live-progress-text").textContent=progress.text;
+}
+function appendLogEntries(entries){
+  const log=$("#live-log"),durable=[];entries.forEach(entry=>{const progress=parseProgressLine(entry.message);if(progress)updateLiveProgress(progress);else durable.push(entry.message)});
+  if(!durable.length)return;const wasNearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<36;if(log.textContent==="Waiting for a job…")log.textContent="";
+  log.textContent+=durable.join("\n")+"\n";if(followLog&&wasNearBottom)log.scrollTop=log.scrollHeight;
+}
 async function pollJob() {
   try {
     const payload = await api(`/api/jobs/active?after=${lastLogId}`); lastLogId = payload.last_log_id;
-    if (payload.log.length) { const log=$("#live-log"); if(log.textContent==="Waiting for a job…")log.textContent=""; log.textContent+=payload.log.map(x=>x.message).join("\n")+"\n"; log.scrollTop=log.scrollHeight; }
-    renderActive(payload.active); renderMetrics(payload.active?.metrics || {});
+    if (payload.log.length) appendLogEntries(payload.log);
+    renderActive(payload.active); renderMetrics(payload.active?.metrics || {},payload.active);
     if(state.promptPreview?.jobId&&payload.active?.id===state.promptPreview.jobId){
       const status=payload.active.status;
       if(["completed","failed","stopped"].includes(status)&&state.promptPreview.status!==status){
@@ -1311,13 +1325,19 @@ function renderActive(job) {
   $("#active-title").textContent = job?.name || "Training control"; $("#active-subtitle").textContent = job ? `${job.phase} · command ${job.command_index}/${job.command_count}` : "No Musubi process is running.";
   $("#active-status").textContent = (job?.status || "idle").toUpperCase();
 }
-function renderMetrics(m) {
-  const step=Number(m.step||0),total=Number(m.total_steps||0),pct=total?Math.min(100,step/total*100):0;
+function durationToSeconds(value){const parts=String(value||"").split(":").map(Number);return parts.every(Number.isFinite)?parts.reduce((sum,part)=>sum*60+part,0):0}
+function formatDuration(value){const seconds=Math.max(0,Math.round(Number(value)||0));if(!seconds)return "—";const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?h+"h "+String(m).padStart(2,"0")+"m":m?m+"m "+String(s).padStart(2,"0")+"s":s+"s"}
+function renderMetrics(m,job) {
+  const progress=parseProgressLine(latestProgressLine),step=Number(m.step||progress?.step||0),total=Number(m.total_steps||progress?.total||0),pct=total?Math.min(100,step/total*100):0;
+  const configuredEpochs=Number(job?.settings?.max_train_epochs||0),totalEpochs=Number(m.total_epochs||configuredEpochs||0);let epoch=Number(m.epoch||0);if(!epoch&&totalEpochs&&total)epoch=Math.min(totalEpochs,Math.floor(step/Math.ceil(total/totalEpochs))+1);
   $("#metric-percent").textContent=`${Math.round(pct)}%`; $("#progress-ring").style.background=`conic-gradient(var(--accent2) ${pct}%,var(--surface2) ${pct}%)`;
   $("#progress-ring").setAttribute("aria-valuenow", String(Math.round(pct)));
   $("#progress-ring").setAttribute("aria-valuetext", total ? `${step} of ${total} steps` : "Waiting to start");
   $("#metric-progress").textContent=total?`${step.toLocaleString()} of ${total.toLocaleString()} steps`:"Waiting to start";
-  $("#metric-epoch").textContent=m.total_epochs?`Epoch ${m.epoch||0} of ${m.total_epochs}`:"Configure a recipe, then launch it from Review.";
+  $("#metric-epoch").textContent=totalEpochs?"Epoch "+(epoch||1)+" of "+totalEpochs:"Configure a recipe, then launch it from Review.";
+  if(total&&totalEpochs){const perEpoch=Math.ceil(total/totalEpochs),boundary=Math.min(total,Math.max(1,epoch)*perEpoch),remaining=Math.max(0,boundary-step);$("#metric-next-epoch").textContent=remaining?remaining.toLocaleString()+" steps · at "+boundary.toLocaleString():"Epoch boundary reached"}else $("#metric-next-epoch").textContent="Waiting for epoch data";
+  const started=job?.started_at?Date.parse(job.started_at):NaN,wallElapsed=Number.isFinite(started)?Math.max(0,(Date.now()-started)/1000):0,barElapsed=durationToSeconds(progress?.elapsed),elapsed=barElapsed||wallElapsed;
+  $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&elapsed)?formatDuration(elapsed/step*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||((step&&elapsed)?(elapsed/step).toFixed(2)+"s / step":"—");
   $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5); $("#metric-depth").textContent=m.depth_loss==null?"—":Number(m.depth_loss).toFixed(5); $("#metric-dop").textContent=m.dop_loss==null?"—":Number(m.dop_loss).toFixed(5); drawLoss(m.loss_history||[]);
 }
 function drawLoss(history) {
@@ -1479,8 +1499,13 @@ $("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$(
 $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{method:"POST",body:"{}"}).then(p=>{toast(`${p.added} job folder${p.added===1?"":"s"} imported.`);loadJobs()}).catch(e=>toast(e.message)));
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});
 $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{state.sampleMode=button.dataset.sampleMode;$$("[data-sample-mode]").forEach(x=>x.classList.toggle("active",x===button));if(state.samples){if(state.sampleMode==="gallery")renderSampleGallery();else if(state.samples.groups.length)renderComparison(Math.min(compareState.group,state.samples.groups.length-1))}}));
-$("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});$("#clear-log").addEventListener("click",()=>$("#live-log").textContent="");
-$("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent).then(()=>toast("Console output copied.")));
+$("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});$("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
+$("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));
+function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}
+const wrapLog=localStorage.getItem("musubi-log-wrap")!=="false";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
+$("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);localStorage.setItem("musubi-log-wrap",String(active))});
+$("#follow-log").addEventListener("click",event=>{followLog=!followLog;setTerminalToggle(event.currentTarget,followLog);localStorage.setItem("musubi-log-follow",String(followLog));if(followLog)$("#live-log").scrollTop=$("#live-log").scrollHeight});
+$("#live-log").addEventListener("scroll",event=>{if(!followLog)return;const log=event.currentTarget;if(log.scrollHeight-log.scrollTop-log.clientHeight>80){followLog=false;setTerminalToggle($("#follow-log"),false);localStorage.setItem("musubi-log-follow","false")}});
 function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   const buttons=$$(buttonSelector),panes=$$(paneSelector);
   buttons[0]?.parentElement?.setAttribute("role","tablist");

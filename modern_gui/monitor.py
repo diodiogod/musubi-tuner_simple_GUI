@@ -11,6 +11,12 @@ EPOCH_PATTERN = re.compile(r"\bepoch\s*=?\s*(?P<epoch>\d+)\s*/\s*(?P<total>\d+)"
 FACE_STEP_PATTERN = re.compile(r"^step=(?P<step>\d+)/(?P<total>\d+)")
 
 
+def is_training_progress_line(line: str) -> bool:
+    """Return whether a line is the replaceable main trainer progress bar."""
+
+    return STEP_PATTERN.search(line) is not None
+
+
 def parse_training_line(line: str) -> dict[str, Any]:
     update: dict[str, Any] = {}
     step_match = STEP_PATTERN.search(line) or FACE_STEP_PATTERN.search(line)

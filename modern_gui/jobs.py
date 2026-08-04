@@ -19,7 +19,7 @@ from modern_gui.stages import (
     stage_label,
     validate_stage_plan,
 )
-from modern_gui.monitor import parse_training_line
+from modern_gui.monitor import is_training_progress_line, parse_training_line
 from modern_gui.face_stages import prepare_face_stage, validate_face_environment
 from modern_gui.stages import resolve_stage_lora
 
@@ -209,7 +209,10 @@ class JobSupervisor:
 
     def _append_log(self, stream: str, message: str) -> None:
         with self._lock:
-            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": _utc_now()})
+            transient = stream == "output" and is_training_progress_line(message)
+            if transient and self._log and self._log[-1].get("transient"):
+                self._log.pop()
+            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": _utc_now(), "transient": transient})
             self._next_log_id += 1
             if stream == "output" and self._active:
                 update = parse_training_line(message)
@@ -217,7 +220,11 @@ class JobSupervisor:
                 metrics.update(update)
                 if "loss" in update:
                     history = metrics.setdefault("loss_history", [])
-                    history.append([int(update.get("step", metrics.get("step", 0))), update["loss"]])
+                    point = [int(update.get("step", metrics.get("step", 0))), update["loss"]]
+                    if history and history[-1][0] == point[0]:
+                        history[-1] = point
+                    else:
+                        history.append(point)
                     if len(history) > 1200:
                         metrics["loss_history"] = history[::2][-1000:]
 
