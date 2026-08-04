@@ -27,7 +27,7 @@
 
 ## Supported GUI Modes
 
-4 primary GUI modes currently ship in the app:
+5 primary GUI modes currently ship in the app:
 
 | Mode | GUI Backend | Main Training Wrapper | Primary Docs |
 |------|-------------|-----------------------|--------------|
@@ -35,12 +35,14 @@
 | Flux.2 Klein | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
 | Flux.2 Dev | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
 | Krea 2 | `backends/krea2.py` | `krea2_train_network.py` | `docs/krea2.md` |
+| MiniMax H3 (Experimental) | `backends/minimax_h3.py` | `minimax_h3_image_train_network.py` | `docs/minimax_h3_experimental.md` |
 
 **Mode-specific GUI behavior includes:**
 
 - Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
 - Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection, and optional DOP class preservation for Klein 4B/9B
 - Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring), and optional DOP class preservation
+- MiniMax H3: experimental still-image LoRA directly over the pruned ConvRot INT8 FL2VA transformer, with compact Qwen3-VL text caching and enforced 24 GB-oriented H2D-only block-swap defaults
 
 ## Documentation Files
 
@@ -53,6 +55,7 @@
 - `wan.md` - Wan training and inference reference
 - `flux_2.md` - Flux.2 reference
 - `krea2.md` - Krea 2 reference
+- `minimax_h3_experimental.md` - experimental pruned-INT8 MiniMax H3 image LoRA setup, limitations, artifacts, and measured 24 GB CUDA validation
 - `dataset_config.md` - Dataset config reference
 - `sampling_during_training.md` - Sampling behavior reference
 - `advanced_config.md` - Advanced training flags and behaviors

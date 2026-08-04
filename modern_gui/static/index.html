@@ -40,6 +40,7 @@
           <button class="model-tile" data-mode="Wan 2.2"><span class="model-orb wan"></span><span><strong>Wan 2.2</strong><small>Image or video, low/high-noise workflows</small></span><b>→</b></button>
           <button class="model-tile" data-mode="Flux.2 Klein"><span class="model-orb klein"></span><span><strong>Flux.2 Klein</strong><small>Compact Flux image training with DOP support</small></span><b>→</b></button>
           <button class="model-tile" data-mode="Flux.2 Dev"><span class="model-orb flux"></span><span><strong>Flux.2 Dev</strong><small>Full Flux.2 image LoRA training</small></span><b>→</b></button>
+          <button class="model-tile" data-mode="MiniMax H3 (Experimental)"><span class="model-orb minimax"></span><span><strong>MiniMax H3</strong><small>Experimental image LoRA from the pruned INT8 base</small></span><b>→</b></button>
         </div>
         <div class="home-grid">
           <article class="activity-panel">
@@ -82,6 +83,7 @@
               <div id="data-fields" class="guided-fields"></div>
               <div class="estimate-row"><span>Create the classic models/ and log/ concept layout from the workspace path.</span><button class="quiet" id="apply-workspace">Apply workspace layout</button></div>
               <button class="workspace-link" data-go="datasets"><span>▦</span><span><strong>Open dataset workspace</strong><small>Inspect images, captions, resolutions, repeats, and caches</small></span><b>→</b></button>
+              <section class="plan-policy-card dataset-cache-card" id="normal-cache-policy"><div><strong>Prepare caches before training</strong><p>Enable these for the first run, or after changing images, captions, resolution, VAE, or text encoder.</p></div><div class="stage-policies" id="run-cache-policies"></div></section>
             </div>
             <div class="step-pane" data-pane="method">
               <p class="kicker">STEP 3 OF 5</p><h2>Shape the training recipe</h2><p class="lead">Start from safe choices, then expand a section when you need more control.</p>
@@ -171,7 +173,6 @@
         </div>
         <div class="plan-pane" data-plan-pane="stages">
           <div class="workspace-heading plan-toolbar"><div><p class="kicker">ORDERED PROGRESSION</p><h2>Training stages</h2><p>Build a deliberate sequence. The connector between cards shows exactly what is handed forward.</p></div><div class="header-actions"><label class="inline-switch plan-master-switch"><input type="checkbox" id="use-stages"> Use staged training</label><button class="primary" id="add-stage">＋ Add stage</button></div></div>
-          <section class="plan-policy-card" id="normal-cache-policy"><div><strong>Prepare the normal run</strong><p>Choose whether Musubi should rebuild latent or text caches before this single recipe starts.</p></div><div class="stage-policies" id="run-cache-policies"></div></section>
           <section class="plan-policy-card" id="staged-cache-policy"><div><strong>Preparation between stages</strong><p>These policies affect standard stages while preserving typed state and LoRA handoffs.</p></div><div class="stage-policies" id="stage-policies"></div></section>
           <div id="stage-list" class="plan-stage-timeline"></div>
         </div>

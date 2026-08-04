@@ -18,6 +18,7 @@ This fork is no longer just a Wan 2.2 front-end. The GUI now supports multiple m
 - `Flux.2 Klein`
 - `Flux.2 Dev`
 - `Krea 2`
+- `MiniMax H3 (Experimental)` — still-image LoRA directly from the pruned ConvRot INT8 base
 
 It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling, monitoring, continuation training, and conversion easier to manage from a single interface.
 
@@ -84,6 +85,18 @@ Docs: [docs/flux_2.md](./docs/flux_2.md)
 Docs: [docs/krea2.md](./docs/krea2.md)
 
 DOP guide: [docs/dop.md](./docs/dop.md)
+
+### MiniMax H3 (Experimental)
+
+- Still-image LoRA over the frozen ~20.97 GB pruned ConvRot INT8 FL2VA checkpoint
+- Does not require the ~66 GB BF16 transformer
+- 24 GB-oriented safe defaults: rank 16, BF16 LoRA/backward, gradient checkpointing, and 30 H2D-only swapped blocks
+- Advanced speed tuning: 15 swapped blocks is currently training at roughly 19–20 GB on an RTX 4090, but has less safety margin and is not yet the automatic default
+- Compact ~15.69 GB Qwen3-VL file is needed only for text caching; the VAE is needed only for latent caching
+- LoRA-only, batch size 1, no video/audio training, and no in-training previews
+- Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak on a 24 GB RTX 4090
+
+Docs: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
 
 ## Installation
 
@@ -293,6 +306,7 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
 - Wan: [docs/wan.md](./docs/wan.md)
 - Flux.2: [docs/flux_2.md](./docs/flux_2.md)
 - Krea 2: [docs/krea2.md](./docs/krea2.md)
+- MiniMax H3 experimental image training: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
 - Dataset config: [docs/dataset_config.md](./docs/dataset_config.md)
 - Sampling during training: [docs/sampling_during_training.md](./docs/sampling_during_training.md)
 - Advanced config: [docs/advanced_config.md](./docs/advanced_config.md)

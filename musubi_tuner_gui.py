@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -389,8 +389,8 @@ class MusubiTunerGUI:
         toolbar.grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
-                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
-                                      state="readonly", width=18)
+                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)"],
+                                      state="readonly", width=25)
         self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
         ttk.Label(toolbar, text="Theme", style="Header.TLabel").pack(side="left", padx=(0, 7))
@@ -719,6 +719,41 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps only the optional Turbo weights in CPU RAM so entering each preview is faster. The RAW training model is safely restored from disk afterward. Uses roughly one extra model's worth of system RAM and is only relevant when Turbo DiT is set.", kind='checkbox')
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff", "Projector Patch (Optional):", "Optional tiny Krea 2 projector diff safetensors patch. Applied to the RAW training base model and also to optional Turbo sample generation so previews stay consistent.", kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff_strength", "Patch Strength:", "Multiplier for the optional projector patch. Example: 2.5", validate_num=True)
+
+        # ---- MiniMax H3 experimental image-only paths ----
+        self.hidden_frames['minimax_h3_model_paths'] = ttk.LabelFrame(frame, text="MiniMax H3 · Image-only LoRA (Experimental)")
+        ttk.Label(
+            self.hidden_frames['minimax_h3_model_paths'],
+            text=(
+                "Directly trains on Comfy's ~21 GB pruned ConvRot INT8 FL2VA checkpoint—no ~66 GB BF16 DiT download. "
+                "Still images only, batch size 1, LoRA only, no training previews. The compact ~15.7 GB nvfp4-awq Qwen3-VL file "
+                "is used only while caching captions. Defaults target a 24 GB GPU with 30 H2D-only swapped blocks."
+            ),
+            foreground=self.colors["warning"], font=("Segoe UI", 9, "italic"), wraplength=940, justify="left",
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_dit_model", "Pruned ConvRot INT8 DiT (Required):",
+            "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from Comfy's diffusion_models folder. "
+            "This experimental trainer uses that ~21 GB FL2VA checkpoint directly, so the ~66 GB full BF16 DiT is not needed. "
+            "Ref2VA, ordinary BF16, GGUF, and other quantized formats are intentionally rejected.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_required=True, is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_encoder", "Compact Qwen3-VL-32B:",
+            "Recommended: qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. Needed only when Re-cache Text is enabled.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_tokenizer", "Tokenizer / Processor:",
+            "Qwen3-VL-32B tokenizer repo ID or a local processor directory.",
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_convrot_bwd_mode", "INT8 Backward:",
+            "Choose 'bf16'. This is the tested, recommended setting for a 24 GB GPU. It only controls the temporary "
+            "calculations used while the LoRA learns—the base model remains the ~21 GB ConvRot INT8 checkpoint and the saved "
+            "LoRA is unaffected. Choose 'int8' only for advanced experiments; it requires Triton and has not been validated here.",
+            kind='combobox', options=["bf16", "int8"],
+        )
 
         # VAE shared by both modes — store reference for pack ordering
         models_frame = ttk.LabelFrame(frame, text="VAE Model"); models_frame.pack(fill="x", padx=10, pady=10)
@@ -1217,7 +1252,13 @@ class MusubiTunerGUI:
         )
 
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended for Wan/Flux. 'krea2_shift' matches Krea 2's resolution-aware schedule.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"])
+        self._add_widget(
+            flow_frame, "timestep_sampling", "Timestep Sampling:",
+            "For MiniMax H3, leave this on 'krea2_shift'—the GUI selects it automatically and it is the tested setting. "
+            "This option controls which noise levels the model practices during training. It does not mean that a Krea model is being used. "
+            "For other model families, keep the value selected by their mode unless you are following a specific advanced recipe.",
+            kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"]
+        )
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
         self.hidden_frames['timestep_boundary'] = ttk.Frame(flow_frame)
         self._add_widget(self.hidden_frames['timestep_boundary'], "timestep_boundary", "Timestep Boundary:", "The integer timestep where the model switches from low to high noise (e.g., 875). Only for combined runs.", validate_num=True)
@@ -6178,6 +6219,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.mode_note_label.config(text="Dual-stage Wan training · T2V and I2V workflows")
             self.hidden_frames['flux2_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['wan_dit'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             self.hidden_frames['wan_models'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
         elif mode == "Krea 2":
@@ -6185,6 +6227,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             if self.entries["timestep_sampling"].get() in ("", "shift"):
                 self.entries["timestep_sampling"].set("krea2_shift")
@@ -6193,11 +6236,31 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if self.entries["network_alpha_low"].get().strip() in ("", "16"):
                 self.entries["network_alpha_low"].delete(0, tk.END)
                 self.entries["network_alpha_low"].insert(0, "32")
+        elif mode == "MiniMax H3 (Experimental)":
+            self.mode_note_label.config(text="Experimental still-image LoRA · direct pruned ConvRot INT8 base · 24 GB defaults")
+            self.hidden_frames['wan_dit'].pack_forget()
+            self.hidden_frames['wan_models'].pack_forget()
+            self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+            self.entries["timestep_sampling"].set("krea2_shift")
+            self.entries["network_type"].set("LoRA")
+            self.entries["network_dim_low"].delete(0, tk.END); self.entries["network_dim_low"].insert(0, "16")
+            self.entries["network_alpha_low"].delete(0, tk.END); self.entries["network_alpha_low"].insert(0, "16")
+            self.entries["blocks_to_swap"].delete(0, tk.END); self.entries["blocks_to_swap"].insert(0, "30")
+            self.entries["attention_mechanism"].set("sdpa")
+            self.entries["mixed_precision"].set("bf16")
+            self.entries["minimax_h3_convrot_bwd_mode"].set("bf16")
+            self.entries["gradient_checkpointing"].var.set(True)
+            self.entries["fp8_base"].var.set(False)
+            self.entries["fp8_scaled"].var.set(False)
+            self.entries["compile"].var.set(False)
         else:
             self.mode_note_label.config(text="Single DiT, Qwen3/Mistral3 text encoder" if mode == "Flux.2 Klein" else "Single DiT, Mistral3 text encoder")
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             # Update version choices
             ver_combo = self.entries["flux2_model_version"]
@@ -6276,6 +6339,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 continue
             if mode == "Wan 2.2":
                 targeted = re.search(r"(?:^|\.)blocks\.\d+\.", key) is not None
+            elif mode == "MiniMax H3 (Experimental)":
+                targeted = re.search(
+                    r"(?:^|\.)blocks\.\d+\.(?:attn\.(?:qkv_proj|out_proj)|mlp\.(?:fc1|fc2))\.weight$",
+                    key,
+                ) is not None
             elif mode in ("Flux.2 Klein", "Flux.2 Dev"):
                 targeted = "double_blocks." in key or "single_blocks." in key
             else:
@@ -6353,6 +6421,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     ))
             elif mode == "Krea 2":
                 estimates.append(("Final", self.entries["krea2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
+            elif mode == "MiniMax H3 (Experimental)":
+                estimates.append(("Final", self.entries["minimax_h3_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
             else:
                 estimates.append(("Final", self.entries["flux2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
 
@@ -6416,6 +6486,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_wan = (mode == "Wan 2.2")
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
+        is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
         supports_dop = is_krea2 or mode == "Flux.2 Klein"
         dop_active = bool(supports_dop and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
@@ -6451,12 +6522,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["flux2_text_encoder"].is_required = False
             self.entries["krea2_dit_model"].is_required = False
             self.entries["krea2_text_encoder"].is_required = False
+            self.entries["minimax_h3_dit_model"].is_required = False
+            self.entries["minimax_h3_text_encoder"].is_required = False
         else:
             # Single-model modes: set their own required fields and clear the rest
             self.entries["flux2_dit_model"].is_required = is_flux2
             self.entries["flux2_text_encoder"].is_required = is_flux2
             self.entries["krea2_dit_model"].is_required = is_krea2
             self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples or refinement_only)
+            self.entries["minimax_h3_dit_model"].is_required = is_minimax_h3
+            self.entries["minimax_h3_text_encoder"].is_required = is_minimax_h3 and self.entries["recache_text"].var.get()
             self.entries["t5_model"].is_required = False
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
@@ -6531,6 +6606,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "t5_model"])
             elif is_krea2:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "krea2_text_encoder"])
+            elif is_minimax_h3:
+                can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "minimax_h3_text_encoder"])
             else:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "flux2_text_encoder"])
             self.entries["recache_text"].config(state="normal" if can_cache_text else "disabled")
@@ -6540,12 +6617,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         mode = self.training_mode_var.get()
         is_wan = (mode == "Wan 2.2")
         is_krea2 = (mode == "Krea 2")
+        is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
 
         show_low = self.entries["train_low_noise"].var.get() if is_wan else False
         show_high = self.entries["train_high_noise"].var.get() if is_wan else False
         is_i2v = self.entries["is_i2v"].var.get() if is_wan else False
 
         net_type = self.entries.get("network_type", None)
+        if net_type:
+            net_type.config(state="disabled" if is_minimax_h3 else "readonly")
         is_lokr = net_type and net_type.get() == "LoKr"
         if is_lokr: self.hidden_frames['lokr_factor'].pack(fill='x', pady=(0, 3))
         else: self.hidden_frames['lokr_factor'].pack_forget()
@@ -6590,6 +6670,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.hidden_frames["compile_options"].pack(fill="x")
         else:
             self.hidden_frames["compile_options"].pack_forget()
+
+        for key in ("compile", "fp8_base", "fp8_scaled"):
+            self.entries[key].config(state="disabled" if is_minimax_h3 else "normal")
+        self.entries["mixed_precision"].config(state="disabled" if is_minimax_h3 else "readonly")
 
         scheduler = self.entries["lr_scheduler"].get()
         if scheduler == "constant_with_warmup": self.hidden_frames['lr_warmup'].pack(fill='x', expand=True)
@@ -6909,6 +6993,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "flux2_model_version": "Klein Base 4B ★", "flux2_dit_model": "", "flux2_text_encoder": "", "fp8_text_encoder": False,
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
+            "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
+            "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
             "krea2_generalization_preset": "Off (Baseline)",
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -7703,6 +7789,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         elif mode == "Krea 2":
             cache_commands = krea2_backend.build_cache_commands(settings, python_executable)
             training_commands = krea2_backend.build_commands(settings)
+        elif mode == "MiniMax H3 (Experimental)":
+            cache_commands = minimax_h3_backend.build_cache_commands(settings, python_executable)
+            training_commands = minimax_h3_backend.build_commands(settings)
         else:
             cache_commands = flux2_backend.build_cache_commands(settings, python_executable)
             training_commands = flux2_backend.build_commands(settings)
@@ -8127,6 +8216,52 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 "Run a short comparison first and keep a baseline with the same seed and dataset. Continue?",
             ):
                 return
+        elif mode == "MiniMax H3 (Experimental)":
+            if settings.get("network_type") != "LoRA":
+                messagebox.showerror("Validation Error", "Experimental MiniMax H3 currently supports LoRA only.")
+                return
+            if settings.get("fp8_base") or settings.get("fp8_scaled"):
+                messagebox.showerror(
+                    "Validation Error",
+                    "MiniMax H3 already loads the pruned ConvRot INT8 base directly. Disable the FP8 Base and FP8 Scaled options.",
+                )
+                return
+            if settings.get("compile"):
+                messagebox.showerror("Validation Error", "Torch Compile is not supported by the experimental MiniMax H3 ConvRot path.")
+                return
+            if settings.get("mixed_precision") != "bf16":
+                messagebox.showerror("Validation Error", "Experimental MiniMax H3 requires BF16 mixed precision.")
+                return
+            if not settings.get("gradient_checkpointing"):
+                messagebox.showerror("Validation Error", "MiniMax H3 H2D-only block swapping requires Gradient Checkpointing.")
+                return
+            try:
+                blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
+            except ValueError:
+                messagebox.showerror("Validation Error", "MiniMax H3 Blocks to Swap must be an integer between 1 and 48.")
+                return
+            if not 1 <= blocks_to_swap <= 48:
+                messagebox.showerror(
+                    "Validation Error",
+                    "MiniMax H3 on a 24 GB card requires block swapping. Choose 1–48 blocks; 30 is the conservative default.",
+                )
+                return
+            wants_minimax_samples = bool(
+                settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first")
+            )
+            if wants_minimax_samples:
+                messagebox.showerror(
+                    "Validation Error",
+                    "In-training sample generation is not implemented for experimental MiniMax H3 yet. Clear the sample schedule before starting.",
+                )
+                return
+            if not messagebox.askokcancel(
+                "Experimental MiniMax H3",
+                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 one-step run "
+                "completed on a 24 GB RTX 4090, but long-run stability and training quality are not established yet. Use batch size 1, "
+                "keep the original checkpoint, and begin with a short test run. Continue?",
+            ):
+                return
         # Warn if sample frequency is set but no prompts were added
         wants_samples = (settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first"))
         if wants_samples and self._count_enabled_sample_prompts() == 0:
@@ -8165,6 +8300,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             )
         elif mode == "Krea 2":
             cache_cmds = krea2_backend.build_cache_commands(settings, python_executable)
+        elif mode == "MiniMax H3 (Experimental)":
+            cache_cmds = minimax_h3_backend.build_cache_commands(settings, python_executable)
         else:
             cache_cmds = flux2_backend.build_cache_commands(settings, python_executable)
         self.command_sequence.extend(cache_cmds)
@@ -8251,6 +8388,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return wan_backend.build_commands(settings)
         elif mode == "Krea 2":
             return krea2_backend.build_commands(settings)
+        elif mode == "MiniMax H3 (Experimental)":
+            return minimax_h3_backend.build_commands(settings)
         else:
             return flux2_backend.build_commands(settings)
 

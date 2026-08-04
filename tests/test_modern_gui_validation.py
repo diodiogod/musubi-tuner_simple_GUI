@@ -45,6 +45,38 @@ def test_krea_incompatible_runtime_options_are_actionable(tmp_path: Path):
     assert "Krea Turbo sampling cannot be combined with Blocks to Swap." in messages
 
 
+def test_minimax_h3_preflight_enforces_experimental_24gb_contract(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": str(dataset),
+        "output_dir": str(tmp_path),
+        "output_name": "h3",
+        "vae_model": "vae.safetensors",
+        "minimax_h3_dit_model": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "learning_rate": "2e-4",
+        "gradient_accumulation_steps": "1",
+        "network_dim_low": "16",
+        "network_type": "LoRA",
+        "max_train_epochs": "1",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+    }
+
+    result = validate_training_settings(settings)
+    assert result["errors"] == []
+    assert any("1024px rank-16 one-step run was validated" in item["message"] for item in result["warnings"])
+
+    settings.update({"compile": True, "fp8_base": True, "blocks_to_swap": "0", "sample_at_first": True})
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+    assert any("Torch Compile" in message for message in messages)
+    assert any("FP8 flags" in message for message in messages)
+    assert any("1–48" in message for message in messages)
+    assert any("samples are not implemented" in message for message in messages)
+
+
 def test_exact_resume_is_revalidated_even_when_loaded_from_json(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
     state = tmp_path / "portrait-000002-state"

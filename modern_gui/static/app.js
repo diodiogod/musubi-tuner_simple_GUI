@@ -88,18 +88,26 @@ const HELP = {
   blocks_to_swap: "Moves model blocks between GPU and CPU to reduce VRAM use, with a speed cost.",
   mixed_precision: "Controls training compute precision. BF16 is generally preferred on supported modern NVIDIA GPUs.",
   fp8_base: "Loads compatible base-model weights in FP8 to save VRAM. This does not change the saved LoRA precision.",
-  timestep_sampling: "Controls which noise levels are emphasized during flow-matching training. Model-family defaults are intentional.",
+  minimax_h3_dit_model: "Required: select minimax_h3_fl2va_pruned_int8_convrot.safetensors. This is the supported ~21 GB Comfy FL2VA checkpoint; the full ~66 GB BF16 DiT is not needed.",
+  minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested setting for a 24 GB GPU. The int8 choice is for advanced, unvalidated experiments.",
+  recache_latents: "Rebuild the cached image information before training. Enable this for the first run or after changing images, resolution, or VAE.",
+  recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
+  timestep_sampling: "For MiniMax H3, leave this on krea2_shift. The GUI selects it automatically; it does not mean that a Krea model is being used.",
   dop_enabled: "Differential Output Preservation adds a class-preservation objective. It costs extra compute and requires correct trigger/class captions.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","blocks_to_swap","fp8_base"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
-  timestep_sampling: "Timestep sampling decides which noise levels the optimizer sees most often. This changes what the LoRA learns even when every other setting stays the same.\n\nThe model-family defaults are deliberate. Change this only when you understand the distribution expected by the selected Musubi trainer or are reproducing a known recipe.",
+  timestep_sampling: "This controls which noise levels the model practices during training. You normally do not need to choose it yourself because each training mode selects an appropriate value.\n\nFor MiniMax H3, leave it on krea2_shift. This is the setting used by the successful 24 GB test. Despite the name, it does not load or train a Krea model; MiniMax H3 simply uses the same style of noise schedule. Change it only when following a specific advanced recipe.",
   dop_enabled: "Differential Output Preservation adds a preservation objective beside the normal training loss. It can reduce unwanted changes outside the trained concept, especially for small or narrow datasets.\n\nIt costs additional compute and depends on correct trigger and class captions. Review the DOP weight and words under Regularization before enabling it.",
   krea2_generalization_preset: "This preset coordinates several Krea 2 regularization controls to trade exact dataset matching for broader prompt and pose behavior.\n\nGentle stays close to baseline training. Balanced is a practical starting point for small identity datasets. Strong applies more regularization and should be evaluated carefully against fixed prompts.",
   blocks_to_swap: "Block swapping reduces peak VRAM by moving inactive transformer blocks between GPU and system memory. More swapped blocks generally use less VRAM but increase transfer overhead and slow each step.\n\nStart with the lowest value that fits your GPU. If a run still runs out of memory, increase gradually; if there is comfortable headroom, lower it for speed.",
-  fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline."
+  fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
+  minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
+  minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
+  recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
+  recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster."
 };
 function helpFor(field) {
   return HELP[field.key] || `${field.label} maps directly to Musubi's “${field.key}” setting. Its current value is preserved in saved recipes and job history.`;
@@ -188,6 +196,8 @@ function fieldControl(field, {wide = false} = {}) {
     if(customInput)wrap.append(customInput);
   }
   input.id = id;
+  input.disabled = (field.disabled_modes || []).includes(state.settings.training_mode);
+  if (input.disabled) input.title = "Fixed by the selected experimental training mode";
   const description = document.createElement("span");
   description.id = descriptionId; description.className = "sr-only"; description.textContent = helpFor(field);
   input.setAttribute("aria-describedby", descriptionId);
@@ -248,6 +258,7 @@ function renderGuided() {
   const mode = state.settings.training_mode;
   const modelKeys = mode === "Krea 2"
     ? ["krea2_dit_model","krea2_text_encoder","vae_model","krea2_turbo_dit","krea2_projector_diff"]
+    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_convrot_bwd_mode","vae_model"]
     : mode?.startsWith("Flux.2") ? ["flux2_dit_model","flux2_text_encoder","vae_model"]
     : ["is_i2v","dit_high_noise","dit_low_noise","t5_model","clip_model","vae_model"];
   appendFields($("#model-fields"), modelKeys);
@@ -264,7 +275,18 @@ function renderGuided() {
   renderTools();
 }
 function selectMode(mode) {
-  state.settings.training_mode = mode; renderGuided(); renderAllSettings(); sync();
+  state.settings.training_mode = mode;
+  if(mode === "MiniMax H3 (Experimental)"){
+    Object.assign(state.settings, {
+      network_type:"LoRA", network_dim_low:"16", network_alpha_low:"16",
+      blocks_to_swap:"30", mixed_precision:"bf16", attention_mechanism:"sdpa",
+      gradient_checkpointing:true, timestep_sampling:"krea2_shift",
+      compile:false, fp8_base:false, fp8_scaled:false,
+      minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"Qwen/Qwen3-VL-32B-Instruct",
+      minimax_h3_convrot_bwd_mode:"bf16",
+    });
+  }
+  renderGuided(); renderAllSettings(); sync();
 }
 function setStep(step) {
   state.step = step;
@@ -279,6 +301,10 @@ function moveStep(delta) {
   setStep(order[Math.max(0, Math.min(order.length - 1, order.indexOf(state.step) + delta))]);
 }
 function renderReview() {
+  const cacheKeys=state.settings.use_staged_training
+    ? [["staged_recache_latents","Rebuild image cache between stages"],["staged_recache_text","Rebuild text cache between stages"]]
+    : [["recache_latents","Rebuild image cache"],["recache_text","Rebuild text cache"]];
+  const cachePreparation=cacheKeys.filter(([key])=>state.settings[key]).map(([,label])=>label).join(" + ")||"Reuse existing caches";
   const rows = [
     ["Model", state.settings.training_mode || "Not selected"],
     ["Dataset", state.settings.dataset_config || "Not selected"],
@@ -287,6 +313,7 @@ function renderReview() {
     ["Method", `${state.settings.network_type || "LoRA"} · rank ${state.settings.network_dim_low || "—"}${state.settings.training_mode==="Wan 2.2"&&state.settings.network_dim_high?` / ${state.settings.network_dim_high}`:""}`],
     ["Schedule", state.settings.max_train_steps ? `${state.settings.max_train_steps} steps` : `${state.settings.max_train_epochs || "—"} epochs`],
     ["Precision", state.settings.mixed_precision || "Default"],
+    ["Cache preparation", cachePreparation],
   ];
   $("#review-summary").innerHTML = rows.map(([label,value]) => `<div class="review-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
 }
@@ -1422,7 +1449,7 @@ $("#load-settings-file").addEventListener("click",()=>$("#settings-file-input").
 $("#export-settings-file").addEventListener("click",()=>{const blob=new Blob([JSON.stringify(state.settings,null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=`${state.settings.output_name||"musubi-settings"}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)});
 $("#reset-settings").addEventListener("click",async()=>{if(!confirm("Restore every field to its default value? Saved files and training outputs are not deleted."))return;const payload=await api("/api/settings/defaults");state.settings=payload.settings;renderGuided();renderAllSettings();sync();toast("Defaults loaded for review.")});
 $("#preview-button").addEventListener("click",()=>previewCommands().catch(e=>toast(e.message)));$("#validate-settings").addEventListener("click",()=>validateSettings().catch(e=>toast(e.message)));$("#start-from-review").addEventListener("click",()=>startJob().catch(e=>toast(e.message)));
-$("#estimate-lora").addEventListener("click",async()=>{const mode=state.settings.training_mode,model=mode==="Krea 2"?state.settings.krea2_dit_model:mode?.startsWith("Flux.2")?state.settings.flux2_dit_model:state.settings.dit_low_noise||state.settings.dit_high_noise;try{const result=await api("/api/estimate-lora",{method:"POST",body:JSON.stringify({model_path:model,mode,rank:state.settings.network_dim_low||state.settings.network_dim,network_type:state.settings.network_type,lokr_factor:state.settings.lokr_factor})});$("#lora-estimate").textContent=`Estimated adapter size: ${result.formatted}` }catch(e){toast(e.message)}});
+$("#estimate-lora").addEventListener("click",async()=>{const mode=state.settings.training_mode,model=mode==="Krea 2"?state.settings.krea2_dit_model:mode==="MiniMax H3 (Experimental)"?state.settings.minimax_h3_dit_model:mode?.startsWith("Flux.2")?state.settings.flux2_dit_model:state.settings.dit_low_noise||state.settings.dit_high_noise;try{const result=await api("/api/estimate-lora",{method:"POST",body:JSON.stringify({model_path:model,mode,rank:state.settings.network_dim_low||state.settings.network_dim,network_type:state.settings.network_type,lokr_factor:state.settings.lokr_factor})});$("#lora-estimate").textContent=`Estimated adapter size: ${result.formatted}` }catch(e){toast(e.message)}});
 $("#apply-workspace").addEventListener("click",async()=>{try{const result=await api("/api/workspace/apply",{method:"POST",body:JSON.stringify({root:state.settings.project_root})});state.settings.output_dir=result.output_dir;state.settings.logging_dir=result.logging_dir;state.settings.convert_output_dir=result.output_dir;renderGuided();renderAllSettings();sync();toast("Workspace models and log folders are ready.")}catch(e){toast(e.message)}});
 $("#setting-search").addEventListener("input",filterSettings);$("#show-all-modes").addEventListener("change",filterSettings);$("#settings-json").addEventListener("change",()=>{if(acceptRawSettings()){renderGuided();renderAllSettings();sync()}});
 $("#load-dataset").addEventListener("click",()=>loadDatasetDocument());

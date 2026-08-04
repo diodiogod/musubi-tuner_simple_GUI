@@ -41,6 +41,47 @@ def test_supervisor_runs_sequential_commands_and_records_bounded_log(monkeypatch
     assert supervisor.history()[0]["name"] == "web-test"
 
 
+def test_supervisor_forces_utf8_for_musubi_bilingual_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    message = "学習開始 · 1024×1024 · LoRA α16"
+    monkeypatch.setattr(
+        jobs,
+        "build_command_plan",
+        lambda settings: {"cache": [], "train": [[sys.executable, "-c", f"print({message!r})"]]},
+    )
+    supervisor = jobs.JobSupervisor()
+
+    supervisor.start({"output_name": "unicode-test", "training_mode": "MiniMax H3 (Experimental)"})
+    snapshot = wait_until_finished(supervisor)
+
+    assert snapshot["active"]["status"] == "completed"
+    assert message in "\n".join(entry["message"] for entry in snapshot["log"])
+
+
+def test_supervisor_finishes_when_helper_keeps_stdout_pipe_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    command = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(3)'], "
+        "stdout=sys.stdout, stderr=sys.stderr); print('trainer-exited')"
+    )
+    monkeypatch.setattr(
+        jobs,
+        "build_command_plan",
+        lambda settings: {"cache": [], "train": [[sys.executable, "-c", command]]},
+    )
+    supervisor = jobs.JobSupervisor()
+
+    started_at = time.monotonic()
+    supervisor.start({"output_name": "held-pipe-test", "training_mode": "MiniMax H3 (Experimental)"})
+    snapshot = wait_until_finished(supervisor, timeout=2)
+
+    assert snapshot["active"]["status"] == "completed"
+    assert time.monotonic() - started_at < 2
+    assert "trainer-exited" in "\n".join(entry["message"] for entry in snapshot["log"])
+
+
 def test_supervisor_rejects_parallel_active_jobs(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
     monkeypatch.setattr(

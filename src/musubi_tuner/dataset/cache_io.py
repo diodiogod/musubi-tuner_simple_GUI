@@ -15,6 +15,7 @@ from musubi_tuner.dataset.architectures import (
     ARCHITECTURE_IDEOGRAM4_FULL,
     ARCHITECTURE_KANDINSKY5_FULL,
     ARCHITECTURE_KREA2_FULL,
+    ARCHITECTURE_MINIMAX_H3_FULL,
     ARCHITECTURE_QWEN_IMAGE_FULL,
     ARCHITECTURE_WAN_FULL,
     ARCHITECTURE_Z_IMAGE_FULL,
@@ -192,6 +193,17 @@ def save_latent_cache_krea2(item_info: ItemInfo, latent: torch.Tensor):
     sd = {f"latents_{F}x{H}x{W}_{dtype_str}": latent.detach().cpu().contiguous()}
 
     save_latent_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
+
+
+def save_latent_cache_minimax_h3_image(item_info: ItemInfo, latent: torch.Tensor):
+    """Save one H3 video-VAE frame for the experimental image-only trainer."""
+    if latent.ndim != 4 or tuple(latent.shape[:2]) != (24, 1):
+        raise ValueError(f"MiniMax-H3 image latent must be [24,1,H,W], got {tuple(latent.shape)}")
+    if latent.shape[-2] % 2 or latent.shape[-1] % 2:
+        raise ValueError("MiniMax-H3 image latent height and width must be divisible by 2")
+    dtype = dtype_to_str(latent.dtype)
+    sd = {f"latents_1x{latent.shape[-2]}x{latent.shape[-1]}_{dtype}": latent}
+    save_latent_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL)
 
 
 def save_latent_cache_kandinsky5(
@@ -436,6 +448,18 @@ def save_text_encoder_output_cache_krea2(
         sd["dop_signature"] = dop_signature.detach().cpu()
 
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_KREA2_FULL)
+
+
+def save_text_encoder_output_cache_minimax_h3_image(item_info: ItemInfo, hidden_states: torch.Tensor):
+    """Save raw layer-50 Qwen3-VL states; image-caption rows use text modality tag 1."""
+    if hidden_states.ndim != 2 or hidden_states.shape[1] != 5120:
+        raise ValueError(f"MiniMax-H3 hidden states must be [L,5120], got {tuple(hidden_states.shape)}")
+    dtype = dtype_to_str(hidden_states.dtype)
+    sd = {
+        f"varlen_mmh3_hidden_states_{dtype}": hidden_states,
+        "varlen_mmh3_token_tags_int64": torch.ones(hidden_states.shape[0], dtype=torch.int64),
+    }
+    save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL, merge_existing=False)
 
 
 def save_text_encoder_output_cache_kandinsky5(

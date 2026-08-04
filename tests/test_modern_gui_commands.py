@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from modern_gui.commands import build_command_plan
@@ -22,6 +23,55 @@ def test_krea_plan_uses_existing_backend_adapters():
     assert any("krea2_cache_latents.py" in item for item in plan["cache"][0])
     assert any("krea2_train_network.py" in item for item in plan["train"][0])
     assert "--num_processes" in plan["train"][0]
+
+
+def test_minimax_h3_plan_uses_direct_pruned_backend(tmp_path):
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": "dataset.toml",
+        "minimax_h3_dit_model": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "minimax_h3_text_encoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
+        "vae_model": "vae.safetensors",
+        "output_dir": str(tmp_path),
+        "output_name": "h3",
+        "network_type": "LoRA",
+        "network_dim_low": "16",
+        "network_alpha_low": "16",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+        "attention_mechanism": "sdpa",
+        "recache_text": True,
+    }
+
+    plan = build_command_plan(settings, preview=True)
+
+    assert any("minimax_h3_image_cache_text_encoder_outputs.py" in item for item in plan["cache"][0])
+    command = plan["train"][0]
+    assert "src/musubi_tuner/minimax_h3_image_train_network.py" in command
+    assert "--block_swap_h2d_only" in command
+    assert "--fp8_base" not in command
+
+
+def test_training_uses_accelerate_from_gui_python_environment(tmp_path):
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": "dataset.toml",
+        "minimax_h3_dit_model": "dit.safetensors",
+        "output_dir": str(tmp_path),
+        "output_name": "h3",
+        "network_type": "LoRA",
+        "network_dim_low": "16",
+        "network_alpha_low": "16",
+        "blocks_to_swap": "30",
+        "mixed_precision": "bf16",
+    }
+
+    launcher = Path(build_command_plan(settings, preview=True)["train"][0][0])
+
+    assert launcher.name == ("accelerate.exe" if os.name == "nt" else "accelerate")
+    assert launcher.is_file()
 
 
 def test_preview_does_not_create_output_directory(tmp_path):

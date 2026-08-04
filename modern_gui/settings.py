@@ -8,8 +8,22 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 LAST_SETTINGS = ROOT / "last_settings.json"
-MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"]
+MINIMAX_H3_MODE = "MiniMax H3 (Experimental)"
+MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE]
 STRUCTURED_KEYS = {"sample_prompts_data", "staged_training_config", "face_refinement_config"}
+MINIMAX_H3_DEFAULTS = {
+    "minimax_h3_dit_model": "",
+    "minimax_h3_text_encoder": "",
+    "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
+    "minimax_h3_convrot_bwd_mode": "bf16",
+}
+
+FIELD_LABELS = {
+    "minimax_h3_dit_model": "Pruned ConvRot INT8 DiT (Required)",
+    "minimax_h3_text_encoder": "Compact Qwen3-VL-32B Text Encoder",
+    "recache_latents": "Rebuild Image/Latent Cache",
+    "recache_text": "Rebuild Caption/Text Cache",
+}
 
 SECTION_TITLES = {
     "essentials": "Essentials",
@@ -42,6 +56,7 @@ CHOICES = {
     "log_with": ["none", "tensorboard", "wandb"],
     "krea2_weight_noise_mode": ["relative", "absolute"],
     "krea2_generalization_preset": ["Off (Baseline)", "Gentle", "Balanced", "Strong"],
+    "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
     "appearance_mode": ["Dark", "Light"],
 }
 
@@ -61,6 +76,8 @@ PATH_KEYS = {
     "krea2_text_encoder",
     "krea2_turbo_dit",
     "krea2_projector_diff",
+    "minimax_h3_dit_model",
+    "minimax_h3_text_encoder",
     "vae_model",
     "logging_dir",
     "convert_lora_path",
@@ -92,7 +109,11 @@ def load_settings() -> dict[str, Any]:
     if not LAST_SETTINGS.exists():
         return {}
     payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    for key, value in MINIMAX_H3_DEFAULTS.items():
+        payload.setdefault(key, value)
+    return payload
 
 
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
@@ -159,6 +180,7 @@ def _section_for(key: str) -> str:
         "fp8_scaled",
         "fp8_t5",
         "fp8_llm",
+        "minimax_h3_convrot_bwd_mode",
         "save_state",
         "rename_final_artifacts_to_epoch",
         "recache_latents",
@@ -181,7 +203,7 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
         field_type = "path"
     else:
         field_type = "text"
-    field = {"key": key, "label": _humanize(key), "type": field_type}
+    field = {"key": key, "label": FIELD_LABELS.get(key, _humanize(key)), "type": field_type}
     if key in CHOICES:
         field["options"] = CHOICES[key]
         field["allow_custom"] = key not in {"training_mode", "appearance_mode"}
@@ -190,6 +212,10 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
         modes = ["Flux.2 Klein", "Flux.2 Dev"]
     elif key.startswith("krea2_") or key.startswith("dop_"):
         modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein"]
+    elif key.startswith("minimax_h3_"):
+        modes = [MINIMAX_H3_MODE]
+    if key in {"network_type", "mixed_precision", "compile", "fp8_base", "fp8_scaled"}:
+        field["disabled_modes"] = [MINIMAX_H3_MODE]
     if modes:
         field["modes"] = modes
     return field

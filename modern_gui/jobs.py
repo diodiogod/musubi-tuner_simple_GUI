@@ -46,6 +46,20 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _subprocess_environment() -> dict[str, str]:
+    """Build a clean UTF-8 environment for Musubi and Accelerate children."""
+
+    environment = os.environ.copy()
+    for key in RANK_ENVIRONMENT_KEYS:
+        environment.pop(key, None)
+    # Windows otherwise gives redirected Python stdout the active ANSI code
+    # page (often CP1252), which cannot represent Musubi's bilingual logs.
+    environment["PYTHONUNBUFFERED"] = "1"
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
 def _read_history() -> list[dict[str, Any]]:
     try:
         payload = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
@@ -207,6 +221,21 @@ class JobSupervisor:
                     if len(history) > 1200:
                         metrics["loss_history"] = history[::2][-1000:]
 
+    def _read_process_output(self, process: subprocess.Popen[str], job_id: str) -> None:
+        """Drain child output without making job completion depend on pipe EOF."""
+
+        if process.stdout is None:
+            return
+        try:
+            for line in process.stdout:
+                with self._lock:
+                    if not self._active or self._active.get("id") != job_id:
+                        continue
+                self._append_log("output", line.rstrip())
+        except (OSError, ValueError):
+            # A stopped process or late-closing helper may invalidate the pipe.
+            pass
+
     def _run(self, commands: list[list[str]]) -> None:
         return_code = self._execute_commands(commands)
         self._finish(return_code)
@@ -223,10 +252,9 @@ class JobSupervisor:
                         self._active["command_index"] = index + 1
                     phase = self._phase(command)
                     self._active["phase"] = f"{phase_prefix} · {phase}" if phase_prefix else phase
+                    job_id = str(self._active["id"])
                 self._append_log("system", f"$ {subprocess.list2cmdline([str(value) for value in command])}")
-                environment = os.environ.copy()
-                for key in RANK_ENVIRONMENT_KEYS:
-                    environment.pop(key, None)
+                environment = _subprocess_environment()
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                 self._process = subprocess.Popen(
                     [str(value) for value in command],
@@ -240,10 +268,18 @@ class JobSupervisor:
                     env=environment,
                     creationflags=creationflags,
                 )
-                assert self._process.stdout is not None
-                for line in self._process.stdout:
-                    self._append_log("output", line.rstrip())
+                output_reader = threading.Thread(
+                    target=self._read_process_output,
+                    args=(self._process, job_id),
+                    daemon=True,
+                    name=f"musubi-web-output-{job_id[:8]}",
+                )
+                output_reader.start()
                 return_code = self._process.wait()
+                # W&B and similar helpers may inherit stdout and keep the pipe
+                # open after Accelerate exits. Do not leave the job stuck in
+                # "stopping" while waiting for those unrelated handles.
+                output_reader.join(timeout=0.5)
                 self._process = None
                 if return_code != 0:
                     break

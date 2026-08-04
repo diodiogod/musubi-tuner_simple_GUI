@@ -553,7 +553,9 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
             if self.path == "/api/estimate-lora":
                 from musubi_tuner_gui import MusubiTunerGUI
 
-                byte_count = MusubiTunerGUI._estimate_adapter_bytes(
+                estimator = MusubiTunerGUI.__new__(MusubiTunerGUI)
+                estimator._lora_shape_cache = {}
+                byte_count, layer_count = estimator._estimate_adapter_bytes(
                     str(body.get("model_path", "")),
                     str(body.get("mode", "")),
                     int(body.get("rank") or 0),
@@ -563,6 +565,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 return self._json(
                     {
                         "bytes": byte_count,
+                        "layers": layer_count,
                         "formatted": MusubiTunerGUI._format_estimated_size(byte_count),
                     }
                 )

@@ -69,6 +69,38 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("krea2_turbo_dit", "Turbo DiT caching requires a Turbo checkpoint.")
         if settings.get("krea2_turbo_dit") and str(settings.get("blocks_to_swap") or "").strip() not in {"", "0"}:
             error("blocks_to_swap", "Krea Turbo sampling cannot be combined with Blocks to Swap.")
+    elif mode == "MiniMax H3 (Experimental)":
+        require("minimax_h3_dit_model", "MiniMax H3 pruned ConvRot INT8 DiT")
+        if settings.get("recache_text"):
+            require("minimax_h3_text_encoder", "MiniMax H3 compact Qwen3-VL text encoder")
+        if settings.get("network_type", "LoRA") != "LoRA":
+            error("network_type", "Experimental MiniMax H3 currently supports LoRA only.")
+        if settings.get("fp8_base") or settings.get("fp8_scaled"):
+            error("fp8_base", "MiniMax H3 already loads the pruned ConvRot INT8 base directly; FP8 flags must be disabled.")
+        if settings.get("compile"):
+            error("compile", "Torch Compile is not supported by the experimental MiniMax H3 ConvRot path.")
+        if settings.get("mixed_precision") != "bf16":
+            error("mixed_precision", "Experimental MiniMax H3 requires BF16 mixed precision.")
+        if not settings.get("gradient_checkpointing"):
+            error("gradient_checkpointing", "MiniMax H3 H2D-only block swapping requires gradient checkpointing.")
+        try:
+            blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
+        except ValueError:
+            blocks_to_swap = 0
+        if not 1 <= blocks_to_swap <= 48:
+            error("blocks_to_swap", "Use 1–48 swapped blocks for MiniMax H3; 30 is the conservative 24 GB default.")
+        if any(
+            (
+                _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),
+                _positive_integer(str(settings.get("sample_every_n_steps") or "").strip()),
+                bool(settings.get("sample_at_first")),
+            )
+        ):
+            error("sample_every_n_epochs", "In-training samples are not implemented for experimental MiniMax H3 yet.")
+        warning(
+            "training_mode",
+            "Experimental image-only path: direct pruned ConvRot INT8 base and batch size 1. A 1024px rank-16 one-step run was validated on a 24 GB RTX 4090; start with a short run because long-run stability and training quality are not established yet.",
+        )
     else:
         error("training_mode", f"Unsupported training mode: {mode}")
 

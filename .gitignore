@@ -8,6 +8,7 @@ main.lib
 main.obj
 last_settings.json
 job_history_local.json
+modern_gui_jobs.json
 CLAUDE.md
 GEMINI.md
 AGENTS.md
