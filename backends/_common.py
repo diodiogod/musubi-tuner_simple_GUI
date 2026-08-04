@@ -20,7 +20,10 @@ def add_arg(cmd, key, value, is_path=False):
 
 def build_output_dir(settings, suffix=""):
     output_dir = Path(settings["output_dir"]) / (settings["output_name"] + suffix)
-    os.makedirs(output_dir, exist_ok=True)
+    # Command previews in the modern GUI must remain read-only. Actual launches
+    # keep the established behavior and create their run directory here.
+    if not settings.get("_preview_only"):
+        os.makedirs(output_dir, exist_ok=True)
     return str(output_dir), settings["output_name"] + suffix
 
 

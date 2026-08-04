@@ -4,15 +4,16 @@
 
 ## Architecture Overview
 
-**Two-layer architecture** - the repo is split between a local desktop GUI layer and the upstream musubi-tuner training/runtime layer:
+**Multi-interface architecture** - the repo is split between local GUI/orchestration layers and the upstream musubi-tuner training/runtime layer:
 
 1. **Desktop GUI** (`musubi_tuner_gui.py`) - Tkinter application, mode-aware forms, monitor, samples, job history, conversion tools
-2. **GUI Backend Adapters** (`backends/`) - translate GUI settings into cache/train command lines per supported mode
-3. **Root Wrapper Scripts** (`*_train_network.py`, `*_cache_*.py`, `*_generate_*.py`) - thin entrypoints that call the packaged `src/` modules
-4. **Packaged Training Core** (`src/musubi_tuner/training/`) - shared parser, trainer, logging, checkpointing, sampling hooks
-5. **Model-Family Implementations** (`src/musubi_tuner/<family>/`, `src/musubi_tuner/*_train*.py`) - architecture-specific training, caching, and inference flows
-6. **Shared Utilities** (`src/musubi_tuner/utils/`, `dataset/`, `modules/`, `networks/`) - dataset loading, LoRA handling, save logic, model utilities
-7. **Docs + Assets** (`docs/`) - upstream musubi-tuner docs plus GUI screenshots and user-facing references
+2. **Experimental Web GUI** (`modern_gui/`, `LAUNCH_MODERN_GUI.bat`) - local AI Toolkit-inspired browser workspace using the same settings and Musubi backend adapters
+3. **GUI Backend Adapters** (`backends/`) - translate GUI settings into cache/train command lines per supported mode
+4. **Root Wrapper Scripts** (`*_train_network.py`, `*_cache_*.py`, `*_generate_*.py`) - thin entrypoints that call the packaged `src/` modules
+5. **Packaged Training Core** (`src/musubi_tuner/training/`) - shared parser, trainer, logging, checkpointing, sampling hooks
+6. **Model-Family Implementations** (`src/musubi_tuner/<family>/`, `src/musubi_tuner/*_train*.py`) - architecture-specific training, caching, and inference flows
+7. **Shared Utilities** (`src/musubi_tuner/utils/`, `dataset/`, `modules/`, `networks/`) - dataset loading, LoRA handling, save logic, model utilities
+8. **Docs + Assets** (`docs/`) - upstream musubi-tuner docs plus GUI screenshots and user-facing references
 
 **Key architectural rules:**
 
@@ -26,7 +27,7 @@
 
 ## Supported GUI Modes
 
-4 primary GUI modes currently ship in the app:
+5 primary GUI modes currently ship in the app:
 
 | Mode | GUI Backend | Main Training Wrapper | Primary Docs |
 |------|-------------|-----------------------|--------------|
@@ -34,12 +35,14 @@
 | Flux.2 Klein | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
 | Flux.2 Dev | `backends/flux2.py` | `flux_2_train_network.py` | `docs/flux_2.md` |
 | Krea 2 | `backends/krea2.py` | `krea2_train_network.py` | `docs/krea2.md` |
+| MiniMax H3 (Experimental) | `backends/minimax_h3.py` | `minimax_h3_image_train_network.py` | `docs/minimax_h3_experimental.md` |
 
 **Mode-specific GUI behavior includes:**
 
 - Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
 - Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection, and optional DOP class preservation for Klein 4B/9B
 - Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring), and optional DOP class preservation
+- MiniMax H3: experimental still-image LoRA directly over the pruned ConvRot INT8 FL2VA transformer, with compact Qwen3-VL text caching and enforced 24 GB-oriented H2D-only block-swap defaults
 
 ## Documentation Files
 
@@ -52,6 +55,7 @@
 - `wan.md` - Wan training and inference reference
 - `flux_2.md` - Flux.2 reference
 - `krea2.md` - Krea 2 reference
+- `minimax_h3_experimental.md` - experimental pruned-INT8 MiniMax H3 image LoRA setup, limitations, artifacts, and measured 24 GB CUDA validation
 - `dataset_config.md` - Dataset config reference
 - `sampling_during_training.md` - Sampling behavior reference
 - `advanced_config.md` - Advanced training flags and behaviors
@@ -100,6 +104,23 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - Do not infer these two workflows from `--resume` alone. Preserve the explicit opt-in flag, state-folder validation, and tests when importing upstream trainer/parser changes.
 - `dataset_config_builder.py` - standalone dataset-config editor used from the Models page
 - `prompt_library.py` - user-level prompt gallery stored outside the repo; prompts remain copied into run snapshots for reproducibility
+
+### Experimental Web App (`modern_gui/`)
+
+- `server.py` - localhost standard-library HTTP service and static frontend host
+- `settings.py` - complete dynamic settings schema with mode-aware visual metadata and unknown-key preservation
+- `dataset_documents.py` - headless TOML editing, validation, atomic saves, and media/caption/resolution audits
+- `commands.py` - read-only command previews and launch plans through existing backend adapters
+- `jobs.py` - bounded-log process supervisor, typed staged execution, history, and metrics
+- `stages.py` / `face_stages.py` - standard-state and face-LoRA handoffs plus stage manifests
+- `sample_prompts.py` / `training_notes.py` - validated Musubi prompt snapshots and reproducible generated run summaries
+- `recovery.py` - additive continuation versus verified exact failed-run recovery
+- `monitor.py` / `samples.py` - training metrics, GPU snapshots, and protected sample discovery/serving
+- `static/` - dependency-free responsive browser application
+- `README.md` - launch, capability, compatibility, and safety reference
+- `PARITY.md` - audited classic-to-modern feature contract and preserved invariants
+
+The web app is parallel to—not a replacement for—the established Tkinter GUI and preserves the existing Musubi backend contract.
 
 ### GUI Backend Adapters (`backends/`)
 

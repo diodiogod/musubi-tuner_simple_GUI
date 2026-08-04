@@ -65,3 +65,19 @@ def test_loss_history_is_bounded_and_keeps_endpoints():
     assert len(compact) <= 100
     assert compact[0] == [0, 0.0]
     assert compact[-1] == [4999, 4.999]
+
+
+def test_resume_loss_history_stops_at_checkpoint():
+    history = [[440, 0.044], [451, 0.0451], [570, 0.057]]
+
+    resumed = MusubiTunerGUI._loss_history_through_step(history, 440)
+
+    assert resumed == [[440, 0.044]]
+
+
+def test_epoch_state_checkpoint_is_not_failed_run_step():
+    job = {"current_step": 570, "total_steps": 1320, "total_epochs": 3}
+
+    checkpoint = MusubiTunerGUI._checkpoint_step_from_state("run-000001-state", job)
+
+    assert checkpoint == 440

@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, krea2_face_eval as krea2_face_eval_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -140,6 +140,8 @@ class MusubiTunerGUI:
         self.vram_thread = None
         self._vram_gpu_index = None
         self._vram_previous_gpu_index = None
+        self._vram_gpu_hint = None
+        self._vram_gpu_hint_source = None
         self._vram_baseline = []
         self.loss_data = []
         self.peak_vram = 0
@@ -387,8 +389,8 @@ class MusubiTunerGUI:
         toolbar.grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
-                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2"],
-                                      state="readonly", width=18)
+                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)"],
+                                      state="readonly", width=25)
         self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
         ttk.Label(toolbar, text="Theme", style="Header.TLabel").pack(side="left", padx=(0, 7))
@@ -717,6 +719,41 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps only the optional Turbo weights in CPU RAM so entering each preview is faster. The RAW training model is safely restored from disk afterward. Uses roughly one extra model's worth of system RAM and is only relevant when Turbo DiT is set.", kind='checkbox')
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff", "Projector Patch (Optional):", "Optional tiny Krea 2 projector diff safetensors patch. Applied to the RAW training base model and also to optional Turbo sample generation so previews stay consistent.", kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_projector_diff_strength", "Patch Strength:", "Multiplier for the optional projector patch. Example: 2.5", validate_num=True)
+
+        # ---- MiniMax H3 experimental image-only paths ----
+        self.hidden_frames['minimax_h3_model_paths'] = ttk.LabelFrame(frame, text="MiniMax H3 · Image-only LoRA (Experimental)")
+        ttk.Label(
+            self.hidden_frames['minimax_h3_model_paths'],
+            text=(
+                "Directly trains on Comfy's ~21 GB pruned ConvRot INT8 FL2VA checkpoint—no ~66 GB BF16 DiT download. "
+                "Still images only, batch size 1, LoRA only, no training previews. The compact ~15.7 GB nvfp4-awq Qwen3-VL file "
+                "is used only while caching captions. Defaults target a 24 GB GPU with 30 H2D-only swapped blocks."
+            ),
+            foreground=self.colors["warning"], font=("Segoe UI", 9, "italic"), wraplength=940, justify="left",
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_dit_model", "Pruned ConvRot INT8 DiT (Required):",
+            "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from Comfy's diffusion_models folder. "
+            "This experimental trainer uses that ~21 GB FL2VA checkpoint directly, so the ~66 GB full BF16 DiT is not needed. "
+            "Ref2VA, ordinary BF16, GGUF, and other quantized formats are intentionally rejected.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_required=True, is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_encoder", "Compact Qwen3-VL-32B:",
+            "Recommended: qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. Needed only when Re-cache Text is enabled.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_tokenizer", "Tokenizer / Processor:",
+            "Qwen3-VL-32B tokenizer repo ID or a local processor directory.",
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_convrot_bwd_mode", "INT8 Backward:",
+            "Choose 'bf16'. This is the tested, recommended setting for a 24 GB GPU. It only controls the temporary "
+            "calculations used while the LoRA learns—the base model remains the ~21 GB ConvRot INT8 checkpoint and the saved "
+            "LoRA is unaffected. Choose 'int8' only for advanced experiments; it requires Triton and has not been validated here.",
+            kind='combobox', options=["bf16", "int8"],
+        )
 
         # VAE shared by both modes — store reference for pack ordering
         models_frame = ttk.LabelFrame(frame, text="VAE Model"); models_frame.pack(fill="x", padx=10, pady=10)
@@ -1159,6 +1196,7 @@ class MusubiTunerGUI:
         memory_frame = ttk.LabelFrame(frame, text="Memory & Performance"); memory_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(memory_frame, "mixed_precision", "Mixed Precision:", "Use 'fp16' or 'bf16' to reduce VRAM usage and speed up training. 'fp16' is common, 'bf16' is better on newer GPUs.", kind='combobox', options=["no", "fp16", "bf16"])
         self._add_widget(memory_frame, "gradient_checkpointing", "Gradient Checkpointing", "Drastically reduces VRAM usage by re-calculating gradients on the backward pass. Highly recommended.", kind='checkbox', default_val=True)
+        self._add_widget(memory_frame, "expandable_cuda_segments", "Expandable CUDA Memory Segments", "Passes PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to new training processes. This can reduce allocator-fragmentation OOMs, but does not reduce the model's true VRAM requirement.", kind='checkbox')
         self._add_widget(memory_frame, "persistent_data_loader_workers", "Persistent Data Loader Workers", "Keeps data loader processes alive between epochs to speed up data loading, at the cost of slightly higher RAM usage.", kind='checkbox')
         self._add_widget(memory_frame, "gradient_accumulation_steps", "Gradient Accumulation Steps:", "Simulates a larger batch size by accumulating gradients over several steps. E.g., a batch size of 1 with 4 accumulation steps simulates a batch size of 4.", validate_num=True)
         self._add_widget(memory_frame, "max_data_loader_n_workers", "Max Data Loader Workers:", "Number of CPU threads to load data. '2' is a safe default. Higher values can speed up loading but use more RAM.", validate_num=True)
@@ -1214,7 +1252,13 @@ class MusubiTunerGUI:
         )
 
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(flow_frame, "timestep_sampling", "Timestep Sampling:", "Method for selecting timesteps during training. 'shift' is recommended for Wan/Flux. 'krea2_shift' matches Krea 2's resolution-aware schedule.", kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"])
+        self._add_widget(
+            flow_frame, "timestep_sampling", "Timestep Sampling:",
+            "For MiniMax H3, leave this on 'krea2_shift'—the GUI selects it automatically and it is the tested setting. "
+            "This option controls which noise levels the model practices during training. It does not mean that a Krea model is being used. "
+            "For other model families, keep the value selected by their mode unless you are following a specific advanced recipe.",
+            kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"]
+        )
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
         self.hidden_frames['timestep_boundary'] = ttk.Frame(flow_frame)
         self._add_widget(self.hidden_frames['timestep_boundary'], "timestep_boundary", "Timestep Boundary:", "The integer timestep where the model switches from low to high noise (e.g., 875). Only for combined runs.", validate_num=True)
@@ -4273,6 +4317,21 @@ class MusubiTunerGUI:
             compact.append(cleaned[-1])
         return compact[:limit - 1] + [cleaned[-1]] if len(compact) > limit else compact
 
+    @staticmethod
+    def _loss_history_through_step(points, checkpoint_step):
+        """Discard monitor points recorded after the checkpoint being resumed."""
+        try:
+            checkpoint_step = int(checkpoint_step or 0)
+        except (TypeError, ValueError):
+            checkpoint_step = 0
+        if checkpoint_step <= 0:
+            return list(points or [])
+        return [
+            [int(step), float(loss)]
+            for step, loss in (points or [])
+            if int(step) <= checkpoint_step
+        ]
+
     @classmethod
     def _job_cumulative_progress(cls, job):
         prior_epochs = cls._job_metric(job, "continuation_prior_epochs")
@@ -4620,6 +4679,19 @@ class MusubiTunerGUI:
     def _state_step_from_path(state_path):
         match = re.search(r"-step(\d+)-state$", Path(state_path).name, re.IGNORECASE)
         return int(match.group(1)) if match else 0
+
+    @classmethod
+    def _checkpoint_step_from_state(cls, state_path, job):
+        """Resolve a resume checkpoint step without using a failed run's later step."""
+        explicit_step = cls._state_step_from_path(state_path)
+        if explicit_step:
+            return explicit_step
+        state_epoch = cls._state_epoch_from_path(state_path)
+        total_steps = cls._job_metric(job, "total_steps")
+        total_epochs = cls._job_metric(job, "total_epochs")
+        if state_epoch and total_steps and total_epochs:
+            return min(total_steps, math.ceil(total_steps * state_epoch / total_epochs))
+        return cls._job_metric(job, "current_step")
 
     def _continuation_state_candidates(self, job):
         candidates = []
@@ -5309,7 +5381,10 @@ class MusubiTunerGUI:
             ttk.Label(summary, text=value, style="PageHelp.TLabel", wraplength=520).grid(row=row, column=1, sticky="nw", padx=(0, 10), pady=4)
         summary.grid_columnconfigure(1, weight=1)
 
-        saved_history = self._compact_loss_history(job.get("loss_history") or [])
+        checkpoint_step = self._checkpoint_step_from_state(state_path, job)
+        saved_history = self._loss_history_through_step(
+            self._compact_loss_history(job.get("loss_history") or []), checkpoint_step
+        )
         history_text = (
             f"The previous graph has {len(saved_history)} saved point(s) and will continue in the monitor."
             if saved_history
@@ -5355,8 +5430,11 @@ class MusubiTunerGUI:
         settings["recache_text"] = False
         settings["use_staged_training"] = False
 
-        history = self._compact_loss_history(job.get("loss_history") or [])
-        if not history:
+        checkpoint_step = self._checkpoint_step_from_state(state_path, job)
+        history = self._loss_history_through_step(
+            self._compact_loss_history(job.get("loss_history") or []), checkpoint_step
+        )
+        if not history and checkpoint_step <= 0:
             try:
                 last_step = int(job.get("current_step") or 0)
                 last_loss = float(job.get("last_loss"))
@@ -5373,7 +5451,7 @@ class MusubiTunerGUI:
             "source_title": self._job_display_name(job),
             "state_path": str(state_path),
             "loss_history": history,
-            "checkpoint_step": self._state_step_from_path(state_path) or self._job_metric(job, "current_step"),
+            "checkpoint_step": checkpoint_step,
             "checkpoint_epoch": self._state_epoch_from_path(state_path) or self._job_metric(job, "current_epoch"),
             "total_steps": self._job_metric(job, "total_steps"),
             "total_epochs": self._job_metric(job, "total_epochs"),
@@ -6141,6 +6219,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.mode_note_label.config(text="Dual-stage Wan training · T2V and I2V workflows")
             self.hidden_frames['flux2_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['wan_dit'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             self.hidden_frames['wan_models'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
         elif mode == "Krea 2":
@@ -6148,6 +6227,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             if self.entries["timestep_sampling"].get() in ("", "shift"):
                 self.entries["timestep_sampling"].set("krea2_shift")
@@ -6156,11 +6236,31 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if self.entries["network_alpha_low"].get().strip() in ("", "16"):
                 self.entries["network_alpha_low"].delete(0, tk.END)
                 self.entries["network_alpha_low"].insert(0, "32")
+        elif mode == "MiniMax H3 (Experimental)":
+            self.mode_note_label.config(text="Experimental still-image LoRA · direct pruned ConvRot INT8 base · 24 GB defaults")
+            self.hidden_frames['wan_dit'].pack_forget()
+            self.hidden_frames['wan_models'].pack_forget()
+            self.hidden_frames['flux2_model_paths'].pack_forget()
+            self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+            self.entries["timestep_sampling"].set("krea2_shift")
+            self.entries["network_type"].set("LoRA")
+            self.entries["network_dim_low"].delete(0, tk.END); self.entries["network_dim_low"].insert(0, "16")
+            self.entries["network_alpha_low"].delete(0, tk.END); self.entries["network_alpha_low"].insert(0, "16")
+            self.entries["blocks_to_swap"].delete(0, tk.END); self.entries["blocks_to_swap"].insert(0, "30")
+            self.entries["attention_mechanism"].set("sdpa")
+            self.entries["mixed_precision"].set("bf16")
+            self.entries["minimax_h3_convrot_bwd_mode"].set("bf16")
+            self.entries["gradient_checkpointing"].var.set(True)
+            self.entries["fp8_base"].var.set(False)
+            self.entries["fp8_scaled"].var.set(False)
+            self.entries["compile"].var.set(False)
         else:
             self.mode_note_label.config(text="Single DiT, Qwen3/Mistral3 text encoder" if mode == "Flux.2 Klein" else "Single DiT, Mistral3 text encoder")
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
+            self.hidden_frames['minimax_h3_model_paths'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
             # Update version choices
             ver_combo = self.entries["flux2_model_version"]
@@ -6239,6 +6339,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 continue
             if mode == "Wan 2.2":
                 targeted = re.search(r"(?:^|\.)blocks\.\d+\.", key) is not None
+            elif mode == "MiniMax H3 (Experimental)":
+                targeted = re.search(
+                    r"(?:^|\.)blocks\.\d+\.(?:attn\.(?:qkv_proj|out_proj)|mlp\.(?:fc1|fc2))\.weight$",
+                    key,
+                ) is not None
             elif mode in ("Flux.2 Klein", "Flux.2 Dev"):
                 targeted = "double_blocks." in key or "single_blocks." in key
             else:
@@ -6316,6 +6421,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     ))
             elif mode == "Krea 2":
                 estimates.append(("Final", self.entries["krea2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
+            elif mode == "MiniMax H3 (Experimental)":
+                estimates.append(("Final", self.entries["minimax_h3_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
             else:
                 estimates.append(("Final", self.entries["flux2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
 
@@ -6379,6 +6486,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_wan = (mode == "Wan 2.2")
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
+        is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
         supports_dop = is_krea2 or mode == "Flux.2 Klein"
         dop_active = bool(supports_dop and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
@@ -6414,12 +6522,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["flux2_text_encoder"].is_required = False
             self.entries["krea2_dit_model"].is_required = False
             self.entries["krea2_text_encoder"].is_required = False
+            self.entries["minimax_h3_dit_model"].is_required = False
+            self.entries["minimax_h3_text_encoder"].is_required = False
         else:
             # Single-model modes: set their own required fields and clear the rest
             self.entries["flux2_dit_model"].is_required = is_flux2
             self.entries["flux2_text_encoder"].is_required = is_flux2
             self.entries["krea2_dit_model"].is_required = is_krea2
             self.entries["krea2_text_encoder"].is_required = is_krea2 and (self.entries["recache_text"].var.get() or wants_samples or refinement_only)
+            self.entries["minimax_h3_dit_model"].is_required = is_minimax_h3
+            self.entries["minimax_h3_text_encoder"].is_required = is_minimax_h3 and self.entries["recache_text"].var.get()
             self.entries["t5_model"].is_required = False
             self.entries["dit_high_noise"].is_required = False
             self.entries["dit_low_noise"].is_required = False
@@ -6494,6 +6606,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "t5_model"])
             elif is_krea2:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "krea2_text_encoder"])
+            elif is_minimax_h3:
+                can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "minimax_h3_text_encoder"])
             else:
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "flux2_text_encoder"])
             self.entries["recache_text"].config(state="normal" if can_cache_text else "disabled")
@@ -6503,12 +6617,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         mode = self.training_mode_var.get()
         is_wan = (mode == "Wan 2.2")
         is_krea2 = (mode == "Krea 2")
+        is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
 
         show_low = self.entries["train_low_noise"].var.get() if is_wan else False
         show_high = self.entries["train_high_noise"].var.get() if is_wan else False
         is_i2v = self.entries["is_i2v"].var.get() if is_wan else False
 
         net_type = self.entries.get("network_type", None)
+        if net_type:
+            net_type.config(state="disabled" if is_minimax_h3 else "readonly")
         is_lokr = net_type and net_type.get() == "LoKr"
         if is_lokr: self.hidden_frames['lokr_factor'].pack(fill='x', pady=(0, 3))
         else: self.hidden_frames['lokr_factor'].pack_forget()
@@ -6553,6 +6670,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.hidden_frames["compile_options"].pack(fill="x")
         else:
             self.hidden_frames["compile_options"].pack_forget()
+
+        for key in ("compile", "fp8_base", "fp8_scaled"):
+            self.entries[key].config(state="disabled" if is_minimax_h3 else "normal")
+        self.entries["mixed_precision"].config(state="disabled" if is_minimax_h3 else "readonly")
 
         scheduler = self.entries["lr_scheduler"].get()
         if scheduler == "constant_with_warmup": self.hidden_frames['lr_warmup'].pack(fill='x', expand=True)
@@ -6872,6 +6993,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "flux2_model_version": "Klein Base 4B ★", "flux2_dit_model": "", "flux2_text_encoder": "", "fp8_text_encoder": False,
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
+            "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
+            "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
             "krea2_generalization_preset": "Off (Baseline)",
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -6889,7 +7012,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "compile_dynamic": "auto", "compile_fullgraph": False, "compile_cache_size_limit": "32",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
             "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
-            "gradient_checkpointing": True, "persistent_data_loader_workers": True, "save_state": True,
+            "gradient_checkpointing": True, "expandable_cuda_segments": False, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "starting_point_mode": "new", "resume_path": "", "network_weights": "",
@@ -6932,6 +7055,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             pynvml.nvmlInit()
             self._vram_gpu_index = None
             self._vram_previous_gpu_index = None
+            self._vram_gpu_hint = None
+            self._vram_gpu_hint_source = None
             self._vram_baseline = [
                 pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
                 for index in range(pynvml.nvmlDeviceGetCount())
@@ -6978,24 +7103,141 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 pass
         return process_ids
 
+    @staticmethod
+    def _first_gpu_selector(value):
+        """Return the first CUDA/Accelerate GPU selector from a comma list."""
+        if value is None:
+            return None
+        value = str(value).strip()
+        if not value or value == "-1":
+            return None
+        selector = value.split(",", 1)[0].strip()
+        if selector.isdigit():
+            return int(selector)
+        return selector or None
+
+    @staticmethod
+    def _command_option_value(command, option):
+        """Read a simple ``--option value`` or ``--option=value`` argument."""
+        args = list(command) if not isinstance(command, str) else command.split()
+        for index, arg in enumerate(args):
+            arg = str(arg)
+            if arg == option and index + 1 < len(args):
+                return str(args[index + 1])
+            prefix = f"{option}="
+            if arg.startswith(prefix):
+                return arg[len(prefix):]
+        return None
+
+    @staticmethod
+    def _torch_nvml_index_map(handles):
+        """Return physical NVML indices in Torch's logical CUDA order."""
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return None
+            logical_devices = []
+            for index in range(torch.cuda.device_count()):
+                properties = torch.cuda.get_device_properties(index)
+                logical_devices.append((str(properties.name), int(properties.total_memory)))
+        except Exception:
+            return None
+
+        physical_devices = []
+        for index, handle in enumerate(handles):
+            try:
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode(errors="replace")
+                total_memory = int(pynvml.nvmlDeviceGetMemoryInfo(handle).total)
+                physical_devices.append((index, str(name), total_memory))
+            except pynvml.NVMLError:
+                return None
+
+        mapping = []
+        used_physical_indices = set()
+        for logical_name, logical_memory in logical_devices:
+            candidates = [
+                item for item in physical_devices
+                if item[0] not in used_physical_indices and item[1] == logical_name
+            ]
+            if len(candidates) > 1:
+                candidates.sort(key=lambda item: abs(item[2] - logical_memory))
+            if not candidates:
+                return None
+            physical_index = candidates[0][0]
+            mapping.append(physical_index)
+            used_physical_indices.add(physical_index)
+        return mapping
+
+    def _resolve_vram_gpu_hint(self, env, command, handles):
+        """Resolve Torch's logical CUDA device to an NVML physical index.
+
+        ``CUDA_VISIBLE_DEVICES`` renumbers devices for Torch, so logical
+        ``cuda:0`` is not necessarily NVML device 0.  Accelerate's
+        ``--gpu_ids`` is expressed in that logical namespace as well.
+        """
+        visible_value = env.get("CUDA_VISIBLE_DEVICES")
+        visible_tokens = None
+        if visible_value is not None and str(visible_value).strip():
+            visible_tokens = [token.strip() for token in str(visible_value).split(",")]
+            if not visible_tokens or visible_tokens[0] == "-1":
+                return None, "unknown"
+
+        gpu_ids_value = self._command_option_value(command, "--gpu_ids")
+        logical_index = self._first_gpu_selector(gpu_ids_value)
+        if logical_index is None:
+            logical_index = 0
+        if not isinstance(logical_index, int):
+            return None, "unknown"
+
+        if visible_tokens is None:
+            # CUDA normally uses a performance-oriented order, while NVML's
+            # physical indices may follow PCI/display order. Match by the
+            # device properties Torch actually sees instead of assuming the
+            # two index spaces are identical.
+            torch_to_nvml = self._torch_nvml_index_map(handles)
+            if torch_to_nvml is not None and logical_index < len(torch_to_nvml):
+                return torch_to_nvml[logical_index], "Torch/NVML"
+            return None, "unknown"
+
+        if logical_index >= len(visible_tokens):
+            return None, "unknown"
+        selected = visible_tokens[logical_index]
+        if selected.isdigit():
+            physical_index = int(selected)
+            return (physical_index, "CUDA_VISIBLE_DEVICES") if physical_index < len(handles) else (None, "unknown")
+
+        # CUDA also accepts GPU UUIDs.  Resolve those against NVML where
+        # possible; otherwise leave the monitor undecided instead of guessing.
+        for physical_index, handle in enumerate(handles):
+            try:
+                device_uuid = pynvml.nvmlDeviceGetUUID(handle)
+                if isinstance(device_uuid, bytes):
+                    device_uuid = device_uuid.decode(errors="replace")
+                if str(device_uuid).lower() == selected.lower():
+                    return physical_index, "CUDA_VISIBLE_DEVICES"
+            except pynvml.NVMLError:
+                continue
+        return None, "unknown"
+
     def _detect_training_gpu(self, handles, memory_info):
+        if self._vram_gpu_hint is not None:
+            return self._vram_gpu_hint
+
         training_process_ids = self._training_process_ids()
         if training_process_ids:
             for index, handle in enumerate(handles):
                 if training_process_ids & self._gpu_process_ids(handle):
                     return index
 
-            # NVML process accounting is unavailable on some Windows driver
-            # modes. In that case, select the GPU whose usage grew after this
-            # training run started instead of assuming physical GPU 0.
-            deltas = [
-                info.used - self._vram_baseline[index]
-                for index, info in enumerate(memory_info)
-            ]
-            if deltas:
-                index = max(range(len(deltas)), key=deltas.__getitem__)
-                if deltas[index] >= 64 * 1024**2:
-                    return index
+            # Do not select a card from an incidental VRAM increase. Browsers,
+            # desktop composition, and other GPU processes make that fallback
+            # unreliable on Windows. An explicit CUDA mapping is handled above;
+            # without one, the normal CUDA default is physical GPU 0.
+            if self._vram_gpu_hint_source != "unknown" and handles:
+                return 0
         return None
 
     def vram_monitor_loop(self):
@@ -7018,6 +7260,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     info = memory_info[self._vram_gpu_index]
                     used_gb = info.used / (1024**3)
                     if used_gb > self.peak_vram: self.peak_vram = used_gb
+                    gpu_name = pynvml.nvmlDeviceGetName(handles[self._vram_gpu_index])
+                    if isinstance(gpu_name, bytes):
+                        gpu_name = gpu_name.decode(errors="replace")
                     self.root.after(
                         0,
                         self.update_vram_display,
@@ -7025,15 +7270,48 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                         self.peak_vram,
                         info.total / (1024**3),
                         self._vram_gpu_index,
+                        str(gpu_name),
                     )
                 time.sleep(1)
         except pynvml.NVMLError:
             if self.monitoring_active:
                 self.root.after(0, lambda: self.vram_label_var.set("VRAM: Monitoring Error"))
 
-    def update_vram_display(self, used, peak, total, gpu_index):
-        self.vram_label_var.set(f"GPU {gpu_index} VRAM: {used:.2f} GB / {total:.2f} GB")
-        self.peak_vram_label_var.set(f"GPU {gpu_index} Peak VRAM: {peak:.2f} GB")
+    def update_vram_display(self, used, peak, total, gpu_index, gpu_name=None):
+        label = f"GPU {gpu_index}"
+        if gpu_name:
+            label += f" ({gpu_name})"
+        self.vram_label_var.set(f"{label} VRAM: {used:.2f} GB / {total:.2f} GB")
+        self.peak_vram_label_var.set(f"{label} Peak VRAM: {peak:.2f} GB")
+
+    @staticmethod
+    def _epoch_marker_positions(total_steps, total_epochs, observed_step, max_markers=8):
+        """Return reached epoch boundaries as ``(step, new_epoch)`` pairs."""
+        try:
+            total_steps = int(total_steps or 0)
+            total_epochs = int(total_epochs or 0)
+            observed_step = int(observed_step or 0)
+            max_markers = max(2, int(max_markers or 0))
+        except (TypeError, ValueError):
+            return []
+        if total_steps <= 0 or total_epochs <= 1 or observed_step <= 0:
+            return []
+        steps_per_epoch = max(1, math.ceil(total_steps / total_epochs))
+        boundaries = [
+            (epoch * steps_per_epoch, epoch + 1)
+            for epoch in range(1, total_epochs)
+            if epoch * steps_per_epoch <= observed_step
+        ]
+        if len(boundaries) <= max_markers:
+            return boundaries
+
+        # Keep the marker density bounded while retaining the first and most
+        # recent reached boundary. This keeps a 1,000-epoch run readable.
+        stride = math.ceil(len(boundaries) / max_markers)
+        selected = boundaries[::stride]
+        if selected[-1] != boundaries[-1]:
+            selected = selected[:max_markers - 1] + [boundaries[-1]]
+        return selected
 
     def update_loss_graph(self, step=None, loss_value=None):
         if not MATPLOTLIB_AVAILABLE: return
@@ -7050,6 +7328,30 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.ax.clear(); self.setup_graph_style()
         if self.loss_data:
             steps, losses = zip(*self.loss_data)
+            observed_step = max(max(steps), self.current_step)
+            for boundary, epoch in self._epoch_marker_positions(
+                self.current_total_steps, self.current_epoch_total, observed_step
+            ):
+                self.ax.axvline(
+                    boundary,
+                    color=self.colors["muted"],
+                    linestyle=(0, (4, 4)),
+                    linewidth=0.8,
+                    alpha=0.45,
+                    zorder=1,
+                )
+                self.ax.text(
+                    boundary,
+                    0.97,
+                    f"E{epoch}",
+                    transform=self.ax.get_xaxis_transform(),
+                    color=self.colors["muted"],
+                    fontsize=8,
+                    ha="right",
+                    va="top",
+                    alpha=0.8,
+                    clip_on=True,
+                )
             self.ax.plot(steps, losses, color='#68bcece8')
         self.canvas.draw()
 
@@ -7118,9 +7420,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             self.next_epoch_var.set("To next epoch: N/A")
 
+    def _reset_live_training_counters_for_process(self):
+        """Forget the previous subprocess position before reading a new one.
+
+        A resumed run can legitimately start below the failed run's last
+        displayed step. The monotonic guard in update_training_counters is
+        useful within one process, but would otherwise preserve stale values
+        across a resume or staged subprocess boundary.
+        """
+        self.current_step = 0
+        self.current_total_steps = 0
+        self.current_epoch_num = 0
+        self.current_epoch_total = 0
+        self.update_training_counters()
+
     def run_process(self, command, on_complete=None, output_widget=None, job_context=None):
         if output_widget is None: output_widget = self.output_text
         self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
+        if output_widget == self.output_text and self._is_training_command(" ".join(map(str, command))):
+            self._reset_live_training_counters_for_process()
         self.last_line_was_progress = False
         if output_widget == self.output_text:
             try:
@@ -7153,6 +7471,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
         try:
             env = os.environ.copy(); env['PYTHONUNBUFFERED'] = '1'; env['PYTHONUTF8'] = '1'
+            expandable_segments = self.entries.get("expandable_cuda_segments")
+            if expandable_segments is not None and expandable_segments.var.get():
+                allocator_variable = "PYTORCH_CUDA_ALLOC_CONF"
+                if allocator_variable not in env and "PYTORCH_ALLOC_CONF" in env:
+                    allocator_variable = "PYTORCH_ALLOC_CONF"
+                allocator_config = env.get(allocator_variable, "")
+                if not re.search(r"(?:^|,)\s*expandable_segments\s*:", allocator_config):
+                    env[allocator_variable] = (
+                        f"{allocator_config},expandable_segments:True" if allocator_config else "expandable_segments:True"
+                    )
             # GUI backend commands are explicitly single-process. A prior torchrun,
             # MPI shell, IDE, or launcher can leave rank variables in the GUI's
             # inherited environment; Accelerate interprets even LOCAL_RANK=0 as a
@@ -7181,15 +7509,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if self.monitoring_active and PYNVML_AVAILABLE:
                 # Cache and Accelerate training commands may use different GPUs.
                 # Re-detect for every subprocess and preserve the peak only when
-                # the physical GPU stays the same.
+                # the physical GPU stays the same. Resolve CUDA's logical device
+                # mapping before relying on Windows NVML process accounting.
                 self._vram_previous_gpu_index = self._vram_gpu_index
                 self._vram_gpu_index = None
                 try:
-                    self._vram_baseline = [
-                        pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(index)).used
+                    handles = [
+                        pynvml.nvmlDeviceGetHandleByIndex(index)
                         for index in range(pynvml.nvmlDeviceGetCount())
                     ]
+                    self._vram_gpu_hint, self._vram_gpu_hint_source = self._resolve_vram_gpu_hint(
+                        env, command, handles
+                    )
+                    self._vram_baseline = [
+                        pynvml.nvmlDeviceGetMemoryInfo(handle).used
+                        for handle in handles
+                    ]
                 except pynvml.NVMLError:
+                    self._vram_gpu_hint = None
+                    self._vram_gpu_hint_source = "unknown"
                     pass
                 self.vram_label_var.set("VRAM: Detecting process GPU...")
 
@@ -7451,6 +7789,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         elif mode == "Krea 2":
             cache_commands = krea2_backend.build_cache_commands(settings, python_executable)
             training_commands = krea2_backend.build_commands(settings)
+        elif mode == "MiniMax H3 (Experimental)":
+            cache_commands = minimax_h3_backend.build_cache_commands(settings, python_executable)
+            training_commands = minimax_h3_backend.build_commands(settings)
         else:
             cache_commands = flux2_backend.build_cache_commands(settings, python_executable)
             training_commands = flux2_backend.build_commands(settings)
@@ -7875,6 +8216,52 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 "Run a short comparison first and keep a baseline with the same seed and dataset. Continue?",
             ):
                 return
+        elif mode == "MiniMax H3 (Experimental)":
+            if settings.get("network_type") != "LoRA":
+                messagebox.showerror("Validation Error", "Experimental MiniMax H3 currently supports LoRA only.")
+                return
+            if settings.get("fp8_base") or settings.get("fp8_scaled"):
+                messagebox.showerror(
+                    "Validation Error",
+                    "MiniMax H3 already loads the pruned ConvRot INT8 base directly. Disable the FP8 Base and FP8 Scaled options.",
+                )
+                return
+            if settings.get("compile"):
+                messagebox.showerror("Validation Error", "Torch Compile is not supported by the experimental MiniMax H3 ConvRot path.")
+                return
+            if settings.get("mixed_precision") != "bf16":
+                messagebox.showerror("Validation Error", "Experimental MiniMax H3 requires BF16 mixed precision.")
+                return
+            if not settings.get("gradient_checkpointing"):
+                messagebox.showerror("Validation Error", "MiniMax H3 H2D-only block swapping requires Gradient Checkpointing.")
+                return
+            try:
+                blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
+            except ValueError:
+                messagebox.showerror("Validation Error", "MiniMax H3 Blocks to Swap must be an integer between 1 and 48.")
+                return
+            if not 1 <= blocks_to_swap <= 48:
+                messagebox.showerror(
+                    "Validation Error",
+                    "MiniMax H3 on a 24 GB card requires block swapping. Choose 1–48 blocks; 30 is the conservative default.",
+                )
+                return
+            wants_minimax_samples = bool(
+                settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first")
+            )
+            if wants_minimax_samples:
+                messagebox.showerror(
+                    "Validation Error",
+                    "In-training sample generation is not implemented for experimental MiniMax H3 yet. Clear the sample schedule before starting.",
+                )
+                return
+            if not messagebox.askokcancel(
+                "Experimental MiniMax H3",
+                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 one-step run "
+                "completed on a 24 GB RTX 4090, but long-run stability and training quality are not established yet. Use batch size 1, "
+                "keep the original checkpoint, and begin with a short test run. Continue?",
+            ):
+                return
         # Warn if sample frequency is set but no prompts were added
         wants_samples = (settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first"))
         if wants_samples and self._count_enabled_sample_prompts() == 0:
@@ -7884,9 +8271,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if recovery and self._normalise_history_path(recovery.get("state_path")) != self._normalise_history_path(settings.get("resume_path")):
             recovery = None
             self._pending_recovery = None
-        restored_history = self._compact_loss_history((recovery or {}).get("loss_history") or [])
+        checkpoint_step = self._job_metric(recovery or {}, "checkpoint_step")
+        restored_history = self._loss_history_through_step(
+            self._compact_loss_history((recovery or {}).get("loss_history") or []), checkpoint_step
+        )
         self.loss_data = [(int(step), float(loss)) for step, loss in restored_history]
-        self.current_step = self._job_metric(recovery or {}, "checkpoint_step")
+        self.current_step = checkpoint_step
         self.current_total_steps = self._job_metric(recovery or {}, "total_steps")
         self.current_epoch_num = self._job_metric(recovery or {}, "checkpoint_epoch")
         self.current_epoch_total = self._job_metric(recovery or {}, "total_epochs")
@@ -7910,6 +8300,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             )
         elif mode == "Krea 2":
             cache_cmds = krea2_backend.build_cache_commands(settings, python_executable)
+        elif mode == "MiniMax H3 (Experimental)":
+            cache_cmds = minimax_h3_backend.build_cache_commands(settings, python_executable)
         else:
             cache_cmds = flux2_backend.build_cache_commands(settings, python_executable)
         self.command_sequence.extend(cache_cmds)
@@ -7996,6 +8388,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return wan_backend.build_commands(settings)
         elif mode == "Krea 2":
             return krea2_backend.build_commands(settings)
+        elif mode == "MiniMax H3 (Experimental)":
+            return minimax_h3_backend.build_commands(settings)
         else:
             return flux2_backend.build_commands(settings)
 
