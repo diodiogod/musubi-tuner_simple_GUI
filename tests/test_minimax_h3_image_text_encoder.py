@@ -2,8 +2,10 @@ import json
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from musubi_tuner.minimax_h3.image_text_encoder import _dequant_comfy_weight, _nvfp4_dequant
+from musubi_tuner.modules.nvfp4_utils import PackedInt8Embedding, PackedNVFP4Linear
 
 
 class _TensorReader:
@@ -50,3 +52,39 @@ def test_plain_tensorwise_int8_text_weight_dequantizes():
     )
     actual = _dequant_comfy_weight(reader, base, set(reader.tensors))
     torch.testing.assert_close(actual.float(), torch.tensor([[1.0, -2.0]]))
+
+
+def test_packed_int8_embedding_dequantizes_only_selected_rows():
+    layer = PackedInt8Embedding(4, 3, device="cpu")
+    weight = torch.tensor([[1, 2, 3], [4, -6, 8], [9, 10, 11], [-2, 0, 2]], dtype=torch.int8)
+    layer.load_quantized(weight, torch.tensor(0.5), torch.device("cpu"), torch.bfloat16)
+
+    actual = layer(torch.tensor([[1, 3]]))
+
+    assert actual.dtype == torch.bfloat16
+    torch.testing.assert_close(actual.float(), torch.tensor([[[2.0, -3.0, 4.0], [-1.0, 0.0, 1.0]]]))
+
+
+def test_packed_nvfp4_linear_keeps_weight_packed_between_forwards():
+    packed = torch.full((128, 32), 0x23, dtype=torch.uint8)
+    blocked_scales = torch.ones(128, 4, dtype=torch.float8_e4m3fn)
+    global_scale = torch.tensor(0.25)
+    pre_quant_scale = torch.linspace(0.5, 1.5, 64, dtype=torch.bfloat16)
+    layer = PackedNVFP4Linear(64, 128, device="cpu")
+    layer.load_quantized(
+        packed,
+        blocked_scales,
+        global_scale,
+        torch.device("cpu"),
+        torch.bfloat16,
+        pre_quant_scale,
+    )
+    inputs = torch.randn(2, 64, dtype=torch.bfloat16)
+
+    actual = layer(inputs)
+    expected_weight = _nvfp4_dequant(packed, blocked_scales, global_scale)
+    expected = F.linear(inputs * pre_quant_scale, expected_weight)
+
+    assert layer.weight.dtype == torch.uint8
+    assert tuple(layer.weight.shape) == (128, 32)
+    torch.testing.assert_close(actual, expected)

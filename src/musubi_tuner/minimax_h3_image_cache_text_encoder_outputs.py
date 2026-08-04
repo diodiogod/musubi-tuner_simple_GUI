@@ -37,6 +37,15 @@ def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default=DEFAULT_PROCESSOR_ID,
         help="Qwen3-VL-32B tokenizer repo or local directory",
     )
+    parser.add_argument(
+        "--text_encoder_load_mode",
+        choices=("auto", "direct", "nf4"),
+        default="auto",
+        help=(
+            "auto keeps compact Comfy NVFP4/INT8 weights packed for fast startup when Triton is available; "
+            "nf4 selects the slower legacy conversion path"
+        ),
+    )
     return parser
 
 
@@ -62,6 +71,7 @@ def main() -> None:
         compute_dtype=torch.bfloat16,
         quantize=True,
         tokenizer_dir=args.tokenizer,
+        load_mode=args.text_encoder_load_mode,
     )
 
     def encode(batch: list[ItemInfo]):

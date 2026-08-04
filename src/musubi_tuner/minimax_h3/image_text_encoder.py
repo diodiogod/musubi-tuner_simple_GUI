@@ -8,8 +8,9 @@ The DiT is conditioned on the **unnormalized hidden state after language layer 5
 last-layer output of the truncated checkpoint, with NO final norm (comfy applies none). We
 build a transformers Qwen3Model (its layout matches the checkpoint's `model.layers.*` 1:1),
 strip the `model.` prefix, skip the vision tower (`visual.*` — unused for text-only captions),
-NF4-quantize the big linears so the ~32B fits a 24-32 GB card, and replace the final norm with
-Identity so last_hidden_state IS the raw layer-50 output.
+keep the compact checkpoint's NVFP4/INT8 tensors packed between forwards, and replace the final
+norm with Identity so last_hidden_state IS the raw layer-50 output. The older BF16-to-NF4 load
+path remains available as a compatibility fallback.
 
 Image LoRA training uses text-only captions (no vision blocks), tokenized raw with NO special
 tokens — the H3 convention. The tokenizer is loaded from Qwen3-VL-32B or a user-provided
@@ -26,6 +27,13 @@ import torch.nn as nn
 # (access violation, exit 0xC0000005) deep in torch.storage.__getitem__. The repo's own
 # MemoryEfficientSafeOpen reads each tensor with a plain np.fromfile (no torch mmap-view), which
 # is exactly why every large-model loader (krea2 / klein) uses it. Use it here too.
+from musubi_tuner.modules.nvfp4_utils import (
+    HAS_TRITON,
+    PackedInt8Embedding,
+    PackedNVFP4Linear,
+    dequantize_nvfp4,
+    from_blocked,
+)
 from musubi_tuner.utils.safetensors_utils import MemoryEfficientSafeOpen
 
 # Derived from the checkpoint tensor shapes (U8 weights are 4-bit-packed: real in-dim = 2x).
@@ -37,17 +45,17 @@ _QWEN3_32B_TRUNC50 = dict(
     rms_norm_eps=1e-6, rope_theta=5000000.0, attention_bias=False, tie_word_embeddings=False,
 )
 
-# The Qwen3 decoder Linears to NF4 (the matmul bulk). embed_tokens stays as-is (int8 in the
-# checkpoint / bf16 after load); the tiny q/k norms + layernorms stay bf16.
+# The Qwen3 decoder linears that use packed NVFP4 or legacy NF4 (the matmul bulk).
 _NF4_SUFFIXES = (".self_attn.q_proj.weight", ".self_attn.k_proj.weight",
                  ".self_attn.v_proj.weight", ".self_attn.o_proj.weight",
                  ".mlp.gate_proj.weight", ".mlp.up_proj.weight", ".mlp.down_proj.weight")
 
 
 # ---------------------------------------------------------------------------
-# ComfyUI "comfy_quant" dequant (nvfp4 + int8_tensorwise) — lets the small nvfp4-awq TE
-# (~15 GB) stand in for the 48 GB bf16 file. We dequantize each weight back to bf16 per tensor
-# at load, then NF4-quantize it on GPU exactly like the bf16 path, so nothing downstream changes.
+# ComfyUI "comfy_quant" support (nvfp4 + int8_tensorwise) lets the small nvfp4-awq TE
+# (~15 GB) stand in for the 48 GB bf16 file. The normal path preserves those packed tensors
+# and expands only the active linear temporarily. The compatibility path dequantizes each
+# weight at load and converts it to bitsandbytes NF4.
 #
 # nvfp4 (comfy/float.py): W = fp4_e2m1 * block_scale * global_scale, block size 16 along the input
 # dim. Stored as: weight U8 [out, in/2] (2 E2M1 values/byte, HIGH nibble = first/even element),
@@ -61,32 +69,22 @@ _NF4_SUFFIXES = (".self_attn.q_proj.weight", ".self_attn.k_proj.weight",
 # against the bf16 file: ratio W_dq/W_ref == ln_ref/ln_nvfp4 to <1%, all layer shapes).
 # int8_tensorwise: W = int8 * weight_scale (per-tensor scalar).
 # ---------------------------------------------------------------------------
-# E2M1 magnitude for the low 3 bits (sign is bit 3): {0, .5, 1, 1.5, 2, 3, 4, 6}.
-_E2M1_MAG = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
-
-
 def _from_blocked(blocked, rows, cols):
     """Invert ComfyUI's to_blocked (comfy/float.py): (-1, 32, 16) tiles -> row-major [rows, cols].
     Verified as an exact roundtrip of to_blocked for the shapes in this checkpoint."""
-    nrb = -(-rows // 128)
-    ncb = -(-cols // 4)
-    x = blocked.reshape(-1, 32, 4, 4).transpose(1, 2)
-    x = x.reshape(nrb, ncb, 128, 4).permute(0, 2, 1, 3).reshape(nrb * 128, ncb * 4)
-    return x[:rows, :cols].contiguous()
+    return from_blocked(blocked, rows, cols)
 
 
 def _nvfp4_dequant(packed, block_scale_fp8, global_scale):
     """packed U8 [out, in/2] -> bf16 [out, in].  W = e2m1(code) * block_scale * global_scale."""
-    out, in2 = packed.shape
-    inp = in2 * 2
-    lo = (packed & 0x0F).to(torch.long)
-    hi = (packed >> 4).to(torch.long)
-    codes = torch.stack([hi, lo], dim=-1).reshape(out, inp)       # HIGH nibble first (verified)
-    sign = torch.where((codes & 0x8) > 0, -1.0, 1.0)
-    vals = sign * _E2M1_MAG.to(codes.device)[codes & 0x7]         # decoded fp4, f32
-    bs = _from_blocked(block_scale_fp8.to(torch.float32).reshape(-1, 32, 16), out, inp // 16)
-    bs = bs.repeat_interleave(16, dim=1)                          # [out, in/16] -> [out, in]
-    return (vals * bs * global_scale.to(torch.float32)).to(torch.bfloat16)
+    return dequantize_nvfp4(packed, block_scale_fp8, global_scale, torch.bfloat16)
+
+
+def _comfy_quant_marker(f, file_mod):
+    import json as _json
+
+    blob = bytes(f.get_tensor(file_mod + ".comfy_quant").tolist())
+    return _json.loads(blob.decode("utf-8"))
 
 
 def _dequant_comfy_weight(f, file_mod, ckpt):
@@ -95,11 +93,9 @@ def _dequant_comfy_weight(f, file_mod, ckpt):
     The `.comfy_quant` blob names the scheme — checked explicitly, because e.g. the
     int8_convrot TE variant stores ROTATED weights that would sail through a naive
     weight*scale dequant and silently produce a garbage encoder."""
-    import json as _json
     fmt = ""
     try:
-        blob = bytes(f.get_tensor(file_mod + ".comfy_quant").tolist())
-        marker = _json.loads(blob.decode("utf-8"))
+        marker = _comfy_quant_marker(f, file_mod)
         fmt = marker.get("format", "")
         if marker.get("convrot"):
             fmt = "int8_convrot"
@@ -139,7 +135,7 @@ def build_qwen3_te(config_overrides=None):
 
 
 class MiniMaxH3TextEncoder:
-    """Loads the bf16 TE, NF4 on GPU, and encodes captions to [1, L, 5120] bf16."""
+    """Encodes captions to raw layer-50 states with shape [1, L, 5120]."""
 
     def __init__(self, model, tokenizer, device="cuda", compute_dtype=torch.bfloat16):
         self.model = model.eval()
@@ -159,22 +155,53 @@ class MiniMaxH3TextEncoder:
 
 
 def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.bfloat16,
-                       quantize=True, tokenizer_dir=None) -> MiniMaxH3TextEncoder:
-    """Build + NF4-load the Qwen3-VL-32B language TE from the bf16 checkpoint (visual.* skipped)."""
+                       quantize=True, tokenizer_dir=None, load_mode="auto") -> MiniMaxH3TextEncoder:
+    """Load the text-only Qwen3-VL-32B language tower while skipping ``visual.*``."""
     from bitsandbytes.nn import Linear4bit, Params4bit
     # Import Qwen before entering the meta-device context. Importing transformers
     # itself constructs a few scalar tensors and PyTorch 2.6 cannot call item()
     # on those if the global default device is already meta.
     from transformers import AutoTokenizer, Qwen3Config, Qwen3Model  # noqa: F401
 
+    if load_mode not in ("auto", "direct", "nf4"):
+        raise ValueError(f"Unknown MiniMax-H3 text-encoder load mode: {load_mode}")
+
+    with MemoryEfficientSafeOpen(path) as checkpoint_reader:
+        checkpoint_keys = set(checkpoint_reader.keys())
+    is_comfy_quant = any(key.endswith(".comfy_quant") for key in checkpoint_keys)
+    direct_quant = quantize and is_comfy_quant and load_mode != "nf4" and HAS_TRITON
+    if load_mode == "direct" and not is_comfy_quant:
+        raise ValueError("Direct MiniMax-H3 text loading requires a Comfy quantized checkpoint")
+    if load_mode == "direct" and not HAS_TRITON:
+        raise ValueError("Direct MiniMax-H3 text loading requires Triton")
+
     with torch.device("meta"):
         model = build_qwen3_te()
 
-        # Swap the NF4-target Linears for Linear4bit shells INSIDE the meta context. Outside it,
-        # each Linear4bit eagerly allocates a full fp32 CPU weight (nn.Linear default) — across the
-        # 32B Qwen3-VL that is well over 100 GB of throwaway tensors the allocator then holds for
-        # the whole caching pass. On meta the shells are 0 bytes; real weights stream in below.
-        if quantize:
+        # Build zero-allocation shells on meta. Outside this context, both nn.Linear and
+        # bitsandbytes Linear4bit would eagerly allocate enormous throwaway CPU weights.
+        if direct_quant:
+            for mod_name, module in list(model.named_modules()):
+                for child_name, child in list(module.named_children()):
+                    full = f"{mod_name}.{child_name}" if mod_name else child_name
+                    if isinstance(child, nn.Linear) and (full + ".weight").endswith(_NF4_SUFFIXES):
+                        setattr(
+                            module,
+                            child_name,
+                            PackedNVFP4Linear(
+                                child.in_features,
+                                child.out_features,
+                                bias=child.bias is not None,
+                                device="meta",
+                            ),
+                        )
+                    elif full == "embed_tokens" and isinstance(child, nn.Embedding):
+                        setattr(
+                            module,
+                            child_name,
+                            PackedInt8Embedding(child.num_embeddings, child.embedding_dim, device="meta"),
+                        )
+        elif quantize:
             for mod_name, module in list(model.named_modules()):
                 for child_name, child in list(module.named_children()):
                     full = f"{mod_name}.{child_name}" if mod_name else child_name
@@ -185,30 +212,56 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.bfloat16,
 
     dev = torch.device(device)
     if quantize and dev.type != "cuda":
-        raise ValueError("MiniMax-H3 Qwen3-VL NF4 text caching requires a CUDA device")
+        raise ValueError("MiniMax-H3 compact Qwen3-VL text caching requires a CUDA device")
     model_keys = {n for n, _ in model.named_parameters()}
     loaded_keys = set()
     with MemoryEfficientSafeOpen(path) as f:
         ckpt = set(f.keys())
-        # The comfy nvfp4-awq TE (15 GB) stores packed quant weights + scales instead of plain
-        # bf16 — detect once, then dequantize each Linear weight from its
-        # `<mod>.weight/.weight_scale[/_2]/.pre_quant_scale` family back to bf16. Everything
-        # else (norms, embed) loads as usual; the checkpoint's norm weights already carry the
-        # folded AWQ scales, so the model function matches the bf16 TE up to 4-bit noise.
-        is_comfy_quant = any(k.endswith(".comfy_quant") for k in ckpt)
+        # The compact TE stores packed quant weights and scales instead of plain BF16. In direct
+        # mode the packed tensors stream to CUDA unchanged; norms remain in their checkpoint dtype.
         if is_comfy_quant:
-            print("[minimax-te] comfy-quant checkpoint (nvfp4-awq) — dequantizing to bf16 per tensor")
+            if direct_quant:
+                print("[minimax-te] comfy-quant checkpoint — keeping NVFP4/INT8 weights packed for fast startup")
+            else:
+                print("[minimax-te] comfy-quant checkpoint — legacy bf16-to-NF4 conversion path")
         for name in model_keys:
             src = "model." + name                          # checkpoint prefixes the LM with model.
             file_mod = src.rsplit(".", 1)[0]
             leaf = name.rsplit(".", 1)[1]
+            parent = model.get_submodule(name.rsplit(".", 1)[0])
+            if direct_quant and leaf == "weight" and isinstance(parent, PackedNVFP4Linear):
+                marker = _comfy_quant_marker(f, file_mod)
+                if marker.get("format") != "nvfp4":
+                    raise ValueError(f"Expected NVFP4 weight for {file_mod}, got {marker}")
+                pre_quant_key = file_mod + ".pre_quant_scale"
+                parent.load_quantized(
+                    f.get_tensor(file_mod + ".weight"),
+                    f.get_tensor(file_mod + ".weight_scale"),
+                    f.get_tensor(file_mod + ".weight_scale_2"),
+                    dev,
+                    compute_dtype,
+                    f.get_tensor(pre_quant_key) if pre_quant_key in ckpt else None,
+                )
+                loaded_keys.add(name)
+                continue
+            if direct_quant and leaf == "weight" and isinstance(parent, PackedInt8Embedding):
+                marker = _comfy_quant_marker(f, file_mod)
+                if marker.get("format") != "int8_tensorwise" or marker.get("convrot"):
+                    raise ValueError(f"Expected plain tensorwise INT8 embedding for {file_mod}, got {marker}")
+                parent.load_quantized(
+                    f.get_tensor(file_mod + ".weight"),
+                    f.get_tensor(file_mod + ".weight_scale"),
+                    dev,
+                    compute_dtype,
+                )
+                loaded_keys.add(name)
+                continue
             if is_comfy_quant and leaf == "weight" and (file_mod + ".comfy_quant") in ckpt:
                 w = _dequant_comfy_weight(f, file_mod, ckpt)   # -> bf16 [out, in]
             elif src in ckpt:
                 w = f.get_tensor(src)
             else:
                 continue                                   # e.g. norm (Identity) has no params
-            parent = model.get_submodule(name.rsplit(".", 1)[0])
             if quantize and (name.endswith(_NF4_SUFFIXES)):
                 p = Params4bit(w.to(compute_dtype), requires_grad=False, quant_type="nf4").to(dev)
                 setattr(parent, leaf, p)
