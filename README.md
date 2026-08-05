@@ -9,8 +9,14 @@
 > details.
 
 A Windows-focused desktop GUI for [kohya-ss/musubi-tuner](https://github.com/kohya-ss/musubi-tuner).
+<img width="3671" height="1890" alt="image" src="https://github.com/user-attachments/assets/b4ff2afe-2ecd-4fe4-b8f2-ffcfb7a7de52" />
 
-![Musubi Tuner GUI running in Krea 2 mode](docs/musubi-tuner-gui.png)
+<details>
+  <summary>Old GUI (click to expand)</summary>
+
+  ![Musubi Tuner GUI running in Krea 2 mode](docs/musubi-tuner-gui.png)
+
+</details>
 
 This fork is no longer just a Wan 2.2 front-end. The GUI now supports multiple musubi-tuner training flows from one app:
 
