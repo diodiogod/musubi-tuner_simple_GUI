@@ -2164,7 +2164,11 @@ class NetworkTrainer:
 
                     # to avoid calling optimizer_eval_fn() too frequently, we call it only when we need to sample images or save the model
                     should_sampling = should_sample_images(args, global_step, epoch=None)
-                    should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
+                    should_saving = (
+                        args.save_every_n_steps is not None
+                        and args.save_every_n_steps > 0
+                        and global_step % args.save_every_n_steps == 0
+                    )
 
                     if should_sampling or should_saving:
                         optimizer_eval_fn()
@@ -2223,7 +2227,7 @@ class NetworkTrainer:
 
             # save model at the end of epoch if needed
             optimizer_eval_fn()
-            if args.save_every_n_epochs is not None:
+            if args.save_every_n_epochs is not None and args.save_every_n_epochs > 0:
                 saving = (epoch + 1) % args.save_every_n_epochs == 0 and (epoch + 1) < num_train_epochs
                 if is_main_process and saving:
                     ckpt_name = train_utils.get_epoch_ckpt_name(args.output_name, epoch + 1)

@@ -18,6 +18,19 @@ def add_arg(cmd, key, value, is_path=False):
         cmd.extend([key, normalize_path(clean) if is_path else clean])
 
 
+def add_checkpoint_cadence_arg(cmd, key, value):
+    """Forward a checkpoint cadence only when it is enabled.
+
+    Both GUIs expose ``0`` as a convenient way to disable a cadence.  The
+    upstream parsers accept the value, but their modulo checks require a
+    strictly positive integer.  Omitting the option preserves the intended
+    disabled state without changing the independent cadence.
+    """
+    if str(value).strip() == "0":
+        return
+    add_arg(cmd, key, value)
+
+
 def build_output_dir(settings, suffix=""):
     output_dir = Path(settings["output_dir"]) / (settings["output_name"] + suffix)
     # Command previews in the modern GUI must remain read-only. Actual launches
@@ -138,8 +151,8 @@ def build_common_train_args(cmd, settings):
 
     add_arg(cmd, "--max_train_steps", settings.get("max_train_steps"))
     add_arg(cmd, "--max_train_epochs", settings.get("max_train_epochs"))
-    add_arg(cmd, "--save_every_n_epochs", settings.get("save_every_n_epochs"))
-    add_arg(cmd, "--save_every_n_steps", settings.get("save_every_n_steps"))
+    add_checkpoint_cadence_arg(cmd, "--save_every_n_epochs", settings.get("save_every_n_epochs"))
+    add_checkpoint_cadence_arg(cmd, "--save_every_n_steps", settings.get("save_every_n_steps"))
     add_arg(cmd, "--seed", settings.get("seed"))
     add_arg(cmd, "--save_state", settings.get("save_state"))
     add_arg(cmd, "--resume", settings.get("resume_path"), is_path=True)
