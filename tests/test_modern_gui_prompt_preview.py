@@ -55,6 +55,7 @@ def test_shared_history_exposes_performance_log_and_comparison_ui():
     assert 'id="job-compare-dialog"' in index_html
     assert "function drawJobSpeedChart" in app_js
     assert "function toggleJobComparison" in app_js
+    assert "function replaySettings" in app_js
 
 
 def test_history_recipe_restore_loads_and_validates_saved_dataset_toml():
