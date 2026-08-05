@@ -146,7 +146,26 @@ def effective_history_settings(job: dict[str, Any]) -> dict[str, Any]:
             "minimax_h3_depth_every_n_steps",
         )
     )
-    if is_minimax and not has_minimax_depth_schema:
+    recorded_commands = job.get("commands") or job.get("command") or []
+    if isinstance(recorded_commands, str):
+        command_text = recorded_commands
+    else:
+        command_text = " ".join(
+            " ".join(str(item) for item in value)
+            if isinstance(value, (list, tuple))
+            else str(value)
+            for value in recorded_commands
+        )
+    log_path = str(job.get("console_log_path") or "").strip()
+    if log_path and not command_text:
+        try:
+            command_text = Path(log_path).read_text(encoding="utf-8", errors="replace")[:65536]
+        except OSError:
+            pass
+    recorded_advanced_minimax = bool(
+        re.search(r"(?:^|\s)--(?:depth_anchor_weight|weight_noise_sigma)(?:\s|=)", command_text)
+    )
+    if is_minimax and not has_minimax_depth_schema and not recorded_advanced_minimax:
         # These shared Krea values were inert before MiniMax depth support was
         # introduced. Do not silently activate them when an old job is replayed.
         settings["krea2_generalization_preset"] = "Off (Baseline)"

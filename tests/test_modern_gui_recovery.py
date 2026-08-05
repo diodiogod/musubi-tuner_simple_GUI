@@ -51,6 +51,24 @@ def test_current_minimax_replay_preserves_explicit_depth_features():
     assert settings["krea2_depth_anchor_weight"] == "0.01"
 
 
+def test_recorded_minimax_depth_command_is_not_reinterpreted_as_legacy_baseline():
+    job = {
+        "mode": "MiniMax H3 (Experimental)",
+        "command": "train.py --depth_anchor_weight 0.01 --weight_noise_sigma 0.0125",
+        "settings": {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "krea2_generalization_preset": "Balanced Experimental",
+            "krea2_weight_noise_sigma": "0.0125",
+            "krea2_depth_anchor_weight": "0.01",
+        },
+    }
+
+    settings = effective_history_settings(job)
+
+    assert settings["krea2_generalization_preset"] == "Balanced Experimental"
+    assert settings["krea2_depth_anchor_weight"] == "0.01"
+
+
 def complete_state(path: Path) -> Path:
     path.mkdir(parents=True)
     for name in ("model.safetensors", "optimizer.bin", "scheduler.bin", "random_states_0.pkl"):
