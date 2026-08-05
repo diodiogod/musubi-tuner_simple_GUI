@@ -95,14 +95,29 @@ const HELP = {
   recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
   timestep_sampling: "For MiniMax H3, leave this on krea2_shift. The GUI selects it automatically; it does not mean that a Krea model is being used.",
   dop_enabled: "Differential Output Preservation adds a class-preservation objective. It costs extra compute and requires correct trigger/class captions.",
+  dop_trigger_word: "The exact subject or concept token used in your training captions. DoP uses it to identify what the LoRA is allowed to learn. It must match the token in the captions exactly.",
+  dop_class_word: "A plain description of what the subject should remain, such as 'man', 'woman', 'dog', or 'clothed person'. DoP uses this comparison to discourage unrelated changes.",
+  dop_loss_weight: "How strongly DoP protects the class behavior. Higher values preserve more but can weaken LoRA learning. Start with 1.0 and compare against a run with DoP disabled.",
+  krea2_weight_noise_sigma: "Adds a very small amount of noise to LoRA updates during training. This may reduce overfitting on small datasets. 0 disables it; 0.0125 is the experimental preset value.",
+  krea2_weight_noise_mode: "Relative scales the noise to each weight's size and is the recommended mode. Absolute applies the same noise scale everywhere and is mainly for controlled experiments.",
+  krea2_weight_noise_bound_norm: "Limits unusually large noise updates so weight noise is less likely to destabilize training. Keep this enabled when using relative weight noise.",
+  krea2_depth_anchor_weight: "Controls how strongly training is nudged toward the pose and body structure of each source image. 0 disables depth. Even small values add substantial compute and VRAM use.",
+  krea2_depth_anchor_model: "The frozen Depth Anything model used to compare image structure. The default Small model is the intended balance of speed and memory; change it only when testing another compatible model.",
+  krea2_depth_anchor_input_size: "Resolution used by the depth model, not the LoRA training resolution. Larger values can preserve finer structure but cost more VRAM and time. 518 is the tested default.",
+  krea2_depth_anchor_gradient_weight: "Controls how much of the depth signal is allowed to flow back into LoRA learning. 0.5 is the tested value. This is different from Depth Anchor Weight, which scales the final depth loss.",
+  krea2_depth_anchor_grad_checkpoint: "Recomputes part of the depth calculation during backward pass to save VRAM. Keep it enabled on normal GPUs. Disabling it may be faster, but uses more VRAM and can cause an out-of-memory error.",
+  krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
   timestep_sampling: "This controls which noise levels the model practices during training. You normally do not need to choose it yourself because each training mode selects an appropriate value.\n\nFor MiniMax H3, leave it on krea2_shift. This is the setting used by the successful 24 GB test. Despite the name, it does not load or train a Krea model; MiniMax H3 simply uses the same style of noise schedule. Change it only when following a specific advanced recipe.",
   dop_enabled: "Differential Output Preservation adds a preservation objective beside the normal training loss. It can reduce unwanted changes outside the trained concept, especially for small or narrow datasets.\n\nIt costs additional compute and depends on correct trigger and class captions. Review the DOP weight and words under Regularization before enabling it.",
   krea2_generalization_preset: "This preset applies coordinated adapter weight-noise and depth-anchor values. It is available for Krea 2 and experimental MiniMax H3.\n\nOff sets both strengths to zero. Weight Noise Only applies relative noise at 0.0125 without loading the depth models. Balanced Experimental combines 0.0125 weight noise with a 0.01 depth anchor. Changing the preset updates the visible advanced values immediately. MiniMax H3 depth is VRAM-heavy, so test it with a short run and conservative block swapping.",
+  krea2_depth_anchor_gradient_weight: "This controls how strongly gradients from the structural comparison travel back toward the LoRA. It works inside the depth calculation; Depth Anchor Weight separately controls how much the finished depth loss contributes to total training loss.\n\nKeep 0.5 for initial tests. Raising it does not simply produce 'more accurate depth' and may overpower normal identity or appearance learning.",
+  krea2_depth_anchor_grad_checkpoint: "Enabled saves VRAM by discarding intermediate depth calculations and recomputing them during backward pass. The tradeoff is extra computation, so each affected step may be slower.\n\nFor a 24 GB training GPU, keep this enabled. Disable it only when you have measured substantial free VRAM and want to test whether retaining the depth graph improves speed. It does not change the intended depth objective or LoRA quality by itself.",
+  krea2_keep_depth_helpers_on_gpu: "Enabled keeps the frozen Depth Anything model and its working tensors on the GPU between training steps. This avoids repeated transfers and can make depth-enabled training faster, but permanently consumes additional VRAM.\n\nDisabled moves those helpers away when they are not being used. This is safer on tight GPUs and does not weaken the depth signal or LoRA quality; it can only be slower. On a 24 GB MiniMax run, leave it disabled unless depth helpers are assigned to a separate GPU with enough memory.",
   blocks_to_swap: "Block swapping reduces peak VRAM by moving inactive transformer blocks between GPU and system memory. More swapped blocks generally use less VRAM but increase transfer overhead and slow each step.\n\nStart with the lowest value that fits your GPU. If a run still runs out of memory, increase gradually; if there is comfortable headroom, lower it for speed.",
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
@@ -115,7 +130,7 @@ const LONG_HELP_COPY = {
   recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster."
 };
 function helpFor(field) {
-  return HELP[field.key] || `${field.label} maps directly to Musubi's “${field.key}” setting. Its current value is preserved in saved recipes and job history.`;
+  return HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
 }
 function openHelp(field) {
   $("#help-title").textContent = field.label; $("#help-copy").textContent = LONG_HELP_COPY[field.key] || helpFor(field); $("#help-key").textContent = field.key;
@@ -292,7 +307,7 @@ function renderGuided() {
   appendFields($("#data-fields"), ["dataset_config","project_root","output_dir","output_name"]);
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
-  appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","dop_enabled","krea2_generalization_preset"]);
+  appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","krea2_generalization_preset"]);
   if(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"){
     const presetField=$("#method-fields").querySelector('[data-key="krea2_generalization_preset"]');
     if(presetField){
@@ -304,8 +319,12 @@ function renderGuided() {
     }
   }
   const depthComputeKeys=["minimax_h3_depth_vae_device","minimax_h3_keep_depth_vae_on_device","minimax_h3_depth_every_n_steps"];
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key));
+  const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!dopKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
+  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode);
+  $("#dop-settings").hidden=!supportsDop;
+  appendFields($("#dop-fields"),dopKeys);
   const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)";
   appendFields($("#minimax-depth-fields"),depthComputeKeys);
   appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
@@ -1724,6 +1743,7 @@ function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   buttons.find(button=>button.classList.contains("active"))?.click();
 }
 bindTabs("[data-run-tab]","[data-run-pane]","runTab","runPane");
+$$('[data-run-tab]').forEach(button=>button.addEventListener("click",()=>{if($("#run").classList.contains("run-split-view"))setRunSplitView(false)}));
 $("[data-run-tab=log]").addEventListener("click",()=>requestAnimationFrame(()=>keepLiveLogAtBottom()));
 bindTabs("[data-plan-tab]","[data-plan-pane]","planTab","planPane");
 bindTabs("[data-face-step]","[data-face-pane]","faceStep","facePane");

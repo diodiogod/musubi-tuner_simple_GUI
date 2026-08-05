@@ -55,6 +55,12 @@ def test_live_log_reenables_follow_when_scrolled_back_to_bottom():
     assert '$("#follow-log").addEventListener("click",()=>setFollowLog(!followLog' in app_js
 
 
+def test_run_tab_click_exits_split_view():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert 'if($("#run").classList.contains("run-split-view"))setRunSplitView(false)' in app_js
+
+
 def test_shared_history_exposes_performance_log_and_comparison_ui():
     index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
     app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
@@ -65,6 +71,19 @@ def test_shared_history_exposes_performance_log_and_comparison_ui():
     assert "function drawJobSpeedChart" in app_js
     assert "function toggleJobComparison" in app_js
     assert "function replaySettings" in app_js
+
+
+def test_advanced_training_help_is_specific_and_dop_is_separate():
+    index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert 'id="dop-settings"' in index_html
+    assert 'id="dop-fields"' in index_html
+    assert "Differential Output Preservation (DoP)" in index_html
+    assert "Weight noise and structural depth" in index_html
+    assert "krea2_keep_depth_helpers_on_gpu:" in app_js
+    assert "krea2_depth_anchor_grad_checkpoint:" in app_js
+    assert "preserved in saved recipes and job history" not in app_js
 
 
 def test_history_recipe_restore_loads_and_validates_saved_dataset_toml():
