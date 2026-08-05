@@ -46,6 +46,26 @@ def test_modern_run_can_persist_split_layout_and_terminal_theme():
     assert "#run.run-split-view .run-panel-stack" in styles_css
 
 
+def test_shared_history_exposes_performance_log_and_comparison_ui():
+    index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert 'id="job-view-console"' in index_html
+    assert 'id="compare-jobs"' in index_html
+    assert 'id="job-compare-dialog"' in index_html
+    assert "function drawJobSpeedChart" in app_js
+    assert "function toggleJobComparison" in app_js
+
+
+def test_history_recipe_restore_loads_and_validates_saved_dataset_toml():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert "async function loadDatasetForSettings" in app_js
+    assert "const datasetLoaded=await loadDatasetForSettings()" in app_js
+    assert "The Dataset TOML could not be loaded" in app_js
+    assert "if (state.settings.dataset_config && !await loadDatasetForSettings())" in app_js
+
+
 def test_serialize_krea_preview_prompt():
     assert serialize_prompt({"prompt": "portrait", "width": 512, "seed": 42, "neg": "blur"}) == (
         "portrait --w 512 --d 42 --n blur"

@@ -38,8 +38,10 @@ from modern_gui.dataset_media import (
     save_media_caption,
 )
 from modern_gui.jobs import SUPERVISOR
+from job_performance import enrich_job, read_job_log
 from modern_gui.recovery import (
     clear_desktop_history,
+    effective_history_settings,
     import_output_jobs,
     load_desktop_history,
     prepare_continuation,
@@ -204,13 +206,29 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 access = resolve_media_token(token)
                 return self._send_file(access.path, allow_ranges=access.kind == "video")
             if parsed.path == "/api/jobs":
-                modern = [dict(job, _source="web", _history_index=index) for index, job in enumerate(SUPERVISOR.history())]
-                return self._json({"jobs": modern + load_desktop_history()})
+                modern = [enrich_job(dict(job, _source="web", _history_index=index)) for index, job in enumerate(SUPERVISOR.history())]
+                desktop = [enrich_job(job) for job in load_desktop_history()]
+                jobs = sorted(modern + desktop, key=lambda job: str(job.get("started_at") or ""), reverse=True)
+                return self._json({"jobs": jobs})
             if parsed.path == "/api/jobs/active":
                 after = 0
                 if parsed.query.startswith("after="):
                     after = int(parsed.query.removeprefix("after="))
                 return self._json(SUPERVISOR.snapshot(after))
+            if parsed.path == "/api/jobs/log":
+                query = parse_qs(parsed.query)
+                source = query.get("source", ["desktop"])[0]
+                index = int(query.get("index", ["-1"])[0])
+                jobs = load_desktop_history() if source == "desktop" else SUPERVISOR.history()
+                if index < 0 or index >= len(jobs):
+                    raise IndexError("The selected history entry no longer exists.")
+                job = jobs[index]
+                return self._json(
+                    {
+                        "log": read_job_log(job.get("console_log_path") or ""),
+                        "performance": enrich_job(job)["performance"],
+                    }
+                )
             if parsed.path == "/api/gpu":
                 return self._json(gpu_snapshot())
             if parsed.path == "/api/samples":
@@ -671,6 +689,13 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     raise IndexError("The selected history entry no longer exists.")
                 prepare = prepare_continuation if self.path.endswith("continuation") else prepare_exact_recovery
                 return self._json({"settings": prepare(jobs[index])})
+            if self.path == "/api/jobs/replay-settings":
+                source = body.get("source", "desktop")
+                index = int(body.get("index", -1))
+                jobs = load_desktop_history() if source == "desktop" else SUPERVISOR.history()
+                if index < 0 or index >= len(jobs):
+                    raise IndexError("The selected history entry no longer exists.")
+                return self._json({"settings": effective_history_settings(jobs[index])})
             if self.path == "/api/jobs/prepare-face":
                 source = body.get("source", "desktop")
                 index = int(body.get("index", -1))

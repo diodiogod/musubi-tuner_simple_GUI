@@ -23,6 +23,15 @@ from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
 from sample_gallery import parse_training_sample_path
 from continuation_names import continuation_name, dynamic_suffix_name, split_continuation_name, split_dynamic_suffix
+from job_performance import (
+    append_job_log,
+    compact_speed_history,
+    job_log_path,
+    load_modern_history_for_classic,
+    parse_training_speed,
+    performance_summary,
+    read_job_log,
+)
 
 # --- Dependency Check ---
 try:
@@ -190,6 +199,7 @@ class MusubiTunerGUI:
         self._lora_shape_cache = {}
         self._job_history_path = "job_history_local.json"
         self._job_history = []
+        self._visible_job_history = []
         self._jobs_tree = None
         self._jobs_details_text = None
         self._jobs_context_menu = None
@@ -4716,8 +4726,13 @@ class MusubiTunerGUI:
             return
         for item in self._jobs_tree.get_children():
             self._jobs_tree.delete(item)
+        desktop = [dict(job, _source="desktop", _history_index=index) for index, job in enumerate(self._job_history)]
+        web = load_modern_history_for_classic()
+        self._visible_job_history = sorted(
+            desktop + web, key=lambda job: str(job.get("started_at") or ""), reverse=True
+        )
         completed = failed = stopped = 0
-        for job in self._job_history:
+        for job in self._visible_job_history:
             status = job.get("status", "unknown")
             if status == "completed":
                 completed += 1
@@ -4725,12 +4740,12 @@ class MusubiTunerGUI:
                 failed += 1
             elif status == "stopped":
                 stopped += 1
-        total = len(self._job_history)
+        total = len(self._visible_job_history)
         self._jobs_summary_var.set(
-            f"{total} jobs saved locally  |  completed {completed}  |  failed {failed}  |  stopped {stopped}"
+            f"{total} jobs from Classic + Modern  |  completed {completed}  |  failed {failed}  |  stopped {stopped}"
             if total else "No jobs recorded yet."
         )
-        for index, job in enumerate(self._job_history):
+        for index, job in enumerate(self._visible_job_history):
             started = job.get("started_at", "")
             timestamp = started.replace("T", " ")[:16] if started else ""
             progress = self._job_progress_summary(job)
@@ -4744,10 +4759,10 @@ class MusubiTunerGUI:
                     timestamp,
                     progress,
                     self._job_display_name(job),
-                    job.get("title", "Job"),
+                    f"{job.get('title', 'Job')} · {job.get('_source', 'desktop')}",
                 ),
             )
-        if self._job_history:
+        if self._visible_job_history:
             first = self._jobs_tree.get_children()[0]
             self._jobs_tree.selection_set(first)
             self._jobs_tree.focus(first)
@@ -4762,9 +4777,9 @@ class MusubiTunerGUI:
         if not selection:
             return None
         index = int(selection[0])
-        if index >= len(self._job_history):
+        if index >= len(self._visible_job_history):
             return None
-        return self._job_history[index]
+        return self._visible_job_history[index]
 
     def _show_jobs_context_menu(self, event):
         row_id = self._jobs_tree.identify_row(event.y)
@@ -5747,6 +5762,9 @@ class MusubiTunerGUI:
             self._set_job_details_text("No recorded jobs yet.")
             return
         cumulative = self._job_cumulative_progress(job)
+        performance = performance_summary(job)
+        measured = performance.get("median_seconds_per_iteration")
+        overall = performance.get("overall_seconds_per_iteration")
         parent_title = str(job.get("continuation_parent_title") or "").strip()
         lines = [
             f"Title: {job.get('title', '')}",
@@ -5756,6 +5774,10 @@ class MusubiTunerGUI:
             f"Started: {job.get('started_at', '')}",
             f"Finished: {job.get('finished_at', '')}",
             f"Duration: {job.get('duration_seconds', 0):.1f}s" if job.get("duration_seconds") is not None else "Duration: N/A",
+            f"Source: {job.get('_source', 'desktop').title()} GUI",
+            f"Measured Median Speed: {measured:.3f} s/it" if measured is not None else "Measured Median Speed: unavailable for this older job",
+            f"Whole-job Estimate: {overall:.3f} s/it" if overall is not None else "Whole-job Estimate: unavailable",
+            f"Speed Samples: {performance.get('sample_count', 0)}",
             f"Output Name: {job.get('output_name', '')}",
             f"Output Dir: {job.get('output_dir', '')}",
             f"Resume: {job.get('resume_path', '')}",
@@ -5818,9 +5840,54 @@ class MusubiTunerGUI:
         job = self._selected_job()
         if not job:
             return
+        self._open_job_performance_dialog(job)
+
+    def _open_job_performance_dialog(self, job):
+        summary = performance_summary(job)
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Performance · {self._job_display_name(job)}")
+        dialog.geometry("980x720")
+        dialog.transient(self.root)
+        header = ttk.Frame(dialog); header.pack(fill="x", padx=14, pady=(14, 8))
+        ttk.Label(header, text=self._job_display_name(job), style="PageTitle.TLabel").pack(anchor="w")
+        measured = summary.get("median_seconds_per_iteration")
+        recent = summary.get("recent_seconds_per_iteration")
+        overall = summary.get("overall_seconds_per_iteration")
+        ttk.Label(
+            header,
+            text=(
+                f"Source: {job.get('_source', 'desktop').title()} GUI   ·   "
+                f"Measured median: {measured:.3f} s/it   ·   " if measured is not None else
+                f"Source: {job.get('_source', 'desktop').title()} GUI   ·   No measured speed samples   ·   "
+            ) + (f"Recent: {recent:.3f} s/it   ·   " if recent is not None else "")
+              + (f"Whole-job estimate: {overall:.3f} s/it" if overall is not None else "Whole-job estimate unavailable"),
+            style="PageHelp.TLabel", wraplength=930, justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+        if not summary.get("sample_count"):
+            ttk.Label(
+                header,
+                text="This older job has no saved tqdm timing curve. Its estimate includes loading, caching, previews, and checkpoint saves.",
+                foreground=self.colors["warning"], wraplength=930, justify="left",
+            ).pack(anchor="w", pady=(5, 0))
+        if MATPLOTLIB_AVAILABLE and summary.get("speed_history"):
+            figure = Figure(figsize=(8.8, 2.2), dpi=100, facecolor=self.colors["panel"])
+            axis = figure.add_subplot(111)
+            points = summary["speed_history"]
+            axis.plot([point[0] for point in points], [point[1] for point in points], color=self.colors["accent"], linewidth=1.4)
+            axis.set_xlabel("Training step"); axis.set_ylabel("Seconds / iteration"); axis.grid(alpha=.2)
+            canvas = FigureCanvasTkAgg(figure, master=dialog); canvas.draw(); canvas.get_tk_widget().pack(fill="x", padx=14, pady=(0, 8))
+        log_frame = ttk.LabelFrame(dialog, text="Saved Console Log")
+        log_frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+        text = tk.Text(log_frame, wrap=tk.NONE, bg=self.colors["field"], fg=self.colors["text"], font=("Consolas", 9))
+        try:
+            content = read_job_log(job.get("console_log_path") or "")
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            content = f"No persisted console log is available for this historical job.\n\n{exc}"
+        text.insert("1.0", content); text.config(state="disabled"); text.pack(fill="both", expand=True, padx=6, pady=6)
+        actions = ttk.Frame(dialog); actions.pack(fill="x", padx=14, pady=(0, 14))
         logging_dir = job.get("logging_dir", "")
-        if logging_dir and os.path.exists(logging_dir):
-            self._open_path(logging_dir)
+        ttk.Button(actions, text="Open TensorBoard / W&B Folder", command=lambda: self._open_path(logging_dir)).pack(side="left")
+        ttk.Button(actions, text="Close", command=dialog.destroy).pack(side="right")
 
     def _copy_selected_job_command(self):
         job = self._selected_job()
@@ -6200,8 +6267,11 @@ class MusubiTunerGUI:
         training_comment = self._effective_training_comment(settings)
         if training_comment:
             note = f"{note}\n\n{training_comment}".strip()
+        job_id = uuid.uuid4().hex
+        console_log = job_log_path(job_id)
+        console_log.unlink(missing_ok=True)
         self._active_job = {
-            "job_id": uuid.uuid4().hex,
+            "job_id": job_id,
             "kind": kind,
             "title": title,
             "mode": settings.get("training_mode", self.training_mode_var.get()),
@@ -6220,6 +6290,8 @@ class MusubiTunerGUI:
             "current_epoch": 0,
             "total_epochs": 0,
             "settings_snapshot": dict(settings),
+            "speed_history": [],
+            "console_log_path": str(console_log),
         }
         self._active_job.update(continuation)
         if recovery:
@@ -6317,6 +6389,7 @@ class MusubiTunerGUI:
                 "current_epoch": self.current_epoch_num,
                 "total_epochs": self.current_epoch_total,
                 "loss_history": self._compact_loss_history(self.loss_data),
+                "speed_history": compact_speed_history(self._active_job.get("speed_history") or []),
             }
         )
         self._job_history.insert(0, self._active_job)
@@ -7671,6 +7744,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
         if job_context and job_context.get("attach_to_active"):
             self._record_job_command(command)
+            if self._active_job:
+                try:
+                    append_job_log(
+                        self._active_job.get("console_log_path", ""),
+                        datetime.now().isoformat(timespec="seconds"),
+                        "system",
+                        f"$ {command_display}",
+                    )
+                except OSError:
+                    pass
 
         try:
             env = os.environ.copy(); env['PYTHONUNBUFFERED'] = '1'; env['PYTHONUTF8'] = '1'
@@ -7857,6 +7940,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     chunk, buffer = buffer[:-1], buffer[-1]
 
                 if chunk is not None:
+                    if output_widget == self.output_text and self._active_job:
+                        observed_at = datetime.now().isoformat(timespec="milliseconds")
+                        try:
+                            append_job_log(
+                                self._active_job.get("console_log_path", ""), observed_at, "output", chunk.rstrip()
+                            )
+                        except OSError:
+                            pass
+                        speed = parse_training_speed(chunk)
+                        if speed:
+                            history = self._active_job.setdefault("speed_history", [])
+                            history.append([speed["step"], speed["seconds_per_iteration"], observed_at])
+                            self._active_job["speed_history"] = compact_speed_history(history)
                     self.root.after(0, self.process_console_output, chunk, output_widget)
                     if output_widget == self.output_text:
                         training_progress = self._parse_main_training_progress(chunk)
@@ -7942,7 +8038,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 int(epoch_match.group(2)),
                             )
                             self.root.after(0, self.update_progress_bar, int(epoch_match.group(1)), int(epoch_match.group(2)))
-            if buffer: self.root.after(0, self.process_console_output, buffer, output_widget)
+            if buffer:
+                if output_widget == self.output_text and self._active_job:
+                    try:
+                        append_job_log(
+                            self._active_job.get("console_log_path", ""),
+                            datetime.now().isoformat(timespec="milliseconds"),
+                            "output",
+                            buffer.rstrip(),
+                        )
+                    except OSError:
+                        pass
+                self.root.after(0, self.process_console_output, buffer, output_widget)
         except Exception as e:
             self.root.after(0, output_widget.insert, tk.END, f"\n[Read error] {e}\n")
         finally:

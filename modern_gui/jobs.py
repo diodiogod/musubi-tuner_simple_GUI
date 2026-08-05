@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from job_performance import append_job_log, compact_speed_history, job_log_path, parse_training_speed
+
 from modern_gui.commands import build_command_plan
 from modern_gui.stages import (
     prepare_standard_stage,
@@ -116,8 +118,11 @@ class JobSupervisor:
             self._log.clear()
             self._next_log_id = 1
             self._stop_requested = False
+            job_id = str(uuid.uuid4())
+            console_log = job_log_path(job_id)
+            console_log.unlink(missing_ok=True)
             self._active = {
-                "id": str(uuid.uuid4()),
+                "id": job_id,
                 "name": settings.get("output_name") or "unnamed",
                 "mode": settings.get("training_mode", "Wan 2.2"),
                 "status": "starting",
@@ -138,8 +143,10 @@ class JobSupervisor:
                     "dop_loss": None,
                     "dop_weighted": None,
                     "loss_history": [],
+                    "speed_history": [],
                 },
                 "settings": settings,
+                "console_log_path": str(console_log),
             }
             target = self._run_staged if staged else self._run
             arguments = (settings, stages) if staged else (commands,)
@@ -166,8 +173,11 @@ class JobSupervisor:
             self._log.clear()
             self._next_log_id = 1
             self._stop_requested = False
+            job_id = str(uuid.uuid4())
+            console_log = job_log_path(job_id)
+            console_log.unlink(missing_ok=True)
             self._active = {
-                "id": str(uuid.uuid4()),
+                "id": job_id,
                 "name": name,
                 "mode": mode,
                 "status": "starting",
@@ -181,9 +191,10 @@ class JobSupervisor:
                 "metrics": {
                     "step": 0, "total_steps": 0, "epoch": 0, "total_epochs": 0,
                     "loss": None, "depth_loss": None, "dop_loss": None,
-                    "dop_weighted": None, "loss_history": [],
+                    "dop_weighted": None, "loss_history": [], "speed_history": [],
                 },
                 "settings": dict(settings),
+                "console_log_path": str(console_log),
                 "_completion_context": dict(completion_context or {}),
             }
             thread = threading.Thread(target=self._run, args=(commands,), daemon=True, name="musubi-web-utility")
@@ -209,15 +220,27 @@ class JobSupervisor:
 
     def _append_log(self, stream: str, message: str) -> None:
         with self._lock:
+            observed_at = _utc_now()
             transient = stream == "output" and is_training_progress_line(message)
             if transient and self._log and self._log[-1].get("transient"):
                 self._log.pop()
-            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": _utc_now(), "transient": transient})
+            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": observed_at, "transient": transient})
             self._next_log_id += 1
+            if self._active:
+                try:
+                    append_job_log(self._active.get("console_log_path", ""), observed_at, stream, message)
+                except OSError:
+                    pass
             if stream == "output" and self._active:
                 update = parse_training_line(message)
                 metrics = self._active.get("metrics", {})
                 metrics.update(update)
+                speed = parse_training_speed(message)
+                if speed:
+                    history = metrics.setdefault("speed_history", [])
+                    history.append([speed["step"], speed["seconds_per_iteration"], observed_at])
+                    metrics["speed_history"] = compact_speed_history(history)
+                    metrics["seconds_per_iteration"] = speed["seconds_per_iteration"]
                 if "loss" in update:
                     history = metrics.setdefault("loss_history", [])
                     point = [int(update.get("step", metrics.get("step", 0))), update["loss"]]

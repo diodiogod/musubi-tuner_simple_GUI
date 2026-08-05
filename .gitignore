@@ -1,4 +1,5 @@
 __pycache__/
+job_logs/
 .venv
 venv/
 logs/
