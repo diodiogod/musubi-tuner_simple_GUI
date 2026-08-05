@@ -90,6 +90,7 @@
               <div id="method-fields" class="guided-fields"></div>
               <div class="estimate-row"><span id="lora-estimate">Estimate the final adapter size from model tensor shapes.</span><button class="quiet" id="estimate-lora">Estimate size</button></div>
               <details class="raw-settings"><summary>Regularization and small-dataset controls</summary><div id="regularization-fields" class="guided-fields"></div></details>
+              <details class="raw-settings depth-compute-settings" id="minimax-depth-compute" hidden><summary>MiniMax depth compute and multi-GPU memory</summary><p class="settings-explainer">Depth compares the current LoRA prediction with the training image's structure. The target is cached, but the current prediction must be decoded on every depth step. A secondary GPU can hold the ~5 GB video VAE while the training GPU keeps the DiT and Depth Anything.</p><div id="minimax-depth-fields" class="guided-fields"></div></details>
             </div>
             <div class="step-pane" data-pane="performance">
               <p class="kicker">STEP 4 OF 5</p><h2>Fit the run to your machine</h2><p class="lead">Precision and memory choices affect speed and VRAM. Help is available beside every unfamiliar option.</p>

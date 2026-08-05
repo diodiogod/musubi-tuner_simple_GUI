@@ -144,6 +144,39 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         except (TypeError, ValueError) as exc:
             error("dop_enabled", f"DOP configuration: {exc}")
 
+    if mode in {"Krea 2", "MiniMax H3 (Experimental)"}:
+        preset = str(settings.get("krea2_generalization_preset") or "").strip()
+        try:
+            noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
+            depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
+        except (TypeError, ValueError):
+            noise_strength = depth_strength = 0.0
+        if preset == "Off (Baseline)" and (noise_strength > 0 or depth_strength > 0):
+            error(
+                "krea2_generalization_preset",
+                "Generalization preset is Off, but weight noise or depth anchoring is still nonzero. "
+                "Press Apply selected preset to set both values to zero before launching.",
+            )
+        if mode == "MiniMax H3 (Experimental)" and depth_strength > 0:
+            vae_device = str(settings.get("minimax_h3_depth_vae_device") or "training").strip().lower()
+            if vae_device not in {"training", "secondary"} and not vae_device.startswith("cuda:"):
+                error(
+                    "minimax_h3_depth_vae_device",
+                    "Depth VAE device must be training, secondary, or an advanced logical CUDA device such as cuda:1.",
+                )
+            try:
+                cadence = int(str(settings.get("minimax_h3_depth_every_n_steps") or "1"))
+                if cadence <= 0:
+                    raise ValueError
+            except ValueError:
+                error("minimax_h3_depth_every_n_steps", "Depth cadence must be a positive whole number.")
+            if vae_device == "secondary" and not settings.get("minimax_h3_keep_depth_vae_on_device"):
+                warning(
+                    "minimax_h3_keep_depth_vae_on_device",
+                    "The secondary VAE is not kept loaded, so approximately 5 GB of weights will move repeatedly. "
+                    "Enable Keep VAE on Selected GPU unless that GPU must be shared.",
+                )
+
     starting_point = settings.get("starting_point_mode")
     resume = "" if starting_point in {"new", "weights"} else str(settings.get("resume_path") or "").strip()
     weights = "" if starting_point in {"new", "state"} else str(settings.get("network_weights") or "").strip()

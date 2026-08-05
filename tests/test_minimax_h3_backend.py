@@ -33,6 +33,8 @@ def test_training_command_enforces_direct_int8_safe_path(tmp_path):
     assert "--fp8_base" not in command
     assert command[command.index("--text_encoder") + 1].endswith("te.safetensors")
     assert command[command.index("--minimax_h3_preview_decode_min_free_gb") + 1] == "9.0"
+    assert command[command.index("--depth_anchor_vae_device") + 1] == "training"
+    assert command[command.index("--depth_anchor_every_n_steps") + 1] == "1"
 
 
 def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
@@ -44,6 +46,7 @@ def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
     assert commands[1][1].endswith("minimax_h3_image_cache_text_encoder_outputs.py")
     assert commands[1][commands[1].index("--text_encoder") + 1].endswith("te.safetensors")
     assert commands[1][commands[1].index("--text_encoder_load_mode") + 1] == "auto"
+    assert commands[1][commands[1].index("--cache_dtype") + 1] == "bfloat16"
 
 
 def test_training_command_exposes_h3_regularization_and_samples(tmp_path):

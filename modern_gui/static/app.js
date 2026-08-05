@@ -71,6 +71,7 @@ function go(view, {historyMode = "push", focusHeading = true} = {}) {
   const target=view==="home"?`${location.pathname}${location.search}`:`${location.pathname}${location.search}#${view}`;
   if(historyMode!=="none"&&`${location.pathname}${location.search}${location.hash}`!==target)history[historyMode==="replace"?"replaceState":"pushState"](null,"",target);
   window.scrollTo(0, 0);
+  if(view==="run")requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
 function schemaFields(sectionIds) {
   return state.schema.sections.filter(s => sectionIds.includes(s.id)).flatMap(s => s.fields);
@@ -101,10 +102,14 @@ const LONG_HELP_COPY = {
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
   timestep_sampling: "This controls which noise levels the model practices during training. You normally do not need to choose it yourself because each training mode selects an appropriate value.\n\nFor MiniMax H3, leave it on krea2_shift. This is the setting used by the successful 24 GB test. Despite the name, it does not load or train a Krea model; MiniMax H3 simply uses the same style of noise schedule. Change it only when following a specific advanced recipe.",
   dop_enabled: "Differential Output Preservation adds a preservation objective beside the normal training loss. It can reduce unwanted changes outside the trained concept, especially for small or narrow datasets.\n\nIt costs additional compute and depends on correct trigger and class captions. Review the DOP weight and words under Regularization before enabling it.",
-  krea2_generalization_preset: "This preset coordinates DOP, adapter weight noise, and depth anchoring to trade exact dataset matching for broader prompt and pose behavior. It is available for Krea 2 and experimental MiniMax H3.\n\nGentle stays close to baseline training. Balanced is a practical starting point for small identity datasets. Strong applies more regularization and should be evaluated carefully against fixed prompts. MiniMax H3 support is new, so begin with Gentle and a short run.",
+  krea2_generalization_preset: "This preset applies coordinated adapter weight-noise and depth-anchor values. It is available for Krea 2 and experimental MiniMax H3.\n\nOff sets both strengths to zero. Weight Noise Only applies relative noise at 0.0125 without loading the depth models. Balanced Experimental combines 0.0125 weight noise with a 0.01 depth anchor. Changing the preset updates the visible advanced values immediately. MiniMax H3 depth is VRAM-heavy, so test it with a short run and conservative block swapping.",
   blocks_to_swap: "Block swapping reduces peak VRAM by moving inactive transformer blocks between GPU and system memory. More swapped blocks generally use less VRAM but increase transfer overhead and slow each step.\n\nStart with the lowest value that fits your GPU. If a run still runs out of memory, increase gradually; if there is comfortable headroom, lower it for speed.",
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
+  minimax_h3_text_cache_dtype: "Controls only how the completed caption embeddings are stored. The Comfy-style Qwen3-VL tower still performs its encoding calculations in FP32.\n\nUse bfloat16 (recommended) for caches half the size and lower training-time disk/CPU traffic. Float32 is available for controlled fidelity comparisons. After changing this, rebuild only the Caption/Text Cache; the Image/Latent Cache does not need to be rebuilt.",
+  minimax_h3_depth_vae_device: "Select where the frozen ~5 GB MiniMax video VAE performs differentiable depth decoding. Training uses the same GPU as the DiT. Secondary automatically selects another CUDA device visible to PyTorch and transfers the small predicted latent there while preserving gradients.\n\nSecondary is recommended for a 24 GB training GPU plus an 8 GB helper GPU. It fails clearly when a second visible CUDA device is unavailable; it never silently moves training to the wrong GPU.",
+  minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. Enable this for a dedicated secondary GPU to avoid transferring ~5 GB of weights every step. Disable it when sharing that GPU with other applications. This changes performance and VRAM residency, not the training objective.",
+  minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
   recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
   recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster."
@@ -205,6 +210,7 @@ function fieldControl(field, {wide = false} = {}) {
   const commit = () => {
     if(customInput){customInput.hidden=input.value!=="__custom__";if(input.value==="__custom__")customInput.focus()}
     state.settings[field.key] = field.type === "boolean" ? input.checked : input.value==="__custom__" ? customInput.value : input.value;
+    if(field.key === "krea2_generalization_preset" && applyGeneralizationPreset(input.value)) return;
     if (field.key === "training_mode") selectMode(input.value);
     if (field.key === "appearance_mode") applyTheme(input.value, {syncSetting:false});
     if (field.key === "dataset_config") $("#dataset-path").value = input.value;
@@ -219,6 +225,27 @@ function fieldControl(field, {wide = false} = {}) {
   return wrap;
 }
 function looksNumeric(value) { return typeof value === "number" || (typeof value === "string" && value !== "" && /^-?\d+(\.\d+)?$/.test(value)); }
+function applyGeneralizationPreset(preset){
+  const values={
+    "Off (Baseline)":{noise:"0",depth:"0"},
+    "Weight Noise Only":{noise:"0.0125",depth:"0"},
+    "Balanced Experimental":{noise:"0.0125",depth:"0.01"}
+  }[preset];
+  if(!values)return false;
+  Object.assign(state.settings,{
+    krea2_generalization_preset:preset,
+    krea2_weight_noise_sigma:values.noise,
+    krea2_weight_noise_mode:"relative",
+    krea2_depth_anchor_weight:values.depth,
+    krea2_depth_anchor_model:"depth-anything/Depth-Anything-V2-Small-hf",
+    krea2_depth_anchor_input_size:"518",
+    krea2_depth_anchor_gradient_weight:"0.5",
+    krea2_depth_anchor_grad_checkpoint:true
+  });
+  renderGuided();renderAllSettings();sync();
+  toast(`${preset} applied: weight noise ${values.noise}, depth ${values.depth}.`);
+  return true;
+}
 function findField(key) { return state.schema.sections.flatMap(s => s.fields).find(f => f.key === key); }
 function appendFields(host, keys) {
   host.innerHTML = "";
@@ -258,7 +285,7 @@ function renderGuided() {
   const mode = state.settings.training_mode;
   const modelKeys = mode === "Krea 2"
     ? ["krea2_dit_model","krea2_text_encoder","vae_model","krea2_turbo_dit","krea2_projector_diff"]
-    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_convrot_bwd_mode","vae_model"]
+    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_text_cache_dtype","minimax_h3_convrot_bwd_mode","vae_model"]
     : mode?.startsWith("Flux.2") ? ["flux2_dit_model","flux2_text_encoder","vae_model"]
     : ["is_i2v","dit_high_noise","dit_low_noise","t5_model","clip_model","vae_model"];
   appendFields($("#model-fields"), modelKeys);
@@ -266,8 +293,21 @@ function renderGuided() {
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
   appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","dop_enabled","krea2_generalization_preset"]);
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key);
+  if(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"){
+    const presetField=$("#method-fields").querySelector('[data-key="krea2_generalization_preset"]');
+    if(presetField){
+      const action=document.createElement("div");action.className="field-actions";
+      const button=document.createElement("button");button.type="button";button.className="quiet";button.textContent="Apply selected preset";
+      button.title="Apply this preset's actual weight-noise and depth settings. Use this after loading an older project whose displayed preset may not match its saved values.";
+      button.addEventListener("click",()=>applyGeneralizationPreset(presetField.querySelector("select")?.value||state.settings.krea2_generalization_preset));
+      action.append(button);presetField.append(action);
+    }
+  }
+  const depthComputeKeys=["minimax_h3_depth_vae_device","minimax_h3_keep_depth_vae_on_device","minimax_h3_depth_every_n_steps"];
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
+  const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)";
+  appendFields($("#minimax-depth-fields"),depthComputeKeys);
   appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
   renderReview();
   renderPlan();
@@ -284,6 +324,9 @@ function selectMode(mode) {
       compile:false, fp8_base:false, fp8_scaled:false,
       minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"Qwen/Qwen3-VL-32B-Instruct",
       minimax_h3_convrot_bwd_mode:"bf16",
+      minimax_h3_depth_vae_device:state.settings.minimax_h3_depth_vae_device||"training",
+      minimax_h3_keep_depth_vae_on_device:state.settings.minimax_h3_keep_depth_vae_on_device??false,
+      minimax_h3_depth_every_n_steps:state.settings.minimax_h3_depth_every_n_steps||"1",
     });
     const face=faceConfig(),faceBlocks=Number(face.blocks_to_swap);
     face.cfg_scale=1;
@@ -1391,10 +1434,15 @@ function parseProgressLine(message){
 function updateLiveProgress(progress){
   if(!progress)return;latestProgressLine=progress.text;$("#live-progress").hidden=false;$("#live-progress-text").textContent=progress.text;
 }
+function keepLiveLogAtBottom(){
+  const log=$("#live-log"),pane=log.closest("[data-run-pane=log]"),run=$("#run");
+  if(!followLog||!run.classList.contains("active")||(!run.classList.contains("run-split-view")&&!pane?.classList.contains("active")))return;
+  log.scrollTop=log.scrollHeight;
+}
 function appendLogEntries(entries){
   const log=$("#live-log"),durable=[];entries.forEach(entry=>{const progress=parseProgressLine(entry.message);if(progress)updateLiveProgress(progress);else durable.push(entry.message)});
   if(!durable.length)return;const wasNearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<36;if(log.textContent==="Waiting for a job…")log.textContent="";
-  log.textContent+=durable.join("\n")+"\n";if(followLog&&wasNearBottom)log.scrollTop=log.scrollHeight;
+  log.textContent+=durable.join("\n")+"\n";if(followLog&&(wasNearBottom||log.clientHeight===0))log.scrollTop=log.scrollHeight;requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
 async function pollJob() {
   try {
@@ -1648,6 +1696,7 @@ function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   buttons.find(button=>button.classList.contains("active"))?.click();
 }
 bindTabs("[data-run-tab]","[data-run-pane]","runTab","runPane");
+$("[data-run-tab=log]").addEventListener("click",()=>requestAnimationFrame(()=>keepLiveLogAtBottom()));
 bindTabs("[data-plan-tab]","[data-plan-pane]","planTab","planPane");
 bindTabs("[data-face-step]","[data-face-pane]","faceStep","facePane");
 $("#use-stages").addEventListener("change",e=>{state.settings.use_staged_training=e.target.checked;renderPlan();sync()});

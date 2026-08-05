@@ -40,6 +40,8 @@ def test_modern_run_can_persist_split_layout_and_terminal_theme():
     assert 'id="run-split-divider"' in index_html
     assert 'readLocalPreference("musubi-run-split"' in app_js
     assert 'writeLocalPreference("musubi-log-follow"' in app_js
+    assert "function keepLiveLogAtBottom" in app_js
+    assert 'data-run-tab=log' in app_js
     assert "--terminal-bg" in styles_css
     assert "#run.run-split-view .run-panel-stack" in styles_css
 

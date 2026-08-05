@@ -748,6 +748,13 @@ class MusubiTunerGUI:
             "Qwen3-VL-32B tokenizer repo ID or a local processor directory.",
         )
         self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_cache_dtype", "Text Cache Precision:",
+            "Choose bfloat16 (recommended) for smaller caption caches and potentially faster training. The Comfy-style "
+            "text encoder still computes in float32; only its final cached embeddings are converted. Choose float32 only "
+            "for controlled comparison tests. Changing this requires rebuilding only the text cache, not image latents.",
+            kind='combobox', options=["bfloat16", "float32"],
+        )
+        self._add_widget(
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_convrot_bwd_mode", "INT8 Backward:",
             "Choose 'bf16'. This is the tested, recommended setting for a 24 GB GPU. It only controls the temporary "
             "calculations used while the LoRA learns—the base model remains the ~21 GB ConvRot INT8 checkpoint and the saved "
@@ -1387,6 +1394,45 @@ class MusubiTunerGUI:
             "Keeps each adapter tensor at its pre-noise norm. Recommended for long runs; usually unnecessary for short comparisons.",
             kind='checkbox',
         )
+        self.hidden_frames['minimax_h3_depth_compute'] = ttk.LabelFrame(
+            self.regularization_frame, text="MiniMax H3 · Depth Compute & Multi-GPU Memory"
+        )
+        ttk.Label(
+            self.hidden_frames['minimax_h3_depth_compute'],
+            text=(
+                "The training-image depth target is cached, but the LoRA's changing prediction must be decoded during "
+                "training. A secondary GPU can hold only the ~5 GB MiniMax video VAE while the main GPU keeps the DiT "
+                "and Depth Anything. This is experimental and remains inactive while Depth Anchor Strength is 0."
+            ),
+            wraplength=850,
+            style="PageHelp.TLabel",
+        ).pack(anchor="w", padx=10, pady=(8, 6))
+        self._add_widget(
+            self.hidden_frames['minimax_h3_depth_compute'],
+            "minimax_h3_depth_vae_device",
+            "VAE Processing Device:",
+            "Training GPU keeps the VAE beside MiniMax and is the compatibility default. Secondary GPU (auto) transfers "
+            "the small predicted latent to another CUDA GPU, performs differentiable VAE decoding there, and returns the "
+            "pixels and gradients automatically. It fails clearly if PyTorch cannot see a second GPU.",
+            kind='combobox', options=["training", "secondary"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_depth_compute'],
+            "minimax_h3_keep_depth_vae_on_device",
+            "Keep VAE on Selected GPU",
+            "Recommended for a dedicated secondary GPU. It avoids transferring approximately 5 GB of VAE weights before "
+            "every depth step. Disable it if that GPU must be shared with another application.",
+            kind='checkbox',
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_depth_compute'],
+            "minimax_h3_depth_every_n_steps",
+            "Run Depth Every N Steps:",
+            "1 checks structure every optimizer step. 2 or 4 reduces the average depth cost and is a practical experimental "
+            "starting point. Less frequent checks also reduce depth's total influence over the complete run.",
+            kind='combobox', options=["1", "2", "4", "8"],
+        )
+
         ttk.Separator(self.hidden_frames['krea2_regularization']).pack(fill="x", padx=8, pady=6)
         self._add_widget(
             self.hidden_frames['krea2_regularization'],
@@ -6837,6 +6883,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.hidden_frames['krea2_regularization'].pack(fill="x", padx=10, pady=10)
             else:
                 self.hidden_frames['krea2_regularization'].pack_forget()
+            if is_minimax_h3:
+                self.hidden_frames['minimax_h3_depth_compute'].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames['minimax_h3_depth_compute'].pack_forget()
         except (KeyError, tk.TclError):
             pass
         self._refresh_training_notes_preview()
@@ -7145,6 +7195,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
             "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
             "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
+            "minimax_h3_text_cache_dtype": "bfloat16",
+            "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
+            "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -8409,10 +8462,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
                 depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
                 depth_size = int(settings.get("krea2_depth_anchor_input_size") or 518)
+                depth_cadence = int(settings.get("minimax_h3_depth_every_n_steps") or 1)
                 if noise_strength < 0 or depth_strength < 0:
                     raise ValueError("strengths cannot be negative")
                 if depth_size <= 0 or depth_size % 14:
                     raise ValueError("depth resolution must be a positive multiple of 14")
+                if depth_cadence <= 0:
+                    raise ValueError("depth cadence must be a positive whole number")
             except ValueError as exc:
                 messagebox.showerror("Validation Error", f"Invalid MiniMax H3 generalization setting: {exc}.")
                 return
@@ -8442,9 +8498,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                         return
             if depth_strength > 0 and not messagebox.askokcancel(
                 "Experimental MiniMax H3 Depth Anchor",
-                "MiniMax H3 depth anchoring is experimental and holds the DiT graph, VAE decoder, and depth checker during each step. "
-                "It may be substantially slower and can exceed 24 GB. Use at least 30 swapped blocks, leave depth helpers offloaded, "
-                "and begin with a one- or two-step comparison. Continue?",
+                "MiniMax H3 depth anchoring is experimental and keeps the DiT graph while decoding its current prediction. "
+                f"VAE device: {settings.get('minimax_h3_depth_vae_device') or 'training'}; depth every {depth_cadence} step(s).\n\n"
+                "A secondary GPU can hold the ~5 GB VAE, but both GPUs must be visible to PyTorch. Begin with a short comparison. Continue?",
             ):
                 return
             if not messagebox.askokcancel(

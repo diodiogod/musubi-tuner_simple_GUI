@@ -53,6 +53,9 @@ def build_commands(settings):
     if not settings.get("krea2_depth_anchor_grad_checkpoint", True):
         cmd.append("--no-depth_anchor_grad_checkpoint")
     add_arg(cmd, "--keep_depth_helpers_on_gpu", settings.get("krea2_keep_depth_helpers_on_gpu"))
+    add_arg(cmd, "--depth_anchor_vae_device", settings.get("minimax_h3_depth_vae_device") or "training")
+    add_arg(cmd, "--keep_depth_vae_on_device", settings.get("minimax_h3_keep_depth_vae_on_device"))
+    add_arg(cmd, "--depth_anchor_every_n_steps", settings.get("minimax_h3_depth_every_n_steps") or "1")
     build_attention_arg(cmd, settings)
     build_sample_args(cmd, settings)
     build_dop_train_args(cmd, settings)
@@ -92,6 +95,7 @@ def build_cache_commands(settings, python_executable):
         if tokenizer:
             command.extend(["--tokenizer", tokenizer])
         add_arg(command, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
+        add_arg(command, "--cache_dtype", settings.get("minimax_h3_text_cache_dtype") or "bfloat16")
         build_dop_cache_args(command, settings)
         commands.append(command)
     return commands

@@ -27,8 +27,13 @@ from musubi_tuner.training.dop import (
 logger = logging.getLogger(__name__)
 
 
-def is_valid_minimax_h3_text_cache(item: ItemInfo, dop_trigger_word: str = "", dop_class_word: str = "") -> bool:
-    """Accept only caption-matching fp32 caches produced by the corrected Comfy-style tower."""
+def is_valid_minimax_h3_text_cache(
+    item: ItemInfo,
+    dop_trigger_word: str = "",
+    dop_class_word: str = "",
+    cache_dtype: str = "float32",
+) -> bool:
+    """Accept caption-matching caches produced by the corrected Comfy-style tower."""
     path = str(getattr(item, "text_encoder_output_cache_path", "") or "")
     if not path:
         return False
@@ -38,7 +43,7 @@ def is_valid_minimax_h3_text_cache(item: ItemInfo, dop_trigger_word: str = "", d
             keys = list(cache.keys())
             if metadata.get("caption1", "") != str(getattr(item, "caption", "") or ""):
                 return False
-            if "varlen_mmh3_hidden_states_float32" not in keys:
+            if f"varlen_mmh3_hidden_states_{cache_dtype}" not in keys:
                 return False
     except (OSError, RuntimeError, ValueError):
         return False
@@ -47,7 +52,7 @@ def is_valid_minimax_h3_text_cache(item: ItemInfo, dop_trigger_word: str = "", d
             item,
             dop_trigger_word,
             dop_class_word,
-            "varlen_dop_mmh3_hidden_states_float32",
+            f"varlen_dop_mmh3_hidden_states_{cache_dtype}",
         )
     return True
 
@@ -57,6 +62,7 @@ def encode_and_save_batch(
     batch: list[ItemInfo],
     dop_trigger_word: str = "",
     dop_class_word: str = "",
+    cache_dtype: torch.dtype = torch.bfloat16,
 ) -> None:
     use_dop = bool(dop_trigger_word or dop_class_word)
     signature = None
@@ -65,7 +71,7 @@ def encode_and_save_batch(
         signature = dop_signature(dop_trigger_word, dop_class_word)
     for item in batch:
         logger.info("Encoding MiniMax-H3 caption for %s", item.item_key)
-        hidden_states = encoder.encode(item.caption)[0]
+        hidden_states = encoder.encode(item.caption)[0].to(dtype=cache_dtype)
         dop_hidden_states = None
         if use_dop:
             try:
@@ -73,7 +79,7 @@ def encode_and_save_batch(
             except ValueError as exc:
                 raise ValueError(f"DOP caption error for {item.item_key}: {exc}") from exc
             logger.info("Encoding MiniMax-H3 DOP class caption for %s", item.item_key)
-            dop_hidden_states = encoder.encode(class_caption)[0]
+            dop_hidden_states = encoder.encode(class_caption)[0].to(dtype=cache_dtype)
         save_text_encoder_output_cache_minimax_h3_image(item, hidden_states, dop_hidden_states, signature)
 
 
@@ -95,6 +101,15 @@ def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help=(
             "auto keeps compact Comfy NVFP4/INT8 weights packed for fast startup when Triton is available; "
             "nf4 selects the slower legacy conversion path"
+        ),
+    )
+    parser.add_argument(
+        "--cache_dtype",
+        choices=("bfloat16", "float32"),
+        default="bfloat16",
+        help=(
+            "dtype used to store the final caption embeddings; bfloat16 is recommended for smaller caches and "
+            "lower training-time I/O, while the text encoder itself still computes in float32"
         ),
     )
     add_cache_arguments(parser)
@@ -126,13 +141,15 @@ def main() -> None:
         load_mode=args.text_encoder_load_mode,
     )
 
-    def encode(batch: list[ItemInfo]):
-        encode_and_save_batch(encoder, batch, args.dop_trigger_word, args.dop_class_word)
+    cache_dtype = torch.bfloat16 if args.cache_dtype == "bfloat16" else torch.float32
 
-    # Even with --skip_existing, transparently rebuild legacy bf16 caches. They were
-    # generated before the standalone Comfy-style fp32 tower and materially change H3 conditioning.
+    def encode(batch: list[ItemInfo]):
+        encode_and_save_batch(encoder, batch, args.dop_trigger_word, args.dop_class_word, cache_dtype)
+
+    # Precision is part of the cache contract so changing the UI option rebuilds only
+    # caption caches while keeping image latents untouched.
     cache_validator = lambda item: is_valid_minimax_h3_text_cache(
-        item, args.dop_trigger_word, args.dop_class_word
+        item, args.dop_trigger_word, args.dop_class_word, args.cache_dtype
     )
 
     cache_text_encoder_outputs.process_text_encoder_batches(

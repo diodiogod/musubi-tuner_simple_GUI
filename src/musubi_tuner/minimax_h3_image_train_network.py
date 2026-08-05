@@ -25,6 +25,34 @@ from musubi_tuner.utils.device_utils import clean_memory_on_device
 logger = logging.getLogger(__name__)
 
 
+def resolve_depth_vae_device(spec: str, training_device: torch.device) -> torch.device:
+    """Resolve a logical CUDA device for the frozen differentiable VAE decoder."""
+    training_device = torch.device(training_device)
+    value = str(spec or "training").strip().lower()
+    if value == "training":
+        return training_device
+    if training_device.type != "cuda":
+        raise ValueError("A secondary depth VAE GPU requires CUDA training")
+    training_index = training_device.index
+    if training_index is None:
+        training_index = torch.cuda.current_device()
+    if value == "secondary":
+        candidates = [index for index in range(torch.cuda.device_count()) if index != training_index]
+        if not candidates:
+            raise ValueError(
+                "Secondary depth VAE GPU was selected, but PyTorch can see only one CUDA device. "
+                "Make both GPUs visible to the training process or use the training GPU setting."
+            )
+        return torch.device("cuda", candidates[0])
+    try:
+        requested = torch.device(value)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError("Depth VAE device must be 'training', 'secondary', or a CUDA device such as 'cuda:1'") from exc
+    if requested.type != "cuda" or requested.index is None or requested.index >= torch.cuda.device_count():
+        raise ValueError(f"Depth VAE device {value!r} is not an available logical CUDA device")
+    return requested
+
+
 class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
     """Image-only H3 path: one still image, no audio, frozen INT8 base."""
 
@@ -35,6 +63,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         self._weight_noise = None
         self._weight_noise_logs = {}
         self._depth_anchor = None
+        self._depth_vae_device = None
 
     @property
     def architecture(self) -> str:
@@ -76,9 +105,11 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             raise ValueError("--depth_anchor_weight must be non-negative")
         if args.depth_anchor_input_size <= 0 or args.depth_anchor_input_size % 14:
             raise ValueError("--depth_anchor_input_size must be a positive multiple of 14")
+        if args.depth_anchor_every_n_steps <= 0:
+            raise ValueError("--depth_anchor_every_n_steps must be positive")
         if args.depth_anchor_weight > 0 and not args.vae:
             raise ValueError("--vae is required when MiniMax-H3 depth anchoring is enabled")
-        if args.depth_anchor_weight > 0 and (args.blocks_to_swap or 0) < 30:
+        if args.depth_anchor_weight > 0 and args.depth_anchor_vae_device == "training" and (args.blocks_to_swap or 0) < 30:
             logger.warning(
                 "MiniMax-H3 depth anchoring holds the DiT graph, VAE decoder, and depth model together. "
                 "Fewer than 30 swapped blocks may exceed 24 GB; start with 30 or more."
@@ -100,6 +131,16 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                     f"MiniMax-H3 image dataset {index} requires batch_size=1; use gradient accumulation for larger batches"
                 )
         return group, collator, current_epoch
+
+    def _get_depth_vae_device(self, args, training_device: torch.device) -> torch.device:
+        if self._depth_vae_device is None:
+            self._depth_vae_device = resolve_depth_vae_device(args.depth_anchor_vae_device, training_device)
+            logger.info(
+                "MiniMax-H3 depth devices: DiT/depth model=%s, differentiable VAE=%s",
+                training_device,
+                self._depth_vae_device,
+            )
+        return self._depth_vae_device
 
     def process_sample_prompts(self, args, accelerator, sample_prompts):
         prompts = load_prompts(sample_prompts)
@@ -195,11 +236,15 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         if parked:
             logger.info("MiniMax-H3 preview temporarily parked %s resident base weights for VAE decode", len(parked))
         try:
-            vae.to(device=device, dtype=torch.float16).eval()
+            decode_device = self._get_depth_vae_device(args, device) if args.depth_anchor_weight > 0 else device
+            vae.to(device=decode_device, dtype=torch.float16).eval()
             with torch.no_grad():
-                pixels = decode_image_latent(vae, latent.to(device=device, dtype=torch.float16)).cpu()
+                pixels = decode_image_latent(vae, latent.to(device=decode_device, dtype=torch.float16)).cpu()
         finally:
-            vae.to("cpu")
+            if not (args.depth_anchor_weight > 0 and args.keep_depth_vae_on_device):
+                vae.to("cpu")
+            if args.depth_anchor_weight > 0 and self._depth_vae_device != device:
+                clean_memory_on_device(self._depth_vae_device)
             clean_memory_on_device(device)
             transformer.restore_parked_block_weights(parked)
             clean_memory_on_device(device)
@@ -333,7 +378,8 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             global_step,
         )
         total = diffusion_loss
-        if args.depth_anchor_weight > 0:
+        run_depth = args.depth_anchor_weight > 0 and global_step % args.depth_anchor_every_n_steps == 0
+        if run_depth:
             from musubi_tuner.perceptual.depth_anchor import (
                 DepthAnchor,
                 reconstruct_clean_latents_h3,
@@ -346,12 +392,13 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 args.depth_anchor_input_size,
                 spatial_compression_ratio=16,
             )
-            vae.to(accelerator.device, dtype=torch.float16).requires_grad_(False)
+            vae_device = self._get_depth_vae_device(args, accelerator.device)
+            vae.to(vae_device, dtype=torch.float16).requires_grad_(False)
             predicted_pixels = decode_image_latent(
                 vae,
-                predicted_for_depth.to(accelerator.device, dtype=torch.float16),
+                predicted_for_depth.to(vae_device, dtype=torch.float16),
                 checkpoint_decode=args.depth_anchor_grad_checkpoint,
-            )[:, :, 0]
+            )[:, :, 0].to(accelerator.device)
 
             if self._depth_anchor is None:
                 logger.info("Loading frozen depth perceptor: %s", args.depth_anchor_model)
@@ -378,8 +425,9 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                     )
                     target_pixels = decode_image_latent(
                         vae,
-                        target_latent.to(accelerator.device, dtype=torch.float16),
+                        target_latent.to(vae_device, dtype=torch.float16),
                     )[:, :, 0]
+                    target_pixels = target_pixels.to(accelerator.device)
                 target_depths.append(self._depth_anchor.target_depth(target_pixels, key))
             target_depth = torch.cat(target_depths, dim=0)
             depth_loss = self._depth_anchor.loss(
@@ -407,10 +455,13 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         return total, metrics
 
     def on_after_primary_backward(self, args, accelerator, vae):
-        if args.depth_anchor_weight <= 0 or args.keep_depth_helpers_on_gpu:
+        if args.depth_anchor_weight <= 0:
             return
-        vae.to("cpu")
-        if self._depth_anchor is not None:
+        if not args.keep_depth_vae_on_device:
+            vae.to("cpu")
+            if self._depth_vae_device is not None:
+                clean_memory_on_device(self._depth_vae_device)
+        if self._depth_anchor is not None and not args.keep_depth_helpers_on_gpu:
             self._depth_anchor.to("cpu")
         clean_memory_on_device(accelerator.device)
 
@@ -488,6 +539,13 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
     depth_anchor.add_argument("--depth_anchor_gradient_weight", type=float, default=0.5)
     depth_anchor.add_argument("--depth_anchor_grad_checkpoint", action=argparse.BooleanOptionalAction, default=True)
     depth_anchor.add_argument("--keep_depth_helpers_on_gpu", action="store_true")
+    depth_anchor.add_argument(
+        "--depth_anchor_vae_device",
+        default="training",
+        help="Device for differentiable MiniMax VAE decoding: training, secondary, or a logical CUDA device",
+    )
+    depth_anchor.add_argument("--keep_depth_vae_on_device", action="store_true")
+    depth_anchor.add_argument("--depth_anchor_every_n_steps", type=int, default=1)
     parser.add_argument(
         "--text_encoder",
         default=None,

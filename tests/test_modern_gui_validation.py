@@ -27,6 +27,21 @@ def test_valid_krea_setup_passes_preflight(tmp_path: Path):
     assert result["errors"] == []
 
 
+def test_off_generalization_preset_rejects_stale_nonzero_depth(tmp_path: Path):
+    settings = valid_krea_settings(tmp_path)
+    settings.update(
+        {
+            "krea2_generalization_preset": "Off (Baseline)",
+            "krea2_weight_noise_sigma": "0",
+            "krea2_depth_anchor_weight": "0.01",
+        }
+    )
+
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+
+    assert any("preset is Off" in message for message in messages)
+
+
 def test_krea_incompatible_runtime_options_are_actionable(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
     settings.update(
@@ -111,6 +126,38 @@ def test_minimax_h3_dop_and_training_samples_are_accepted(tmp_path: Path):
     assert any("negative prompt" in message for message in messages)
     assert any("guidance and CFG at 1.0" in message for message in messages)
     assert any("multiples of 32" in message for message in messages)
+
+
+def test_minimax_secondary_depth_configuration_is_validated(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": str(dataset),
+        "output_dir": str(tmp_path),
+        "output_name": "h3-depth",
+        "vae_model": "vae.safetensors",
+        "minimax_h3_dit_model": "dit.safetensors",
+        "learning_rate": "1e-4",
+        "gradient_accumulation_steps": "1",
+        "network_dim_low": "16",
+        "network_type": "LoRA",
+        "max_train_epochs": "1",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+        "krea2_generalization_preset": "Balanced Experimental",
+        "krea2_depth_anchor_weight": "0.01",
+        "minimax_h3_depth_vae_device": "secondary",
+        "minimax_h3_keep_depth_vae_on_device": True,
+        "minimax_h3_depth_every_n_steps": "4",
+    }
+
+    assert validate_training_settings(settings)["errors"] == []
+
+    settings["minimax_h3_depth_every_n_steps"] = "0"
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+    assert any("cadence" in message for message in messages)
 
 
 def test_exact_resume_is_revalidated_even_when_loaded_from_json(tmp_path: Path):

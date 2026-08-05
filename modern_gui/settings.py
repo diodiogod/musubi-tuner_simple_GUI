@@ -17,7 +17,11 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
     "minimax_h3_convrot_bwd_mode": "bf16",
     "minimax_h3_text_encoder_load_mode": "auto",
+    "minimax_h3_text_cache_dtype": "bfloat16",
     "minimax_h3_preview_decode_min_free_gb": "9.0",
+    "minimax_h3_depth_vae_device": "training",
+    "minimax_h3_keep_depth_vae_on_device": False,
+    "minimax_h3_depth_every_n_steps": "1",
 }
 
 MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
@@ -70,8 +74,10 @@ CHOICES = {
     "compile_dynamic": ["auto", "true", "false"],
     "log_with": ["none", "tensorboard", "wandb"],
     "krea2_weight_noise_mode": ["relative", "absolute"],
-    "krea2_generalization_preset": ["Off (Baseline)", "Gentle", "Balanced", "Strong"],
+    "krea2_generalization_preset": ["Off (Baseline)", "Weight Noise Only", "Balanced Experimental"],
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
+    "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
+    "minimax_h3_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
 }
 
@@ -168,7 +174,7 @@ def _section_for(key: str) -> str:
         return "optimization"
     if "timestep" in key or key in {"discrete_flow_shift", "preserve_distribution_shape", "train_high_noise", "train_low_noise"}:
         return "timesteps"
-    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_")):
+    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_")):
         return "regularization"
     if key.startswith(("sample_",)):
         return "sampling"
