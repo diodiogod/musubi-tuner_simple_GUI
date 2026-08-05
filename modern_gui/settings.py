@@ -20,6 +20,8 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_text_cache_dtype": "bfloat16",
     "minimax_h3_preview_decode_min_free_gb": "9.0",
     "minimax_h3_training_preview_mode": "One frame (safe)",
+    "minimax_h3_guidance_distillation_protection": True,
+    "minimax_h3_guidance_distillation_scale": "3.0",
     "minimax_h3_depth_vae_device": "training",
     "minimax_h3_keep_depth_vae_on_device": False,
     "minimax_h3_depth_every_n_steps": "1",
@@ -50,6 +52,8 @@ FIELD_LABELS = {
     "sample_every_n_steps": "Sample Every N Steps",
     "sample_at_first": "Sample At First",
     "minimax_h3_training_preview_mode": "Scheduled MiniMax Preview",
+    "minimax_h3_guidance_distillation_protection": "Protect H3 Quality During Training",
+    "minimax_h3_guidance_distillation_scale": "H3 Quality Protection Strength",
     "rename_final_artifacts_to_epoch": "Rename Final Save to Epoch Number",
 }
 
@@ -185,7 +189,7 @@ def _section_for(key: str) -> str:
         return "optimization"
     if "timestep" in key or key in {"discrete_flow_shift", "preserve_distribution_shape", "train_high_noise", "train_low_noise"}:
         return "timesteps"
-    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_")):
+    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_", "minimax_h3_guidance_")):
         return "regularization"
     if key.startswith(("sample_",)):
         return "sampling"

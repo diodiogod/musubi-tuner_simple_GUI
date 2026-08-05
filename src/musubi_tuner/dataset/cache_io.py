@@ -495,6 +495,7 @@ def save_text_encoder_output_cache_minimax_h3_image(
     hidden_states: torch.Tensor,
     dop_hidden_states: Optional[torch.Tensor] = None,
     dop_signature: Optional[torch.Tensor] = None,
+    unconditional_hidden_states: Optional[torch.Tensor] = None,
 ):
     """Save raw layer-50 Qwen3-VL states; image-caption rows use text modality tag 1."""
     if hidden_states.ndim != 2 or hidden_states.shape[1] != 5120:
@@ -511,6 +512,14 @@ def save_text_encoder_output_cache_minimax_h3_image(
         sd[f"varlen_dop_mmh3_hidden_states_{dop_dtype}"] = dop_hidden_states
     if dop_signature is not None:
         sd["dop_signature"] = dop_signature
+    if unconditional_hidden_states is not None:
+        if unconditional_hidden_states.ndim != 2 or unconditional_hidden_states.shape[1] != 5120:
+            raise ValueError(
+                "MiniMax-H3 unconditional hidden states must be [L,5120], "
+                f"got {tuple(unconditional_hidden_states.shape)}"
+            )
+        unconditional_dtype = dtype_to_str(unconditional_hidden_states.dtype)
+        sd[f"varlen_mmh3_unconditional_hidden_states_{unconditional_dtype}"] = unconditional_hidden_states
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL, merge_existing=False)
 
 

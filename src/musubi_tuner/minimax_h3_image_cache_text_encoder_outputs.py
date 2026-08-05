@@ -32,6 +32,7 @@ def is_valid_minimax_h3_text_cache(
     dop_trigger_word: str = "",
     dop_class_word: str = "",
     cache_dtype: str = "float32",
+    require_unconditional: bool = False,
 ) -> bool:
     """Accept caption-matching caches produced by the corrected Comfy-style tower."""
     path = str(getattr(item, "text_encoder_output_cache_path", "") or "")
@@ -44,6 +45,8 @@ def is_valid_minimax_h3_text_cache(
             if metadata.get("caption1", "") != str(getattr(item, "caption", "") or ""):
                 return False
             if f"varlen_mmh3_hidden_states_{cache_dtype}" not in keys:
+                return False
+            if require_unconditional and f"varlen_mmh3_unconditional_hidden_states_{cache_dtype}" not in keys:
                 return False
     except (OSError, RuntimeError, ValueError):
         return False
@@ -63,6 +66,7 @@ def encode_and_save_batch(
     dop_trigger_word: str = "",
     dop_class_word: str = "",
     cache_dtype: torch.dtype = torch.bfloat16,
+    unconditional_hidden_states: torch.Tensor | None = None,
 ) -> None:
     use_dop = bool(dop_trigger_word or dop_class_word)
     signature = None
@@ -80,7 +84,13 @@ def encode_and_save_batch(
                 raise ValueError(f"DOP caption error for {item.item_key}: {exc}") from exc
             logger.info("Encoding MiniMax-H3 DOP class caption for %s", item.item_key)
             dop_hidden_states = encoder.encode(class_caption)[0].to(dtype=cache_dtype)
-        save_text_encoder_output_cache_minimax_h3_image(item, hidden_states, dop_hidden_states, signature)
+        save_text_encoder_output_cache_minimax_h3_image(
+            item,
+            hidden_states,
+            dop_hidden_states,
+            signature,
+            unconditional_hidden_states,
+        )
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -113,6 +123,11 @@ def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     add_cache_arguments(parser)
+    parser.add_argument(
+        "--cache_h3_unconditional",
+        action="store_true",
+        help="Also cache the empty-prompt state required by H3 guidance-distillation protection",
+    )
     return parser
 
 
@@ -142,14 +157,25 @@ def main() -> None:
     )
 
     cache_dtype = torch.bfloat16 if args.cache_dtype == "bfloat16" else torch.float32
+    unconditional_hidden_states = None
+    if args.cache_h3_unconditional:
+        logger.info("Encoding MiniMax-H3 empty prompt for guidance-distillation protection")
+        unconditional_hidden_states = encoder.encode("")[0].to(dtype=cache_dtype)
 
     def encode(batch: list[ItemInfo]):
-        encode_and_save_batch(encoder, batch, args.dop_trigger_word, args.dop_class_word, cache_dtype)
+        encode_and_save_batch(
+            encoder,
+            batch,
+            args.dop_trigger_word,
+            args.dop_class_word,
+            cache_dtype,
+            unconditional_hidden_states,
+        )
 
     # Precision is part of the cache contract so changing the UI option rebuilds only
     # caption caches while keeping image latents untouched.
     cache_validator = lambda item: is_valid_minimax_h3_text_cache(
-        item, args.dop_trigger_word, args.dop_class_word, args.cache_dtype
+        item, args.dop_trigger_word, args.dop_class_word, args.cache_dtype, args.cache_h3_unconditional
     )
 
     cache_text_encoder_outputs.process_text_encoder_batches(

@@ -99,7 +99,8 @@ DOP guide: [docs/dop.md](./docs/dop.md)
 - 24 GB-oriented safe defaults: rank 16, BF16 LoRA/backward, gradient checkpointing, and 30 H2D-only swapped blocks
 - Advanced speed tuning: 15 swapped blocks completed two epochs at roughly 19–20 GB on an RTX 4090 and produced a working likeness LoRA, but has less safety margin and is not the automatic default
 - FP32-policy latent caching, compact NVFP4/AWQ caption caching, scheduled training previews, and sequential standalone LoRA image inference
-- Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, all disabled by default
+- Guidance-distillation quality protection enabled by default for new MiniMax H3 recipes, using an independent cached-text adaptation of Ostris AI Toolkit's contrastive-guidance target
+- Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, disabled by default
 - Focused 24 GB GPU smokes completed for previews, DOP/weight noise, depth, and the H3 DRaFT graph with the real AntelopeV2 reward; useful long-run advanced recipes remain experimental
 - LoRA-only, batch size 1, and no video/audio training
 - Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak; the longer two-epoch 15-block run used roughly 19–20 GB

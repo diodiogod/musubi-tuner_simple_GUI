@@ -20,6 +20,7 @@ from musubi_tuner.training.parser_common import read_config_from_file, setup_par
 from musubi_tuner.training.sampling_prompts import load_prompts
 from musubi_tuner.training.trainer_base import DiTOutput, NetworkTrainer
 from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
+from musubi_tuner.training.h3_guidance_protection import build_guided_target, enabled as guidance_protection_enabled, validate as validate_guidance_scale
 from musubi_tuner.perceptual.depth_devices import resolve_depth_vae_device
 from musubi_tuner.utils.device_utils import clean_memory_on_device
 
@@ -95,6 +96,12 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 args.dop_trigger_word,
                 args.dop_class_word,
                 args.dop_loss_weight,
+            )
+        if guidance_protection_enabled(args):
+            validate_guidance_scale(args.h3_guidance_distillation_scale)
+            logger.info(
+                "MiniMax-H3 guidance-distillation protection enabled: contrastive target scale=%g",
+                args.h3_guidance_distillation_scale,
             )
 
     def _build_dataset(self, args):
@@ -359,6 +366,28 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             accelerator.device,
             dit_dtype,
         )
+        unconditional_prediction = None
+        if guidance_protection_enabled(args):
+            unconditional_rows = batch.get("mmh3_unconditional_hidden_states")
+            if not isinstance(unconditional_rows, list) or len(unconditional_rows) != 1:
+                raise ValueError(
+                    "MiniMax-H3 guidance protection requires cached empty-prompt text states. "
+                    "Enable Rebuild Caption/Text Cache and run again."
+                )
+            unconditional_batch = dict(batch)
+            unconditional_batch["mmh3_hidden_states"] = unconditional_rows
+            with torch.no_grad():
+                unconditional_prediction = self.call_dit(
+                    args,
+                    accelerator,
+                    transformer,
+                    latents,
+                    unconditional_batch,
+                    noise,
+                    noisy_input,
+                    timesteps,
+                    network_dtype,
+                ).pred.detach()
         output = self.call_dit(
             args,
             accelerator,
@@ -370,6 +399,13 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             timesteps,
             network_dtype,
         )
+        if unconditional_prediction is not None:
+            normal_target = output.target
+            output.target = build_guided_target(
+                unconditional_prediction,
+                normal_target,
+                args.h3_guidance_distillation_scale,
+            )
         diffusion_loss, metrics = self.compute_loss(
             args,
             output,
@@ -380,6 +416,14 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             global_step,
         )
         total = diffusion_loss
+        if unconditional_prediction is not None:
+            metrics.update(
+                {
+                    "loss/h3_guidance_target_delta": torch.nn.functional.mse_loss(
+                        output.target.float(), normal_target.float()
+                    ).detach(),
+                }
+            )
         run_depth = args.depth_anchor_weight > 0 and global_step % args.depth_anchor_every_n_steps == 0
         if run_depth:
             from musubi_tuner.perceptual.depth_anchor import (
@@ -520,6 +564,8 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             "ss_dop_loss_weight": args.dop_loss_weight,
             "ss_dop_trigger_word": args.dop_trigger_word if dop_enabled(args) else "",
             "ss_dop_class_word": args.dop_class_word if dop_enabled(args) else "",
+            "ss_minimax_h3_guidance_distillation_protection": guidance_protection_enabled(args),
+            "ss_minimax_h3_guidance_distillation_scale": args.h3_guidance_distillation_scale,
         }
 
 
@@ -534,6 +580,9 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
     weight_noise.add_argument("--weight_noise_sigma", type=float, default=0.0)
     weight_noise.add_argument("--weight_noise_mode", choices=("relative", "absolute"), default="relative")
     weight_noise.add_argument("--weight_noise_bound_norm", action="store_true")
+    guidance = parser.add_argument_group("MiniMax-H3 guidance-distillation protection")
+    guidance.add_argument("--h3_guidance_distillation_protection", action="store_true")
+    guidance.add_argument("--h3_guidance_distillation_scale", type=float, default=3.0)
     depth_anchor = parser.add_argument_group("MiniMax-H3 perceptual depth anchor (experimental)")
     depth_anchor.add_argument("--depth_anchor_weight", type=float, default=0.0)
     depth_anchor.add_argument("--depth_anchor_model", default="depth-anything/Depth-Anything-V2-Small-hf")

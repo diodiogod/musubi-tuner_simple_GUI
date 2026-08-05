@@ -91,6 +91,18 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("mixed_precision", "Experimental MiniMax H3 requires BF16 mixed precision.")
         if not settings.get("gradient_checkpointing"):
             error("gradient_checkpointing", "MiniMax H3 H2D-only block swapping requires gradient checkpointing.")
+        if settings.get("minimax_h3_guidance_distillation_protection"):
+            try:
+                from musubi_tuner.training.h3_guidance_protection import validate as validate_h3_guidance_scale
+
+                validate_h3_guidance_scale(settings.get("minimax_h3_guidance_distillation_scale") or 3.0)
+            except (TypeError, ValueError) as exc:
+                error("minimax_h3_guidance_distillation_scale", str(exc))
+            if not settings.get("recache_text"):
+                warning(
+                    "recache_text",
+                    "H3 quality protection needs an empty-prompt embedding in the Caption/Text Cache. Rebuild that cache once after enabling it; image latents do not need rebuilding.",
+                )
         try:
             blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
         except ValueError:

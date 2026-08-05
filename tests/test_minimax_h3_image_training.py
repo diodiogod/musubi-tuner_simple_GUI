@@ -14,6 +14,7 @@ from musubi_tuner.dataset.cache_io import (
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
 from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
 from musubi_tuner.minimax_h3_image_train_network import (
+    DiTOutput,
     MiniMaxH3ImageNetworkTrainer,
     minimax_h3_image_setup_parser,
     resolve_depth_vae_device,
@@ -21,6 +22,7 @@ from musubi_tuner.minimax_h3_image_train_network import (
 from musubi_tuner.minimax_h3_image_cache_text_encoder_outputs import encode_and_save_batch, is_valid_minimax_h3_text_cache
 from musubi_tuner.training.parser_common import setup_parser_common
 from musubi_tuner.utils.sai_model_spec import build_metadata
+from musubi_tuner.training.h3_guidance_protection import build_guided_target
 import musubi_tuner.minimax_h3_image_train_network as h3_training
 
 
@@ -93,6 +95,76 @@ def test_experimental_parser_uses_24gb_safe_defaults():
     assert parser.get_default("timestep_sampling") == "krea2_shift"
     assert parser.get_default("depth_anchor_vae_device") == "training"
     assert parser.get_default("depth_anchor_every_n_steps") == 1
+    assert parser.get_default("h3_guidance_distillation_protection") is False
+    assert parser.get_default("h3_guidance_distillation_scale") == 3.0
+
+
+def test_h3_guidance_protection_amplifies_target_away_from_unconditional_prediction():
+    unconditional = torch.tensor([1.0, 2.0])
+    normal_target = torch.tensor([3.0, -1.0])
+
+    protected = build_guided_target(unconditional, normal_target, 3.0)
+
+    torch.testing.assert_close(protected, torch.tensor([7.0, -7.0]))
+    assert not protected.requires_grad
+
+
+def test_h3_process_batch_uses_empty_prompt_pass_before_protected_primary_target(monkeypatch):
+    trainer = MiniMaxH3ImageNetworkTrainer()
+    calls = []
+    captured = {}
+    latents = torch.zeros(1, 24, 1, 2, 2)
+    noise = torch.zeros_like(latents)
+    normal_target = torch.full_like(latents, 3.0)
+
+    monkeypatch.setattr(
+        trainer,
+        "get_noisy_model_input_and_timesteps",
+        lambda *args, **kwargs: (torch.zeros_like(latents), torch.tensor([500.0])),
+    )
+
+    def fake_call(_args, _accelerator, _transformer, _latents, batch, *_rest, **_kwargs):
+        calls.append(batch["mmh3_hidden_states"])
+        if len(calls) == 1:
+            return DiTOutput(pred=torch.ones_like(latents), target=normal_target)
+        return DiTOutput(pred=torch.zeros_like(latents, requires_grad=True), target=normal_target)
+
+    def fake_compute(_args, output, *_rest, **_kwargs):
+        captured["target"] = output.target
+        return torch.nn.functional.mse_loss(output.pred, output.target), {}
+
+    monkeypatch.setattr(trainer, "call_dit", fake_call)
+    monkeypatch.setattr(trainer, "compute_loss", fake_compute)
+    args = SimpleNamespace(
+        h3_guidance_distillation_protection=True,
+        h3_guidance_distillation_scale=3.0,
+        depth_anchor_weight=0.0,
+        depth_anchor_every_n_steps=1,
+        dop_loss_weight=0.0,
+    )
+    caption = [torch.full((2, 5120), 2.0)]
+    unconditional = [torch.zeros(1, 5120)]
+
+    loss, metrics = trainer.process_batch(
+        args,
+        _CPUAccelerator(),
+        object(),
+        object(),
+        {"timesteps": torch.tensor([0.5]), "mmh3_hidden_states": caption,
+         "mmh3_unconditional_hidden_states": unconditional},
+        latents,
+        noise,
+        object(),
+        torch.bfloat16,
+        torch.bfloat16,
+        None,
+        0,
+    )
+
+    assert calls == [unconditional, caption]
+    torch.testing.assert_close(captured["target"], torch.full_like(latents, 7.0))
+    assert loss.item() == pytest.approx(49.0)
+    assert metrics["loss/h3_guidance_target_delta"].item() == pytest.approx(16.0)
 
 
 def test_five_frame_training_preview_uses_video_sampler_and_returns_video_grid(monkeypatch):
@@ -177,6 +249,23 @@ def test_h3_text_cache_validator_accepts_requested_storage_precision(tmp_path):
     save_text_encoder_output_cache_minimax_h3_image(item, torch.zeros(3, 5120, dtype=torch.float32))
     assert is_valid_minimax_h3_text_cache(item, cache_dtype="float32")
     assert not is_valid_minimax_h3_text_cache(item, cache_dtype="bfloat16")
+
+
+def test_h3_text_cache_validator_requires_empty_prompt_when_quality_protection_is_enabled(tmp_path):
+    item = ItemInfo("item", "caption", (32, 32), (32, 32))
+    item.text_encoder_output_cache_path = str(tmp_path / "item_mmh3_te.safetensors")
+    caption = torch.zeros(3, 5120, dtype=torch.bfloat16)
+    unconditional = torch.ones(2, 5120, dtype=torch.bfloat16)
+
+    save_text_encoder_output_cache_minimax_h3_image(item, caption)
+    assert not is_valid_minimax_h3_text_cache(item, cache_dtype="bfloat16", require_unconditional=True)
+
+    save_text_encoder_output_cache_minimax_h3_image(
+        item, caption, unconditional_hidden_states=unconditional
+    )
+    assert is_valid_minimax_h3_text_cache(item, cache_dtype="bfloat16", require_unconditional=True)
+    state = load_file(item.text_encoder_output_cache_path)
+    assert state["varlen_mmh3_unconditional_hidden_states_bfloat16"].shape == (2, 5120)
 
 
 def test_h3_text_cache_can_store_fp32_encoder_output_as_bf16(tmp_path):

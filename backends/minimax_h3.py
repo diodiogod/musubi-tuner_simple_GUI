@@ -43,6 +43,8 @@ def build_commands(settings):
     add_arg(cmd, "--block_swap_ring_size", settings.get("block_swap_ring_size"))
     add_arg(cmd, "--use_pinned_memory_for_block_swap", settings.get("use_pinned_memory_for_block_swap"))
     add_arg(cmd, "--convrot_bwd_mode", settings.get("minimax_h3_convrot_bwd_mode") or "bf16")
+    add_arg(cmd, "--h3_guidance_distillation_protection", settings.get("minimax_h3_guidance_distillation_protection"))
+    add_arg(cmd, "--h3_guidance_distillation_scale", settings.get("minimax_h3_guidance_distillation_scale") or "3.0")
     add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
     add_arg(cmd, "--weight_noise_mode", settings.get("krea2_weight_noise_mode"))
     add_arg(cmd, "--weight_noise_bound_norm", settings.get("krea2_weight_noise_bound_norm"))
@@ -96,6 +98,7 @@ def build_cache_commands(settings, python_executable):
             command.extend(["--tokenizer", tokenizer])
         add_arg(command, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
         add_arg(command, "--cache_dtype", settings.get("minimax_h3_text_cache_dtype") or "bfloat16")
+        add_arg(command, "--cache_h3_unconditional", settings.get("minimax_h3_guidance_distillation_protection"))
         build_dop_cache_args(command, settings)
         commands.append(command)
     return commands

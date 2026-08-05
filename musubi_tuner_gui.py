@@ -1352,6 +1352,52 @@ class MusubiTunerGUI:
             "Differential Output Preservation was studied from github.com/ostris/ai-toolkit. This implementation shares the training idea but was adapted independently to Musubi's cached-text Krea 2 and FLUX.2 Klein pipelines.",
         )
 
+        self.hidden_frames['minimax_h3_guidance_protection'] = ttk.LabelFrame(
+            self.regularization_frame, text="MiniMax H3 · Training Quality Protection"
+        )
+        ttk.Label(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            text=(
+                "Recommended for H3 LoRAs. This counters guidance-distillation breakdown that can make longer "
+                "training lose detail, structure, or concept quality. It adds one no-gradient model pass per step."
+            ),
+            wraplength=850,
+            style="PageHelp.TLabel",
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_guidance_distillation_protection",
+            "Protect H3 Quality During Training",
+            "Recommended. MiniMax H3 already contains distilled guidance behavior. Ordinary LoRA training can weaken "
+            "it, especially on longer concept runs. This performs one extra empty-prompt prediction without gradients "
+            "and teaches the captioned prediction a protected target. It is slower, but does not create a second backward graph. "
+            "Rebuild only the Caption/Text Cache once after enabling it.",
+            kind="checkbox",
+            default_val=True,
+            command=self._on_h3_guidance_protection_toggle,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_guidance_distillation_scale",
+            "Protection Strength:",
+            "Use 3.0 for the recommended Ostris AI Toolkit-inspired starting point. 1.0 reduces to the ordinary target; "
+            "higher values push captioned behavior farther from the empty-prompt behavior and should be treated as experimental.",
+            kind="combobox",
+            options=["3.0", "2.0", "2.5", "3.5", "4.0"],
+        )
+        h3_guidance_attribution = ttk.Label(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            text="Technique reference: Ostris AI Toolkit contrastive guidance loss · independent cached-text Musubi adaptation",
+            wraplength=820,
+            style="PageHelp.TLabel",
+        )
+        h3_guidance_attribution.pack(anchor="w", padx=10, pady=(2, 8))
+        ToolTip(
+            h3_guidance_attribution,
+            "Reference: github.com/ostris/ai-toolkit commit 183433ae. This implementation was written independently "
+            "for the image-only MiniMax H3 trainer and its cached Qwen3-VL states.",
+        )
+
         self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(self.regularization_frame, text="Krea 2 · Generalization (Experimental)")
         ttk.Label(
             self.hidden_frames['krea2_regularization'],
@@ -7000,8 +7046,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else:
                 self.hidden_frames['krea2_regularization'].pack_forget()
             if is_minimax_h3:
+                self.hidden_frames['minimax_h3_guidance_protection'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['minimax_h3_depth_compute'].pack(fill="x", padx=10, pady=10)
             else:
+                self.hidden_frames['minimax_h3_guidance_protection'].pack_forget()
                 self.hidden_frames['minimax_h3_depth_compute'].pack_forget()
         except (KeyError, tk.TclError):
             pass
@@ -7051,6 +7099,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
         except (KeyError, AttributeError):
             pass
+
+    def _on_h3_guidance_protection_toggle(self):
+        """A newly enabled protected target requires one empty-prompt cache entry."""
+        try:
+            if self.entries["minimax_h3_guidance_distillation_protection"].var.get():
+                self.entries["recache_text"].var.set(True)
+        except (AttributeError, KeyError):
+            pass
+        self.update_button_states()
 
     def _on_dop_caption_setting_changed(self, _event=None):
         try:
@@ -7313,6 +7370,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
             "minimax_h3_text_cache_dtype": "bfloat16",
             "minimax_h3_training_preview_mode": "One frame (safe)",
+            "minimax_h3_guidance_distillation_protection": True,
+            "minimax_h3_guidance_distillation_scale": "3.0",
             "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
             "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",

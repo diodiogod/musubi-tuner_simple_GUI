@@ -43,6 +43,8 @@ def test_minimax_h3_plan_uses_direct_pruned_backend(tmp_path):
         "mixed_precision": "bf16",
         "attention_mechanism": "sdpa",
         "recache_text": True,
+        "minimax_h3_guidance_distillation_protection": True,
+        "minimax_h3_guidance_distillation_scale": "3.0",
     }
 
     plan = build_command_plan(settings, preview=True)
@@ -51,6 +53,9 @@ def test_minimax_h3_plan_uses_direct_pruned_backend(tmp_path):
     command = plan["train"][0]
     assert "src/musubi_tuner/minimax_h3_image_train_network.py" in command
     assert "--block_swap_h2d_only" in command
+    assert "--h3_guidance_distillation_protection" in command
+    assert command[command.index("--h3_guidance_distillation_scale") + 1] == "3.0"
+    assert "--cache_h3_unconditional" in plan["cache"][0]
     assert "--fp8_base" not in command
 
 
