@@ -111,6 +111,7 @@ def test_true_recovery_preserves_identity_and_enables_exact_position(tmp_path: P
 
     assert settings["output_name"] == "portrait"
     assert settings["resume_path"] == str(state)
+    assert settings["starting_point_mode"] == "state"
     assert settings["resume_exact_position"] is True
     assert settings["recovery_mode"] is True
     assert settings["recache_latents"] is False

@@ -126,6 +126,14 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             parameter.setdefault("width", 768)
             parameter.setdefault("height", 768)
             parameter.setdefault("frame_count", 1)
+            requested_frames = int(parameter["frame_count"])
+            if requested_frames != 1:
+                logger.warning(
+                    "MiniMax-H3 scheduled training preview requested %s frame(s); using one frame to protect training VRAM. "
+                    "Use the standalone Preview action for native 5/22/39-frame video.",
+                    requested_frames,
+                )
+                parameter["frame_count"] = 1
             parameter.setdefault("guidance_scale", 1.0)
             parameter.setdefault("cfg_scale", 1.0)
 

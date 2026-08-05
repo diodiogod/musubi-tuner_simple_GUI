@@ -396,6 +396,7 @@ def prepare_exact_recovery(job: dict[str, Any]) -> dict[str, Any]:
     settings["output_name"] = str(settings.get("output_name") or job.get("output_name") or "training")
     settings["resume_path"] = str(state)
     settings["network_weights"] = ""
+    settings["starting_point_mode"] = "state"
     settings["save_state"] = True
     settings["recache_latents"] = False
     settings["recache_text"] = False

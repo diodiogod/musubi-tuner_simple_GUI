@@ -240,8 +240,13 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 continue  # The generic prompt validator reports the malformed field.
             if guidance != 1.0 or cfg_scale != 1.0:
                 error("sample_prompts_data", f"{label} must keep MiniMax H3 guidance and CFG at 1.0.")
-            if frames != 1:
-                error("sample_prompts_data", f"{label} must use one frame for MiniMax H3 image preview.")
+            if frames != 1 and (frames < 5 or (frames - 5) % 17):
+                error("sample_prompts_data", f"{label} frames must be 1 or MiniMax H3 video lengths 5, 22, 39, ...")
+            elif frames != 1:
+                warning(
+                    "sample_prompts_data",
+                    f"{label} keeps {frames} frames for its standalone Preview; scheduled training samples use one frame to protect VRAM.",
+                )
             if width % 32 or height % 32:
                 error("sample_prompts_data", f"{label} MiniMax H3 width and height must be multiples of 32.")
     cadence_enabled = any(

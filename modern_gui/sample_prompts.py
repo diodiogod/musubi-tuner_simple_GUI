@@ -83,9 +83,14 @@ def prepare_sample_prompt_settings(
     if "sample_prompts_data" not in prepared:
         return prepared
 
+    mode = str(prepared.get("training_mode") or "Wan 2.2")
     prompts = enabled_sample_prompts(prepared)
+    if mode == "MiniMax H3 (Experimental)":
+        # Keep the prompt card's native-video frame setting for its standalone
+        # Preview button, but make scheduled training samples safe on 24 GB.
+        prompts = [dict(prompt, frames=1) for prompt in prompts]
     lines = [
-        serialize_sample_prompt(prompt, str(prepared.get("training_mode") or "Wan 2.2"))
+        serialize_sample_prompt(prompt, mode)
         for prompt in prompts
     ]
     lines = [line for line in lines if line.strip()]

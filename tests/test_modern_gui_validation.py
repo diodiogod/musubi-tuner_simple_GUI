@@ -128,6 +128,29 @@ def test_minimax_h3_dop_and_training_samples_are_accepted(tmp_path: Path):
     assert any("multiples of 32" in message for message in messages)
 
 
+def test_minimax_video_prompt_is_allowed_and_scheduled_as_a_safe_still(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": str(dataset), "output_dir": str(tmp_path), "output_name": "h3",
+        "vae_model": "vae.safetensors", "minimax_h3_dit_model": "dit.safetensors",
+        "minimax_h3_text_encoder": "te.safetensors", "learning_rate": "1e-4",
+        "gradient_accumulation_steps": "1", "network_dim_low": "16", "network_type": "LoRA",
+        "max_train_epochs": "1", "blocks_to_swap": "30", "gradient_checkpointing": True,
+        "mixed_precision": "bf16", "sample_every_n_steps": "10",
+        "sample_prompts_data": [{"enabled": True, "prompt": "portrait", "width": 768, "height": 768, "frames": 5}],
+    }
+
+    result = validate_training_settings(settings)
+
+    assert result["errors"] == []
+    assert any("scheduled training samples use one frame" in item["message"] for item in result["warnings"])
+
+    settings["sample_prompts_data"][0]["frames"] = 12
+    assert any("frames must be 1" in item["message"] for item in validate_training_settings(settings)["errors"])
+
+
 def test_minimax_secondary_depth_configuration_is_validated(tmp_path: Path):
     dataset = tmp_path / "dataset.toml"
     dataset.write_text("[[datasets]]", encoding="utf-8")

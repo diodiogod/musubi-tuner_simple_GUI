@@ -300,10 +300,11 @@ async function renderMinimaxDepthHardwareNotice() {
 }
 function renderStartingPoint(host) {
   const current=["new","weights","state"].includes(state.settings.starting_point_mode)?state.settings.starting_point_mode:"new";
+  const exactRecovery=current==="state"&&state.settings.recovery_mode===true&&state.settings.resume_exact_position===true;
   const choices=[
     {value:"new",title:"New LoRA",copy:"Fresh adapter and optimizer"},
     {value:"weights",title:"Continue from LoRA",copy:"Keep learned weights; restart the schedule"},
-    {value:"state",title:"Continue saved state",copy:"Load saved state; add the configured training"}
+    {value:"state",title:exactRecovery?"Resume exact state":"Continue saved state",copy:exactRecovery?"Restore the optimizer, scheduler, and exact position":"Load saved state; add the configured training"}
   ];
   const section=document.createElement("section");section.className="starting-point-guide";
   section.innerHTML=`<div class="decision-heading"><span><strong>How should this run begin?</strong><small>Choose one source explicitly. Inactive paths are cleared so they cannot affect training invisibly.</small></span><button class="help" type="button" data-tip="Open detailed guidance" aria-label="Open detailed guidance for starting point">?</button></div><div class="starting-point-choices">${choices.map(choice=>`<button type="button" data-starting-point="${choice.value}" class="${current===choice.value?"selected":""}" aria-pressed="${current===choice.value}"><i></i><span><strong>${choice.title}</strong><small>${choice.copy}</small></span></button>`).join("")}</div><div class="starting-point-detail"></div>`;
@@ -320,7 +321,7 @@ function renderStartingPoint(host) {
     detail.innerHTML='<div class="continuation-note"><strong>Additive continuation</strong><span>The selected LoRA initializes the adapter. Training begins with a fresh optimizer and schedule.</span></div>';
     const field=findField("network_weights");if(field)detail.append(fieldControl(field,{wide:true}));
   }else if(current==="state"){
-    detail.innerHTML='<div class="continuation-note exact"><strong>Additive saved-state continuation</strong><span>This loads compatible saved state but adds the configured training schedule. Exact failed-run recovery is available only from a verified History entry.</span></div>';
+    detail.innerHTML=exactRecovery?'<div class="continuation-note exact"><strong>Exact failed-run recovery</strong><span>This restores the saved optimizer, scheduler, random state, and training position. Do not change the starting-point card before launching.</span></div>':'<div class="continuation-note exact"><strong>Additive saved-state continuation</strong><span>This loads compatible saved state but adds the configured training schedule. Exact failed-run recovery is available only from a verified History entry.</span></div>';
     const field=findField("resume_path");if(field)detail.append(fieldControl(field,{wide:true}));
   }else detail.innerHTML='<div class="continuation-note new"><strong>Fresh training</strong><span>No previous adapter or optimizer state will be loaded.</span></div>';
   host.append(section);
@@ -555,9 +556,11 @@ function checkpointScheduleLabel(){
 }
 function renderPlanOverview(){
   const prompts=state.settings.sample_prompts_data||[],included=prompts.filter(prompt=>prompt.enabled!==false),invalidIncluded=included.filter(prompt=>promptCardIssues(prompt,prompts.indexOf(prompt)).length),stages=state.settings.staged_training_config||[],activeStages=stages.filter(stage=>stage.enabled!==false),issues=promptPlanIssues();
+  const h3=state.settings.training_mode==="MiniMax H3 (Experimental)";
   $("#plan-prompt-count").textContent=`${included.length} / ${prompts.length}`;
   $("#plan-prompt-health").textContent=!prompts.length?"Add a prompt":included.length?`${included.length} used for comparisons`:"All prompts are off";
-  $("#plan-sample-schedule").textContent=sampleScheduleLabel();
+  const videoCards=h3?included.filter(prompt=>Number(prompt.frames??1)>1).length:0;
+  $("#plan-sample-schedule").textContent=`${sampleScheduleLabel()}${videoCards?` · training samples forced to 1 frame (${videoCards} video card${videoCards===1?"":"s"})`:""}`;
   $("#plan-checkpoint-schedule").textContent=checkpointScheduleLabel();
   $("#plan-stage-count").textContent=state.settings.use_staged_training?`${activeStages.length} active`:"Normal run";
   $("#plan-stage-health").textContent=state.settings.use_staged_training?(activeStages.length?"Ordered handoff plan":"Enable at least one stage"):"Uses the main recipe";
@@ -566,7 +569,7 @@ function renderPlanOverview(){
   $("#plan-overview").classList.toggle("has-issues",issues.length>0);
   $("#prompt-tab-count").textContent=String(prompts.length);$("#stage-tab-count").textContent=String(stages.length);
   $("#plan-save-note").textContent=state.dirty?"Plan has unsaved changes":"Changes stay in this workspace";
-  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3=state.settings.training_mode==="MiniMax H3 (Experimental)",h3SelectionInvalid=h3&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
+  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3SelectionInvalid=h3&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
   preview.textContent=h3?(included.length===1?`Generate selected with ${sourceLabel}`:included.length?"Generate individually below":"Enable one prompt to generate"):included.length?`Generate ${included.length} with ${mixedSources?"one source":sourceLabel}`:"Generate enabled";
   preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3SelectionInvalid||mixedSources;
   preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":!included.length?"Enable one prompt before generating a preview.":invalidIncluded.length?"Fix the included prompt card marked Needs attention before generating its preview.":h3&&included.length>1?"MiniMax H3 safely loads its large models once per prompt. Generate from an individual card, or enable only one prompt.":mixedSources?"Enabled cards mix Base and LoRA. Generate them individually, or set them to the same preview source.":`Generate with ${sourceLabel}.`;
@@ -690,7 +693,7 @@ function renderPlanPromptEditor(){
     const fields=advanced.querySelector(".guided-fields");
     if(mode==="Wan 2.2")fields.append(objectField("Frames","frames",prompt.frames??25,value=>prompt.frames=value,{type:"number",help:"Number of frames in a Wan sample."}));
     if(mode==="MiniMax H3 (Experimental)")fields.append(
-      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames. One frame keeps the older still-image preview, which can look blurry and is not representative of normal video output."}),
+      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames. This setting is used by the card's standalone Preview button; scheduled in-training samples are automatically written as one-frame stills to protect VRAM."}),
       objectField("FPS","fps",prompt.fps??24,value=>prompt.fps=value,{type:"number",help:"Playback speed for the silent preview MP4. 24 FPS matches MiniMax H3's normal timing."})
     );
     fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}),objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
