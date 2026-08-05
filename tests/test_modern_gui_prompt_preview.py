@@ -67,6 +67,13 @@ def test_history_recipe_restore_loads_and_validates_saved_dataset_toml():
     assert "if (state.settings.dataset_config && !await loadDatasetForSettings())" in app_js
 
 
+def test_modern_theme_preference_overrides_stale_saved_recipe_on_startup():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert 'const savedTheme=readLocalPreference("musubi-theme",state.settings.appearance_mode||"Dark")' in app_js
+    assert 'applyTheme(savedTheme,{syncSetting:true})' in app_js
+
+
 def test_serialize_krea_preview_prompt():
     assert serialize_prompt({"prompt": "portrait", "width": 512, "seed": 42, "neg": "blur"}) == (
         "portrait --w 512 --d 42 --n blur"

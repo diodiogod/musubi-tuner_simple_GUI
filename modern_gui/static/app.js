@@ -1625,7 +1625,8 @@ async function initialize() {
   try {
     const payload=await api("/api/settings");state.settings=payload.settings;state.schema=payload.schema;
     if(!state.settings.face_refinement_config?.pose_plan){const defaults=await api("/api/face/defaults");state.settings.face_refinement_config=state.settings.face_refinement_config||{};state.settings.face_refinement_config.pose_plan=defaults.pose_plan;state.settings.face_refinement_config.face_model_dir ||= defaults.face_model_dir}
-    applyTheme(state.settings.appearance_mode||localStorage.getItem("musubi-theme")||"Dark",{syncSetting:false});
+    const savedTheme=readLocalPreference("musubi-theme",state.settings.appearance_mode||"Dark");
+    applyTheme(savedTheme,{syncSetting:true});
     renderGuided();renderAllSettings();sync(false);setDirty(false);$("#dataset-path").value=state.settings.dataset_config||"";
     $("#save-dataset").disabled=true;$("#inspect-dataset").disabled=true;
     $("#server-status").classList.add("online");$("#server-status").lastChild.textContent="Local service";
