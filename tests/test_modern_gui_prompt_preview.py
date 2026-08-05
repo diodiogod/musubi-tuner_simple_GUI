@@ -46,6 +46,15 @@ def test_modern_run_can_persist_split_layout_and_terminal_theme():
     assert "#run.run-split-view .run-panel-stack" in styles_css
 
 
+def test_live_log_reenables_follow_when_scrolled_back_to_bottom():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert "function isLiveLogAtBottom" in app_js
+    assert "function setFollowLog" in app_js
+    assert "if(isLiveLogAtBottom(log)){if(!followLog)setFollowLog(true)}" in app_js
+    assert '$("#follow-log").addEventListener("click",()=>setFollowLog(!followLog' in app_js
+
+
 def test_shared_history_exposes_performance_log_and_comparison_ui():
     index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
     app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")

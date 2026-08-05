@@ -1453,9 +1453,12 @@ function keepLiveLogAtBottom(){
   if(!followLog||!run.classList.contains("active")||(!run.classList.contains("run-split-view")&&!pane?.classList.contains("active")))return;
   log.scrollTop=log.scrollHeight;
 }
+const LIVE_LOG_BOTTOM_TOLERANCE=32;
+function isLiveLogAtBottom(log){return log.scrollHeight-log.scrollTop-log.clientHeight<=LIVE_LOG_BOTTOM_TOLERANCE}
+function setFollowLog(enabled,{scroll=false,persist=true}={}){followLog=Boolean(enabled);setTerminalToggle($("#follow-log"),followLog);if(persist)writeLocalPreference("musubi-log-follow",followLog);if(followLog&&scroll){const log=$("#live-log");requestAnimationFrame(()=>{log.scrollTop=log.scrollHeight})}}
 function appendLogEntries(entries){
   const log=$("#live-log"),durable=[];entries.forEach(entry=>{const progress=parseProgressLine(entry.message);if(progress)updateLiveProgress(progress);else durable.push(entry.message)});
-  if(!durable.length)return;const wasNearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<36;if(log.textContent==="Waiting for a job…")log.textContent="";
+  if(!durable.length)return;const wasNearBottom=isLiveLogAtBottom(log);if(log.textContent==="Waiting for a job…")log.textContent="";
   log.textContent+=durable.join("\n")+"\n";if(followLog&&(wasNearBottom||log.clientHeight===0))log.scrollTop=log.scrollHeight;requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
 async function pollJob() {
@@ -1700,8 +1703,8 @@ $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#li
 function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}
 const wrapLog=readLocalPreference("musubi-log-wrap","true")==="true";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
 $("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);writeLocalPreference("musubi-log-wrap",active)});
-$("#follow-log").addEventListener("click",event=>{followLog=!followLog;setTerminalToggle(event.currentTarget,followLog);writeLocalPreference("musubi-log-follow",followLog);if(followLog)$("#live-log").scrollTop=$("#live-log").scrollHeight});
-$("#live-log").addEventListener("scroll",event=>{if(!followLog)return;const log=event.currentTarget;if(log.scrollHeight-log.scrollTop-log.clientHeight>80){followLog=false;setTerminalToggle($("#follow-log"),false);writeLocalPreference("musubi-log-follow",false)}});
+$("#follow-log").addEventListener("click",()=>setFollowLog(!followLog,{scroll:!followLog}));
+$("#live-log").addEventListener("scroll",event=>{const log=event.currentTarget;if(isLiveLogAtBottom(log)){if(!followLog)setFollowLog(true)}else if(followLog)setFollowLog(false)});
 function setRunSplitRatio(ratio,persist=true){const value=Math.min(.75,Math.max(.25,Number(ratio)||.5)),percent=Math.round(value*100),stack=$("#run-panel-stack"),divider=$("#run-split-divider");stack.style.gridTemplateColumns=`calc(${percent}% - 5px) 10px calc(${100-percent}% - 5px)`;divider.setAttribute("aria-valuenow",String(percent));if(persist)writeLocalPreference("musubi-run-split-ratio",value)}
 function setRunSplitView(enabled,persist=true){const run=$("#run"),button=$("#toggle-run-split");run.classList.toggle("run-split-view",enabled);button.setAttribute("aria-pressed",String(enabled));button.textContent=enabled?"Use tabs":"Show split view";if(persist)writeLocalPreference("musubi-run-split",enabled)}
 const initialRunSplit=readLocalPreference("musubi-run-split","false")==="true";setRunSplitView(initialRunSplit,false);setRunSplitRatio(Number(readLocalPreference("musubi-run-split-ratio","0.5")),false);
