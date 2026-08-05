@@ -32,6 +32,7 @@ from job_performance import (
     performance_summary,
     read_job_log,
 )
+from modern_gui.recovery import effective_history_settings
 
 # --- Dependency Check ---
 try:
@@ -5297,7 +5298,7 @@ class MusubiTunerGUI:
         settings_snapshot = job.get("settings_snapshot")
         has_full_snapshot = isinstance(settings_snapshot, dict) and bool(settings_snapshot)
         if has_full_snapshot:
-            source_settings = copy.deepcopy(settings_snapshot)
+            source_settings = effective_history_settings(job)
         elif job.get("commands") or job.get("output_name"):
             source_settings = self._recover_partial_job_settings(job)
         else:
@@ -5432,7 +5433,7 @@ class MusubiTunerGUI:
             return
 
         if has_full_snapshot:
-            settings = copy.deepcopy(settings_snapshot)
+            settings = effective_history_settings(job)
         else:
             settings = self._recover_partial_job_settings(job)
             self.load_default_settings()
@@ -5609,7 +5610,7 @@ class MusubiTunerGUI:
         dialog.geometry(f"{max(720, dialog.winfo_reqwidth())}x{dialog.winfo_reqheight()}")
 
     def _load_true_recovery(self, job, state_path, dialog=None):
-        settings = copy.deepcopy(job["settings_snapshot"])
+        settings = effective_history_settings(job)
         training_command = self._job_training_command(job)
         command_dataset = self._command_option(training_command, "--dataset_config")
         command_epochs = self._command_option(training_command, "--max_train_epochs")
@@ -5702,7 +5703,7 @@ class MusubiTunerGUI:
         )
         self._pending_recovery = None
 
-        settings = copy.deepcopy(settings_snapshot)
+        settings = effective_history_settings(job)
         training_command = self._job_training_command(job)
         command_output_name = self._command_option(training_command, "--output_name")
         command_dataset = self._command_option(training_command, "--dataset_config")
