@@ -1,4 +1,4 @@
-const state = { settings: {}, schema: null, dataset: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null };
+const state = { settings: {}, schema: null, dataset: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
 let loadedFaceResult = null;
 let controlSequence = 0;
 const $ = selector => document.querySelector(selector);
@@ -107,6 +107,7 @@ const HELP = {
   krea2_depth_anchor_gradient_weight: "Controls how much of the depth signal is allowed to flow back into LoRA learning. 0.5 is the tested value. This is different from Depth Anchor Weight, which scales the final depth loss.",
   krea2_depth_anchor_grad_checkpoint: "Recomputes part of the depth calculation during backward pass to save VRAM. Keep it enabled on normal GPUs. Disabling it may be faster, but uses more VRAM and can cause an out-of-memory error.",
   krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
+  krea2_depth_vae_device: "Select where Krea 2 performs the differentiable VAE decode used by depth anchoring. Training GPU is the established default. Secondary sends only the predicted latent to another visible CUDA GPU, decodes it there, and returns pixels and gradients automatically.\n\nKrea uses a lighter 2D image VAE than MiniMax, so an 8 GB helper GPU may be usable, but this is experimental and not guaranteed. Start with a short run and check the startup log to confirm the device mapping.",
 };
 const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
 const LONG_HELP_COPY = {
@@ -122,8 +123,8 @@ const LONG_HELP_COPY = {
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
   minimax_h3_text_cache_dtype: "Controls only how the completed caption embeddings are stored. The Comfy-style Qwen3-VL tower still performs its encoding calculations in FP32.\n\nUse bfloat16 (recommended) for caches half the size and lower training-time disk/CPU traffic. Float32 is available for controlled fidelity comparisons. After changing this, rebuild only the Caption/Text Cache; the Image/Latent Cache does not need to be rebuilt.",
-  minimax_h3_depth_vae_device: "Select where the frozen ~5 GB MiniMax video VAE performs differentiable depth decoding. Training uses the same GPU as the DiT. Secondary automatically selects another CUDA device visible to PyTorch and transfers the small predicted latent there while preserving gradients.\n\nSecondary is recommended for a 24 GB training GPU plus an 8 GB helper GPU. It fails clearly when a second visible CUDA device is unavailable; it never silently moves training to the wrong GPU.",
-  minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. Enable this for a dedicated secondary GPU to avoid transferring ~5 GB of weights every step. Disable it when sharing that GPU with other applications. This changes performance and VRAM residency, not the training objective.",
+  minimax_h3_depth_vae_device: "Select where the frozen MiniMax video VAE performs differentiable depth decoding. Secondary uses another CUDA device while the DiT and Depth Anything remain on the training GPU.\n\nThis decoder needs far more than its ~5 GB weights during backward pass. A secondary GPU with at least 16 GB VRAM is recommended. An 8 GB helper GPU is not supported, even with reduced depth resolution. Confirm the logical device mapping in the training log before relying on a multi-GPU setup.",
+  minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. This can reduce transfer overhead on a dedicated secondary GPU with ample VRAM.\n\nIt does not reduce the VAE's peak backward-pass memory and cannot make an 8 GB helper GPU usable. Disable it when VRAM is tight or the helper GPU is shared. This changes speed and idle VRAM use, not LoRA quality.",
   minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
   recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
@@ -266,6 +267,27 @@ function appendFields(host, keys) {
   host.innerHTML = "";
   keys.map(findField).filter(Boolean).filter(field => !field.modes?.length || field.modes.includes(state.settings.training_mode)).forEach(field => host.append(fieldControl(field)));
 }
+async function renderMinimaxDepthHardwareNotice() {
+  const notice=$("#minimax-depth-hardware-notice");
+  if(!notice)return;
+  notice.hidden=false;
+  notice.className="issue warning";
+  notice.textContent="Checking detected GPU memory for experimental MiniMax depth…";
+  try {
+    const snapshot=state.depthGpuSnapshot||await api("/api/gpu");
+    state.depthGpuSnapshot=snapshot;
+    if(!snapshot.available||!snapshot.devices?.length){
+      notice.textContent="GPU memory could not be detected. For MiniMax depth on a secondary GPU, use at least 16 GB VRAM; 8 GB helpers are unsupported.";
+      return;
+    }
+    const devices=snapshot.devices.map(device=>`${device.name} (${(device.memory_total/1073741824).toFixed(0)} GB)`).join(" · ");
+    const hasSmallGpu=snapshot.devices.some(device=>device.memory_total<16*1024**3);
+    notice.className=`issue ${hasSmallGpu?"warning":"ok"}`;
+    notice.textContent=`Detected: ${devices}. ${hasSmallGpu?"Do not select an 8 GB-class GPU as the MiniMax depth VAE secondary device; use a 16 GB-or-larger helper GPU, or leave depth disabled.":"A 16 GB-or-larger GPU is present, but confirm the training log maps it to the selected secondary device."}`;
+  } catch (_) {
+    notice.textContent="GPU memory could not be detected. For MiniMax depth on a secondary GPU, use at least 16 GB VRAM; 8 GB helpers are unsupported.";
+  }
+}
 function renderStartingPoint(host) {
   const current=["new","weights","state"].includes(state.settings.starting_point_mode)?state.settings.starting_point_mode:"new";
   const choices=[
@@ -319,14 +341,18 @@ function renderGuided() {
     }
   }
   const depthComputeKeys=["minimax_h3_depth_vae_device","minimax_h3_keep_depth_vae_on_device","minimax_h3_depth_every_n_steps"];
+  const kreaDepthComputeKeys=["krea2_depth_vae_device"];
   const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!dopKeys.includes(key));
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
   const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode);
   $("#dop-settings").hidden=!supportsDop;
   appendFields($("#dop-fields"),dopKeys);
   const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)";
   appendFields($("#minimax-depth-fields"),depthComputeKeys);
+  if(mode==="MiniMax H3 (Experimental)")renderMinimaxDepthHardwareNotice();
+  const kreaDepthCompute=$("#krea-depth-compute");kreaDepthCompute.hidden=mode!=="Krea 2";
+  appendFields($("#krea-depth-fields"),kreaDepthComputeKeys);
   appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
   renderReview();
   renderPlan();
@@ -1635,7 +1661,9 @@ async function loadJobConsole(){if(!detailRow)return;const host=$("#job-console-
 function toggleJobComparison(job){state.jobComparison ||= [];const key=`${job._source}:${job._history_index}`,index=state.jobComparison.findIndex(item=>item.key===key);if(index>=0)state.jobComparison.splice(index,1);else{if(state.jobComparison.length>=2)state.jobComparison.shift();state.jobComparison.push({key,job})}const button=$("#compare-jobs");button.disabled=state.jobComparison.length!==2;button.textContent=`Compare selected (${state.jobComparison.length}/2)`;renderJobs()}
 function showJobComparison(){const jobs=(state.jobComparison||[]).map(item=>item.job);if(jobs.length!==2)return;$("#job-compare-summary").innerHTML=jobs.map(job=>{const p=job.performance||{};return `<article><strong>${esc(job.name||job.output_name||job.title||"Unnamed")}</strong><small>${esc(job._source)} GUI · ${esc(job.mode||job.settings?.training_mode||job.settings_snapshot?.training_mode||"")}</small><p>Median: ${formatJobSpeed(p.median_seconds_per_iteration)}<br>Recent: ${formatJobSpeed(p.recent_seconds_per_iteration)}<br>Whole-job estimate: ${formatJobSpeed(p.overall_seconds_per_iteration)}<br>Samples: ${p.sample_count||0}</p></article>`}).join("");$("#job-compare-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-compare-chart"),jobs))}
 async function replaySettings(job){const p=await api("/api/jobs/replay-settings",{method:"POST",body:JSON.stringify({source:job._source,index:Number(job._history_index)})});return structuredClone(p.settings||{})}
-async function repeatJob(job){const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Load this job as a new editable run?"))return;discardWorkspaceDrafts();snapshot.resume_path="";snapshot.network_weights="";snapshot.starting_point_mode="new";snapshot.recovery_mode=false;snapshot.resume_exact_position=false;snapshot.output_name=`${snapshot.output_name||job.output_name||"run"}-repeat`;state.settings=snapshot;renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");setStep("review");toast(datasetLoaded?"Repeat loaded as a new editable run.":"Repeat loaded, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}
+function splitRepeatName(name){let base=String(name||"").trim()||"run",generation=0,match;while((match=base.match(/-repeat(\d*)$/i))){generation+=Number(match[1]||1);base=base.slice(0,match.index).replace(/-+$/g,"")||"run"}return {base,generation}}
+function nextRepeatName(name){const parsed=splitRepeatName(name);let generation=parsed.generation+1;for(const job of state.jobs||[]){const snapshot=job.settings_snapshot||job.settings||{},existing=splitRepeatName(snapshot.output_name||job.output_name||job.name);if(existing.base.toLowerCase()===parsed.base.toLowerCase())generation=Math.max(generation,existing.generation+1)}return `${parsed.base}-repeat${generation===1?"":generation}`}
+async function repeatJob(job){const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Load this job as a new editable run?"))return;discardWorkspaceDrafts();snapshot.resume_path="";snapshot.network_weights="";snapshot.starting_point_mode="new";snapshot.recovery_mode=false;snapshot.resume_exact_position=false;snapshot.output_name=nextRepeatName(snapshot.output_name||job.output_name||job.name||"run");state.settings=snapshot;renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");setStep("review");toast(datasetLoaded?"Repeat loaded as a new editable run.":"Repeat loaded, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}
 async function openJobPath(row,kind){try{const p=await api("/api/jobs/open-path",{method:"POST",body:JSON.stringify({source:row.dataset.source,index:Number(row.dataset.index),kind})});toast(`Opened ${p.opened}`)}catch(e){toast(e.message)}}
 async function applyJobSettings(job){if(!confirmWorkspaceReplacement("Apply this job's saved recipe?"))return;const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");discardWorkspaceDrafts();state.settings={...state.settings,...snapshot};renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");toast(datasetLoaded?"Job recipe applied for review.":"Recipe applied, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}
 function importJobPrompts(job){const prompts=(job.settings_snapshot||job.settings||{}).sample_prompts_data||[];state.settings.sample_prompts_data||=[];const known=new Set(state.settings.sample_prompts_data.map(x=>JSON.stringify(x)));let added=0;prompts.forEach(x=>{const key=JSON.stringify(x);if(!known.has(key)){state.settings.sample_prompts_data.push(structuredClone(x));known.add(key);added++}});sync();toast(`${added} sample prompt${added===1?"":"s"} imported.`)}

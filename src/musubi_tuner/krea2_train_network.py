@@ -35,6 +35,7 @@ from musubi_tuner.krea2 import krea2_sampling
 from musubi_tuner.qwen_image import qwen_image_utils
 from musubi_tuner.utils import model_utils
 from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
+from musubi_tuner.perceptual.depth_devices import resolve_depth_vae_device
 
 import logging
 
@@ -52,6 +53,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         self._sample_projector_backup = None
         self._sample_projector_diff = None
         self._depth_anchor = None
+        self._depth_vae_device = None
         self._turbo_cache_fallback = False
         self._weight_noise = None
         self._weight_noise_logs = {}
@@ -85,7 +87,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
             raise ValueError("--depth_anchor_input_size must be a positive multiple of 14.")
         if args.depth_anchor_weight > 0:
             logger.info(
-                "Depth helper memory mode: %s",
+                "Krea 2 depth VAE device: %s; helper residency: %s",
+                args.depth_anchor_vae_device,
                 "keep on GPU (faster, more VRAM)" if args.keep_depth_helpers_on_gpu else "offload to CPU (safer, slower)",
             )
         if dop_enabled(args):
@@ -116,6 +119,16 @@ class Krea2NetworkTrainer(NetworkTrainer):
             )
         if args.turbo_dit and not args.sample_prompts:
             logger.warning("--turbo_dit is set but --sample_prompts is not; Turbo is only used for sample generation.")
+
+    def _get_depth_vae_device(self, args, training_device: torch.device) -> torch.device:
+        if self._depth_vae_device is None:
+            self._depth_vae_device = resolve_depth_vae_device(args.depth_anchor_vae_device, training_device)
+            logger.info(
+                "Krea 2 depth devices: DiT/depth model=%s, differentiable VAE=%s",
+                training_device,
+                self._depth_vae_device,
+            )
+        return self._depth_vae_device
 
     def process_sample_prompts(
         self,
@@ -531,9 +544,12 @@ class Krea2NetworkTrainer(NetworkTrainer):
             predicted_for_depth = resize_latents_for_depth_decode(
                 predicted_clean, args.depth_anchor_input_size, vae_ratio
             )
-            vae.to(accelerator.device)
+            vae_device = self._get_depth_vae_device(args, accelerator.device)
+            vae.to(vae_device)
             vae.requires_grad_(False)
-            predicted_pixels = vae.decode_to_pixels(predicted_for_depth.to(vae.dtype))
+            predicted_pixels = vae.decode_to_pixels(
+                predicted_for_depth.to(vae_device, dtype=vae.dtype)
+            ).to(accelerator.device)
 
             if self._depth_anchor is None:
                 from musubi_tuner.perceptual.depth_anchor import DepthAnchor
@@ -557,7 +573,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
                         target_latent = resize_latents_for_depth_decode(
                             sample.unsqueeze(0), args.depth_anchor_input_size, vae_ratio
                         )
-                        target_pixels = vae.decode_to_pixels(target_latent.to(accelerator.device, dtype=vae.dtype))
+                        target_pixels = vae.decode_to_pixels(
+                            target_latent.to(vae_device, dtype=vae.dtype)
+                        ).to(accelerator.device)
                     target_depths.append(self._depth_anchor.target_depth(target_pixels, key))
             target_depth = torch.cat(target_depths, dim=0)
             depth_loss = self._depth_anchor.loss(
@@ -572,11 +590,14 @@ class Krea2NetworkTrainer(NetworkTrainer):
         return total, metrics
 
     def on_after_primary_backward(self, args, accelerator, vae):
-        if args.depth_anchor_weight <= 0 or args.keep_depth_helpers_on_gpu:
+        if args.depth_anchor_weight <= 0:
             return
-        vae.to("cpu")
-        if self._depth_anchor is not None:
-            self._depth_anchor.to("cpu")
+        if not args.keep_depth_helpers_on_gpu:
+            vae.to("cpu")
+            if self._depth_vae_device is not None:
+                clean_memory_on_device(self._depth_vae_device)
+            if self._depth_anchor is not None:
+                self._depth_anchor.to("cpu")
         clean_memory_on_device(accelerator.device)
 
     def compute_auxiliary_loss(self, args, accelerator, transformer, network):
@@ -727,6 +748,11 @@ def krea2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     depth_anchor.add_argument("--depth_anchor_input_size", type=int, default=518)
     depth_anchor.add_argument("--depth_anchor_gradient_weight", type=float, default=0.5)
     depth_anchor.add_argument("--depth_anchor_grad_checkpoint", action=argparse.BooleanOptionalAction, default=True)
+    depth_anchor.add_argument(
+        "--depth_anchor_vae_device",
+        default="training",
+        help="Device for differentiable Krea 2 VAE decoding: training, secondary, or a logical CUDA device",
+    )
     depth_anchor.add_argument(
         "--keep_depth_helpers_on_gpu",
         action="store_true",

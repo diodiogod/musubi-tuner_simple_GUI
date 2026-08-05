@@ -1492,6 +1492,16 @@ class MusubiTunerGUI:
             "Faster, but uses more VRAM. When enabled, the frozen VAE and depth checker stay on the GPU while DOP runs and between training steps. Try this for lower-resolution stages if they comfortably fit. Leave it off for 2K or after any out-of-memory error. It does not change the loss or training result—only where helper models wait.",
             kind='checkbox',
         )
+        self._add_widget(
+            self.hidden_frames['krea2_regularization'],
+            "krea2_depth_vae_device",
+            "Krea Depth VAE Device:",
+            "Training GPU is the established default. Secondary GPU sends Krea's predicted latent to another CUDA GPU for "
+            "the differentiable image-VAE decode, then returns pixels and gradients automatically. Krea's 2D VAE is lighter "
+            "than MiniMax's video VAE, so an 8 GB helper may work, but this is experimental: run a short test and confirm the "
+            "device mapping in the startup log.",
+            kind='combobox', options=["training", "secondary"],
+        )
         face_action = ttk.Frame(self.hidden_frames['krea2_regularization']); face_action.pack(fill="x", padx=10, pady=(8, 10))
         ttk.Label(
             face_action,
@@ -7276,7 +7286,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
             "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
-            "krea2_keep_depth_helpers_on_gpu": False,
+            "krea2_keep_depth_helpers_on_gpu": False, "krea2_depth_vae_device": "training",
             "output_dir": "", "output_name": "my-lora",
             "training_comment": "", "auto_training_settings_summary": False,
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",

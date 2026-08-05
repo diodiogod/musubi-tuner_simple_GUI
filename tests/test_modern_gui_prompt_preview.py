@@ -61,6 +61,14 @@ def test_run_tab_click_exits_split_view():
     assert 'if($("#run").classList.contains("run-split-view"))setRunSplitView(false)' in app_js
 
 
+def test_repeat_names_use_numbered_canonical_suffixes():
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+
+    assert "function splitRepeatName" in app_js
+    assert "function nextRepeatName" in app_js
+    assert "snapshot.output_name=nextRepeatName" in app_js
+
+
 def test_shared_history_exposes_performance_log_and_comparison_ui():
     index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
     app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
@@ -84,6 +92,12 @@ def test_advanced_training_help_is_specific_and_dop_is_separate():
     assert "krea2_keep_depth_helpers_on_gpu:" in app_js
     assert "krea2_depth_anchor_grad_checkpoint:" in app_js
     assert "preserved in saved recipes and job history" not in app_js
+    assert 'id="minimax-depth-hardware-notice"' in index_html
+    assert "function renderMinimaxDepthHardwareNotice" in app_js
+    assert "16 GB VRAM" in app_js
+    assert "8 GB helper GPU is not supported" in app_js
+    assert 'id="krea-depth-compute"' in index_html
+    assert "krea2_depth_vae_device:" in app_js
 
 
 def test_history_recipe_restore_loads_and_validates_saved_dataset_toml():

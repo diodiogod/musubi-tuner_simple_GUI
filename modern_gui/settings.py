@@ -23,6 +23,9 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_keep_depth_vae_on_device": False,
     "minimax_h3_depth_every_n_steps": "1",
 }
+KREA2_DEPTH_DEFAULTS = {
+    "krea2_depth_vae_device": "training",
+}
 
 MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
     "krea2_generalization_preset",
@@ -78,6 +81,7 @@ CHOICES = {
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
+    "krea2_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
 }
 
@@ -132,7 +136,7 @@ def load_settings() -> dict[str, Any]:
     payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         return {}
-    for key, value in MINIMAX_H3_DEFAULTS.items():
+    for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS).items():
         payload.setdefault(key, value)
     return payload
 
