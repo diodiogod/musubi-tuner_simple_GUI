@@ -55,7 +55,25 @@ def build_sample_args(cmd, settings):
     # Only pass if > 0 — passing 0 causes ZeroDivisionError in the trainer (epoch % 0)
     n_epochs = str(settings.get("sample_every_n_epochs") or "").strip()
     if n_epochs and n_epochs != "0":
-        add_arg(cmd, "--sample_every_n_epochs", n_epochs)
+        try:
+            fractional_epoch = not float(n_epochs).is_integer()
+        except ValueError:
+            fractional_epoch = False
+        if fractional_epoch:
+            # Musubi's native epoch argument is integer-only. Translate a
+            # fractional epoch (0.5 = half an epoch) to the equivalent step
+            # cadence using the current dataset rather than passing a value
+            # argparse would reject.
+            from modern_gui.sampling import fractional_epoch_to_steps
+
+            implied_steps = fractional_epoch_to_steps(
+                n_epochs,
+                settings.get("dataset_config", ""),
+                settings.get("gradient_accumulation_steps", 1),
+            )
+            add_arg(cmd, "--sample_every_n_steps", implied_steps)
+        else:
+            add_arg(cmd, "--sample_every_n_epochs", n_epochs)
     n_steps = str(settings.get("sample_every_n_steps") or "").strip()
     if n_steps and n_steps != "0":
         add_arg(cmd, "--sample_every_n_steps", n_steps)

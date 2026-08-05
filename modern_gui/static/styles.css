@@ -119,7 +119,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 /* Training plan */
 #plan>.page-header{margin-bottom:18px}.plan-save-note{align-self:center;color:var(--muted);font-size:11px;white-space:nowrap}
-.plan-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:18px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+.plan-overview{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:18px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
 .plan-overview>div{min-width:0;padding:14px 16px;border-right:1px solid var(--line)}.plan-overview>div:last-child{border-right:0}.plan-overview small,.plan-overview strong,.plan-overview span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.plan-overview small{color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.09em}.plan-overview strong{margin-top:3px;font-size:16px}.plan-overview span{margin-top:2px;color:var(--muted);font-size:10px}.plan-overview.has-issues>div:last-child strong{color:#e7b756}
 .plan-tabs{margin-top:0}.plan-tabs button{display:flex;align-items:center;gap:7px;min-height:46px;font-weight:700}.plan-tabs button span{min-width:20px;padding:2px 6px;border-radius:999px;background:var(--surface2);color:var(--muted);font-size:9px;text-align:center}.plan-tabs button.active span{background:color-mix(in srgb,var(--accent2) 17%,var(--surface2));color:var(--accent)}
 .plan-toolbar{margin:27px 0 18px}.plan-toolbar h2{margin-bottom:4px}.plan-toolbar p:last-child{max-width:670px;margin-bottom:0}.plan-toolbar .header-actions{align-items:center;flex-wrap:wrap;justify-content:flex-end}.plan-master-switch{min-height:40px}
@@ -144,7 +144,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .plan-prompt-card button:focus-visible,.plan-stage-card button:focus-visible,.resolution-presets button:focus-visible,.seed-actions button:focus-visible,.stage-limit-chooser button:focus-visible,.stage-add-node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 @media(max-width:1120px){
-  .prompt-card-grid{grid-template-columns:repeat(2,minmax(300px,1fr))}.sampling-schedule-card,.plan-policy-card{grid-template-columns:1fr}.notes-workspace{grid-template-columns:1fr}
+  .plan-overview{grid-template-columns:repeat(3,minmax(0,1fr))}.prompt-card-grid{grid-template-columns:repeat(2,minmax(300px,1fr))}.sampling-schedule-card,.plan-policy-card{grid-template-columns:1fr}.notes-workspace{grid-template-columns:1fr}
 }
 @media(max-width:850px){
   #plan>.page-header{display:block}#plan>.page-header .header-actions{justify-content:space-between;margin-top:13px}.plan-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.plan-overview>div:nth-child(2){border-right:0}.plan-overview>div:nth-child(n+3){border-top:1px solid var(--line)}.prompt-card-grid{grid-template-columns:minmax(0,1fr)}.plan-toolbar{align-items:flex-start;flex-direction:column}.plan-toolbar .header-actions{justify-content:flex-start}.sampling-schedule-card .guided-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.sampling-schedule-card .guided-fields>.field:last-child{grid-column:1/-1}.sampling-schedule-card .field:last-child .field-label:after{left:0;right:auto}.plan-editor-dialog .field-label:after{left:0;right:auto;width:min(260px,calc(100vw - 90px))}.plan-stage-timeline{padding-left:44px}.stage-node,.stage-add-node>span{left:-44px}
@@ -164,3 +164,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .job-row,.job-header{grid-template-columns:minmax(0,1fr) 120px 160px 390px}
 @media(max-width:1100px){.job-row,.job-header{grid-template-columns:minmax(180px,1fr) 100px 330px}.job-row>div:nth-child(3),.job-header>span:nth-child(3){display:none}}
 @media(max-width:680px){.job-row{grid-template-columns:1fr}.job-row>div:nth-child(3){display:block}.job-header{display:none}}
+
+.sampling-epoch-estimate{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:2px;padding-top:13px;border-top:1px solid var(--line)}.sampling-epoch-estimate strong,.sampling-epoch-estimate small{display:block}.sampling-epoch-estimate small{margin-top:3px;color:var(--muted);font-size:11px}.sampling-epoch-estimate button{flex:0 0 auto}
+@media(max-width:680px){.sampling-epoch-estimate{align-items:flex-start;flex-direction:column}.sampling-epoch-estimate button{width:100%}}

@@ -1,4 +1,4 @@
-const state = { settings: {}, schema: null, dataset: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
+const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
 let loadedFaceResult = null;
 let controlSequence = 0;
 const $ = selector => document.querySelector(selector);
@@ -93,6 +93,11 @@ const HELP = {
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested setting for a 24 GB GPU. The int8 choice is for advanced, unvalidated experiments.",
   recache_latents: "Rebuild the cached image information before training. Enable this for the first run or after changing images, resolution, or VAE.",
   recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
+  sample_every_n_epochs: "Generate scheduled samples after this many epochs. Fractions are allowed: 0.5 means twice per epoch; the GUI converts it to steps using the dataset estimate.",
+  sample_every_n_steps: "Generate scheduled samples after this many optimizer steps. The dataset estimate helps you choose a useful cadence.",
+  sample_at_first: "Generate the scheduled samples once before the first training step.",
+  save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. Keep this at 1 for a checkpoint after every epoch, or leave it blank/0 to disable epoch-based saves.",
+  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. This is useful for short epochs or fine-grained recovery points; leave it blank/0 to disable step-based saves.",
   timestep_sampling: "For MiniMax H3, leave this on krea2_shift. The GUI selects it automatically; it does not mean that a Krea model is being used.",
   dop_enabled: "Differential Output Preservation adds a class-preservation objective. It costs extra compute and requires correct trigger/class captions.",
   dop_trigger_word: "The exact subject or concept token used in your training captions. DoP uses it to identify what the LoRA is allowed to learn. It must match the token in the captions exactly.",
@@ -109,7 +114,7 @@ const HELP = {
   krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
   krea2_depth_vae_device: "Select where Krea 2 performs the differentiable VAE decode used by depth anchoring. Training GPU is the established default. Secondary sends only the predicted latent to another visible CUDA GPU, decodes it there, and returns pixels and gradients automatically.\n\nKrea uses a lighter 2D image VAE than MiniMax, so an 8 GB helper GPU may be usable, but this is experimental and not guaranteed. Start with a short run and check the startup log to confirm the device mapping.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
@@ -128,7 +133,12 @@ const LONG_HELP_COPY = {
   minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
   recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
-  recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster."
+  recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster.",
+  sample_every_n_epochs: "Generate the scheduled comparison prompts after this many completed epochs. Enter 0.5 to sample twice during each epoch. Musubi accepts whole-number epoch values, so the GUI converts a fractional value to an equivalent optimizer-step cadence using the dataset estimate shown in the Training Plan.",
+  sample_every_n_steps: "Generate the scheduled comparison prompts after this many optimizer steps. This is useful when you want a precise cadence inside a short epoch; the estimate beside the controls shows the relationship to your dataset.",
+  sample_at_first: "Generate one comparison before the first training step. This gives you a baseline to compare with later checkpoints.",
+  save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. The default of 1 saves at each epoch boundary. This is independent from preview sampling: a checkpoint is saved even when no preview is scheduled.",
+  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. Use this for fine-grained recovery points inside an epoch. If both epoch and step cadences are enabled, Musubi can save at either cadence."
 };
 function helpFor(field) {
   return HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
@@ -525,14 +535,21 @@ function promptPlanIssues(){
   (state.settings.sample_prompts_data||[]).forEach((prompt,index)=>issues.push(...promptCardIssues(prompt,index)));
   (state.settings.staged_training_config||[]).forEach((stage,index)=>issues.push(...stageCardIssues(stage,index)));
   if(state.settings.use_staged_training&&!(state.settings.staged_training_config||[]).some(stage=>stage.enabled!==false))issues.push("Staged training needs at least one included stage");
-  [["sample_every_n_epochs","epoch cadence"],["sample_every_n_steps","step cadence"]].forEach(([key,label])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!/^\d+$/.test(value)||Number(value)<1))issues.push(`Sample ${label} must be a positive whole number or 0`)});
+  [["sample_every_n_epochs","epoch cadence",/^\d+(?:\.\d+)?$/],["sample_every_n_steps","step cadence",/^\d+$/]].forEach(([key,label,pattern])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!pattern.test(value)||Number(value)<=0))issues.push(`Sample ${label} must be a positive ${key==="sample_every_n_epochs"?"number":"whole number"} or 0`)});
+  [["save_every_n_epochs","epoch checkpoint cadence"],["save_every_n_steps","step checkpoint cadence"]].forEach(([key,label])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!/^\d+$/.test(value)||Number(value)<1))issues.push(`Save ${label} must be a positive whole number or 0`)});
   return issues;
 }
 function sampleScheduleLabel(){
   const parts=[];
   if(state.settings.sample_at_first)parts.push("At start");
   const epochs=String(state.settings.sample_every_n_epochs||"").trim(),steps=String(state.settings.sample_every_n_steps||"").trim();
-  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} epoch${epochs==="1"?"":"s"}`);
+  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} ${Number(epochs)>1?"epochs":"epoch"}`);
+  if(steps&&steps!=="0")parts.push(`Every ${steps} steps`);
+  return parts.join(" + ")||"Off";
+}
+function checkpointScheduleLabel(){
+  const parts=[],epochs=String(state.settings.save_every_n_epochs||"").trim(),steps=String(state.settings.save_every_n_steps||"").trim();
+  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} ${Number(epochs)===1?"epoch":"epochs"}`);
   if(steps&&steps!=="0")parts.push(`Every ${steps} steps`);
   return parts.join(" + ")||"Off";
 }
@@ -541,6 +558,7 @@ function renderPlanOverview(){
   $("#plan-prompt-count").textContent=`${included.length} / ${prompts.length}`;
   $("#plan-prompt-health").textContent=!prompts.length?"Add a prompt":included.length?`${included.length} used for comparisons`:"All prompts are off";
   $("#plan-sample-schedule").textContent=sampleScheduleLabel();
+  $("#plan-checkpoint-schedule").textContent=checkpointScheduleLabel();
   $("#plan-stage-count").textContent=state.settings.use_staged_training?`${activeStages.length} active`:"Normal run";
   $("#plan-stage-health").textContent=state.settings.use_staged_training?(activeStages.length?"Ordered handoff plan":"Enable at least one stage"):"Uses the main recipe";
   $("#plan-health").textContent=issues.length?`${issues.length} to review`:"Ready";
@@ -761,8 +779,9 @@ function renderPlan(){
   appendFields($("#run-cache-policies"),["recache_latents","recache_text"]);
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text"]);
   appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first"]);
+  appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
-  ensurePreviewSettings();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
+  ensurePreviewSettings();renderSamplingEstimate();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
 }
 async function saveTrainingPlan(){
   const issues=promptPlanIssues();renderPlanOverview();
@@ -796,7 +815,30 @@ function clientTrainingSettingsSummary(){
     if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
   }
   const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
+  const saveEpochs=String(settings.save_every_n_epochs||"").trim(),saveSteps=String(settings.save_every_n_steps||"").trim();
+  if(saveEpochs&&saveEpochs!=="0")parts.push(`save every ${saveEpochs} epoch${Number(saveEpochs)===1?"":"s"}`);
+  if(saveSteps&&saveSteps!=="0")parts.push(`save every ${saveSteps} steps`);
   return `Settings: ${parts.join("; ")}`;
+}
+function renderSamplingEstimate(){
+  const host=$("#sampling-epoch-estimate");if(!host)return;
+  const estimate=state.samplingEstimate;
+  if(!estimate)host.innerHTML='<span><strong>Estimated steps per epoch</strong><small>Load or audit the dataset to calculate this.</small></span><button class="quiet" id="estimate-epoch-steps" type="button">Estimate from dataset</button>';
+  else{
+    const steps=Number(estimate.steps_per_epoch||0),samples=Number(estimate.effective_samples||0),batches=Number(estimate.batches_per_epoch||0),fraction=String(state.settings.sample_every_n_epochs||"").trim();
+    const implied=fraction&&fraction!=="0"&&!Number.isInteger(Number(fraction))&&steps?Math.max(1,Math.round(steps*Number(fraction))):0;
+    host.innerHTML=`<span><strong>${steps?`Estimated ${steps.toLocaleString()} optimizer steps per epoch`:"No usable samples found"}</strong><small>${samples.toLocaleString()} effective samples · ${batches.toLocaleString()} batches${implied?` · ${implied.toLocaleString()} steps for every ${fraction} epoch`:""}</small></span><button class="quiet" id="estimate-epoch-steps" type="button">Recalculate</button>`;
+  }
+  $("#estimate-epoch-steps")?.addEventListener("click",estimateSamplingSteps);
+}
+async function estimateSamplingSteps(){
+  const path=String($("#dataset-path")?.value||state.settings.dataset_config||"").trim();
+  if(!path){toast("Choose a dataset TOML before estimating epoch steps.","error");return}
+  try{
+    await flushDatasetDraft();
+    const payload=await api("/api/dataset/estimate-steps",{method:"POST",body:JSON.stringify({path,text:$("#dataset-source")?.value||"",gradient_accumulation_steps:state.settings.gradient_accumulation_steps||1})});
+    state.samplingEstimate=payload;renderSamplingEstimate();
+  }catch(error){state.samplingEstimate=null;renderSamplingEstimate();toast(error.message,"error")}
 }
 function renderTrainingSummary(){
   const summary=clientTrainingSettingsSummary();
@@ -1045,7 +1087,7 @@ async function loadDatasetDocument({quiet = false} = {}) {
   try {
     await withBusy(button, "Loading…", async () => {
       const payload = await api(`/api/dataset?path=${encodeURIComponent(path)}`);
-      state.datasetFormDirty=false;state.datasetRawDirty=false;state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;
+      state.datasetFormDirty=false;state.datasetRawDirty=false;state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;state.samplingEstimate=null;
       state.selectedDataset=payload.datasets.length?0:-1;state.datasetTab=payload.datasets.length?"media":"settings";
       renderDataset(payload,state.selectedDataset);
       const linkedPath=payload.path||path,recipeChanged=!sameLocalPath(state.settings.dataset_config,linkedPath);
@@ -1502,7 +1544,12 @@ const LIVE_LOG_BOTTOM_TOLERANCE=32;
 function isLiveLogAtBottom(log){return log.scrollHeight-log.scrollTop-log.clientHeight<=LIVE_LOG_BOTTOM_TOLERANCE}
 function setFollowLog(enabled,{scroll=false,persist=true}={}){followLog=Boolean(enabled);setTerminalToggle($("#follow-log"),followLog);if(persist)writeLocalPreference("musubi-log-follow",followLog);if(followLog&&scroll){const log=$("#live-log");requestAnimationFrame(()=>{log.scrollTop=log.scrollHeight})}}
 function appendLogEntries(entries){
-  const log=$("#live-log"),durable=[];entries.forEach(entry=>{const progress=parseProgressLine(entry.message);if(progress)updateLiveProgress(progress);else durable.push(entry.message)});
+  const log=$("#live-log"),durable=[];
+  // Older runs and already-buffered Windows carriage-return artifacts may
+  // have left blank rows in the terminal. Compact them when new output arrives
+  // so the real tail remains reachable without changing meaningful log text.
+  if(log.textContent.includes("\n\n"))log.textContent=log.textContent.split(/\r?\n/).filter(line=>line.trim()).join("\n");
+  entries.forEach(entry=>{const message=String(entry.message??"").replaceAll("\r","").trimEnd();if(!message.trim())return;const progress=parseProgressLine(message);if(progress)updateLiveProgress(progress);else durable.push(message)});
   if(!durable.length)return;const wasNearBottom=isLiveLogAtBottom(log);if(log.textContent==="Waiting for a job…")log.textContent="";
   log.textContent+=durable.join("\n")+"\n";if(followLog&&(wasNearBottom||log.clientHeight===0))log.scrollTop=log.scrollHeight;requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
@@ -1720,11 +1767,12 @@ $("#apply-workspace").addEventListener("click",async()=>{try{const result=await 
 $("#setting-search").addEventListener("input",filterSettings);$("#show-all-modes").addEventListener("change",filterSettings);$("#settings-json").addEventListener("change",()=>{if(acceptRawSettings()){renderGuided();renderAllSettings();sync()}});
 $("#load-dataset").addEventListener("click",()=>loadDatasetDocument());
 $("#dataset-path").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();loadDatasetDocument()}});
-$("#dataset-source").addEventListener("input",()=>{state.datasetFormDirty=false;state.datasetRawDirty=true;setDatasetDirty(true)});
+$("#dataset-source").addEventListener("input",()=>{state.datasetFormDirty=false;state.datasetRawDirty=true;state.samplingEstimate=null;renderSamplingEstimate();setDatasetDirty(true)});
 $("#browse-dataset").addEventListener("click",()=>withBusy($("#browse-dataset"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"file",initial:$("#dataset-path").value})});if(result.path){$("#dataset-path").value=result.path;await loadDatasetDocument()}}).catch(e=>toast(e.message,"error")));
 $("#inspect-dataset").addEventListener("click",()=>withBusy($("#inspect-dataset"),"Auditing…",inspectDataset).catch(e=>toast(e.message,"error")));
 $("#validate-dataset").addEventListener("click",()=>parseDatasetRawDraft({announce:true}).catch(error=>toast(error.message,"error")));
 $("#dataset-defaults").addEventListener("click",selectDatasetDefaults);
+$("#estimate-epoch-steps")?.addEventListener("click",estimateSamplingSteps);
 $$("[data-dataset-tab]").forEach((button,index,buttons)=>{
   button.addEventListener("click",async()=>{if(button.disabled)return;try{await flushDatasetDraft();setDatasetTab(button.dataset.datasetTab)}catch(error){toast(error.message,"error")}});
   button.addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const enabled=buttons.filter(item=>!item.disabled),current=enabled.indexOf(button),target=event.key==="Home"?0:event.key==="End"?enabled.length-1:(current+(event.key==="ArrowLeft"?-1:1)+enabled.length)%enabled.length;enabled[target]?.click();enabled[target]?.focus()});

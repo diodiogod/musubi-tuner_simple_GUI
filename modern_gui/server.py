@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +52,7 @@ from modern_gui.recovery import (
 )
 from modern_gui.monitor import gpu_snapshot
 from modern_gui.samples import allowed_sample_roots, discover_samples, resolve_sample_file
+from modern_gui.sampling import estimate_steps_per_epoch
 from modern_gui.validation import require_valid_training_settings, validate_training_settings
 from modern_gui.settings import load_settings, save_settings, settings_schema
 
@@ -371,6 +374,17 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 )
             if self.path == "/api/dataset/inspect":
                 return self._json(inspect_dataset_sources(body.get("text", ""), body.get("path", "")))
+            if self.path == "/api/dataset/estimate-steps":
+                dataset_path = str(body.get("path", "")).strip()
+                if not dataset_path:
+                    raise ValueError("Choose a dataset TOML before estimating epoch steps.")
+                return self._json(
+                    estimate_steps_per_epoch(
+                        dataset_path,
+                        body.get("gradient_accumulation_steps", 1),
+                        body.get("text") or None,
+                    )
+                )
             if self.path == "/api/dataset/media":
                 return self._json(
                     list_dataset_media(
@@ -775,8 +789,25 @@ def main():
     parser.add_argument("--port", default=8675, type=int)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), MusubiWebHandler)
     url = f"http://{args.host}:{args.port}"
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), MusubiWebHandler)
+    except OSError as exc:
+        # A second launcher should be harmless when this GUI is already
+        # running. Confirm the port belongs to our local server before asking
+        # the default browser to reuse its existing window/tab.
+        if exc.errno in {98, 10048}:
+            try:
+                with urllib.request.urlopen(f"{url}/api/health", timeout=0.6) as response:
+                    healthy = response.status == 200
+            except (OSError, urllib.error.URLError):
+                healthy = False
+            if healthy:
+                print(f"Musubi modern GUI is already running at {url}")
+                if not args.no_browser:
+                    webbrowser.open(url, new=0)
+                return
+        raise
     print(f"Musubi modern GUI is available at {url}")
     if not args.no_browser:
         webbrowser.open(url)

@@ -51,3 +51,14 @@ def test_job_monitor_replaces_transient_progress_and_same_step_loss():
         "steps:  2%|#| 2/100 [00:02<01:38, 1.0s/it, avr_loss=0.19]",
     ]
     assert supervisor._active["metrics"]["loss_history"] == [[1, 0.3], [2, 0.19]]
+
+
+def test_job_monitor_discards_empty_carriage_return_output():
+    supervisor = JobSupervisor()
+    supervisor._active = {"metrics": {"loss_history": []}}
+
+    supervisor._append_log("output", "\r")
+    supervisor._append_log("output", "")
+    supervisor._append_log("output", "useful output")
+
+    assert [entry["message"] for entry in supervisor.snapshot()["log"]] == ["useful output"]

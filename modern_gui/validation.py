@@ -73,7 +73,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         require("minimax_h3_dit_model", "MiniMax H3 pruned ConvRot INT8 DiT")
         cadence_enabled = any(
             (
-                _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),
+                _positive_number(str(settings.get("sample_every_n_epochs") or "").strip()),
                 _positive_integer(str(settings.get("sample_every_n_steps") or "").strip()),
                 bool(settings.get("sample_at_first")),
             )
@@ -210,6 +210,16 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         ("sample_every_n_steps", "Sample step cadence"),
     ):
         value = str(settings.get(key) or "").strip()
+        valid = _positive_number(value) if key == "sample_every_n_epochs" else _positive_integer(value)
+        if value not in {"", "0"} and not valid:
+            expected = "a positive number" if key == "sample_every_n_epochs" else "a positive whole number"
+            error(key, f"{label} must be {expected}, 0, or blank.")
+
+    for key, label in (
+        ("save_every_n_epochs", "Save epoch cadence"),
+        ("save_every_n_steps", "Save step cadence"),
+    ):
+        value = str(settings.get(key) or "").strip()
         if value not in {"", "0"} and not _positive_integer(value):
             error(key, f"{label} must be a positive whole number, 0, or blank.")
 
@@ -236,7 +246,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 error("sample_prompts_data", f"{label} MiniMax H3 width and height must be multiples of 32.")
     cadence_enabled = any(
         (
-            _positive_integer(str(settings.get("sample_every_n_epochs") or "").strip()),
+            _positive_number(str(settings.get("sample_every_n_epochs") or "").strip()),
             _positive_integer(str(settings.get("sample_every_n_steps") or "").strip()),
             bool(settings.get("sample_at_first")),
         )
@@ -265,3 +275,11 @@ def require_valid_training_settings(settings: dict[str, Any]) -> None:
 
 def _positive_integer(value: str) -> bool:
     return value.isdigit() and int(value) > 0
+
+
+def _positive_number(value: str) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number > 0 and number == number and number not in {float("inf"), float("-inf")}

@@ -162,17 +162,23 @@
         <div class="plan-overview" id="plan-overview" aria-live="polite">
           <div><small>INCLUDED PROMPTS</small><strong id="plan-prompt-count">0</strong><span id="plan-prompt-health">Add a prompt</span></div>
           <div><small>SAMPLE SCHEDULE</small><strong id="plan-sample-schedule">Off</strong><span>During training</span></div>
+          <div><small>CHECKPOINT SCHEDULE</small><strong id="plan-checkpoint-schedule">Every 1 epoch</strong><span>Saved LoRA files</span></div>
           <div><small>TRAINING STAGES</small><strong id="plan-stage-count">Normal run</strong><span id="plan-stage-health">Uses the main recipe</span></div>
           <div><small>PLAN STATUS</small><strong id="plan-health">Ready</strong><span id="plan-health-copy">No plan issues</span></div>
         </div>
         <div class="plan-tabs"><button class="active" data-plan-tab="prompts">Sample prompts <span id="prompt-tab-count">0</span></button><button data-plan-tab="stages">Stages <span id="stage-tab-count">0</span></button><button data-plan-tab="notes">Notes</button></div>
         <div class="plan-pane active" data-plan-pane="prompts">
           <div class="workspace-heading plan-toolbar"><div><p class="kicker">COMPARABLE CHECKPOINTS</p><h2>Sample prompts</h2><p>Keep a small, consistent set of prompts to see what the LoRA is learning over time.</p></div><div class="header-actions"><button class="quiet" id="open-prompt-library">Open library</button><button class="quiet" id="preview-prompts">Generate enabled</button><details class="action-menu"><summary>Manage</summary><div><button id="save-prompts-library">Save all to library</button><button id="enable-prompts">Include all</button><button id="disable-prompts">Turn all off</button></div></details><button class="primary" id="add-prompt">＋ Add prompt</button></div></div>
-          <div id="prompt-list" class="prompt-card-grid"></div>
           <section class="sampling-schedule-card">
             <div><span class="schedule-icon">◷</span><div><strong>When should Musubi sample?</strong><p>Choose an epoch or step cadence. Zero or blank leaves that cadence off.</p></div></div>
             <div id="sampling-frequency-fields" class="guided-fields"></div>
+            <div class="sampling-epoch-estimate" id="sampling-epoch-estimate" aria-live="polite"><span><strong>Estimated steps per epoch</strong><small>Load or audit the dataset to calculate this.</small></span><button class="quiet" id="estimate-epoch-steps" type="button">Estimate from dataset</button></div>
           </section>
+          <section class="sampling-schedule-card checkpoint-schedule-card">
+            <div><span class="schedule-icon">▣</span><div><strong>When should Musubi save checkpoints?</strong><p>Save intermediate LoRA files by epoch, by optimizer step, or both. Blank or zero disables that cadence.</p></div></div>
+            <div id="checkpoint-frequency-fields" class="guided-fields"></div>
+          </section>
+          <div id="prompt-list" class="prompt-card-grid"></div>
         </div>
         <div class="plan-pane" data-plan-pane="stages">
           <div class="workspace-heading plan-toolbar"><div><p class="kicker">ORDERED PROGRESSION</p><h2>Training stages</h2><p>Build a deliberate sequence. The connector between cards shows exactly what is handed forward.</p></div><div class="header-actions"><label class="inline-switch plan-master-switch"><input type="checkbox" id="use-stages"> Use staged training</label><button class="primary" id="add-stage">＋ Add stage</button></div></div>

@@ -45,6 +45,9 @@ FIELD_LABELS = {
     "minimax_h3_text_encoder": "Compact Qwen3-VL-32B Text Encoder",
     "recache_latents": "Rebuild Image/Latent Cache",
     "recache_text": "Rebuild Caption/Text Cache",
+    "sample_every_n_epochs": "Sample Every N Epochs (fractions allowed)",
+    "sample_every_n_steps": "Sample Every N Steps",
+    "sample_at_first": "Sample At First",
 }
 
 SECTION_TITLES = {

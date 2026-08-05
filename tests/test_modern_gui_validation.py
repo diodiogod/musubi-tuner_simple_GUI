@@ -249,14 +249,29 @@ def test_saved_state_recovery_is_not_silently_ignored_by_staged_plan(tmp_path: P
     assert any("cannot be combined with a staged plan" in item["message"] for item in result["errors"])
 
 
-def test_sampling_cadence_rejects_values_argparse_cannot_use(tmp_path: Path):
+def test_sampling_cadence_accepts_fractional_epochs_but_rejects_invalid_values(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
-    settings.update({"sample_every_n_epochs": "1.5", "sample_every_n_steps": "-2"})
+    settings.update({"sample_every_n_epochs": "0.5", "sample_every_n_steps": "-2"})
 
     result = validate_training_settings(settings)
 
-    assert any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
+    assert not any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
     assert any(item["key"] == "sample_every_n_steps" for item in result["errors"])
+
+    settings["sample_every_n_epochs"] = "half"
+    result = validate_training_settings(settings)
+    assert any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
+
+
+def test_checkpoint_cadence_is_validated(tmp_path: Path):
+    settings = valid_krea_settings(tmp_path)
+    settings.update({"save_every_n_epochs": "2", "save_every_n_steps": "40"})
+    result = validate_training_settings(settings)
+    assert not any(item["key"].startswith("save_every") for item in result["errors"])
+
+    settings["save_every_n_steps"] = "every batch"
+    result = validate_training_settings(settings)
+    assert any(item["key"] == "save_every_n_steps" for item in result["errors"])
 
 
 def test_existing_lora_face_only_plan_skips_irrelevant_sft_requirements(tmp_path: Path):

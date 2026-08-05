@@ -219,6 +219,13 @@ class JobSupervisor:
             return dict(self._active)
 
     def _append_log(self, stream: str, message: str) -> None:
+        # tqdm and redirected Windows streams can emit bare carriage-return
+        # progress updates. After universal-newline handling those become
+        # empty output lines; keeping them makes the live terminal grow with
+        # invisible rows even though the compact progress header is correct.
+        message = str(message).replace("\r", "")
+        if stream == "output" and not message.strip():
+            return
         with self._lock:
             observed_at = _utc_now()
             transient = stream == "output" and is_training_progress_line(message)
