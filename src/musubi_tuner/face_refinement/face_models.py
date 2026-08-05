@@ -17,6 +17,12 @@ class FaceModelFile:
     minimum_bytes: int
 
 
+@dataclass(frozen=True)
+class FaceModelPaths:
+    recognition: Path
+    detection: Path
+
+
 FACE_MODEL_FILES = (
     FaceModelFile(
         Path("recognition/model.onnx"),
@@ -35,9 +41,41 @@ def default_model_dir() -> Path:
     return Path.home() / ".cache" / "musubi-tuner" / "antelopev2"
 
 
-def models_complete(model_dir: str | Path) -> bool:
+def resolve_model_paths(model_dir: str | Path) -> FaceModelPaths:
+    """Resolve either the GUI download layout or a standard InsightFace AntelopeV2 folder."""
+
     root = Path(model_dir).expanduser()
-    return all((root / item.relative_path).is_file() and (root / item.relative_path).stat().st_size >= item.minimum_bytes for item in FACE_MODEL_FILES)
+    roots = (root, root / "antelopev2")
+    layouts = (
+        (Path("recognition/model.onnx"), Path("detection/model.onnx")),
+        (Path("glintr100.onnx"), Path("scrfd_10g_bnkps.onnx")),
+    )
+    recognition_minimum = FACE_MODEL_FILES[0].minimum_bytes
+    detection_minimum = FACE_MODEL_FILES[1].minimum_bytes
+    for candidate_root in roots:
+        for recognition_name, detection_name in layouts:
+            recognition = candidate_root / recognition_name
+            detection = candidate_root / detection_name
+            if (
+                recognition.is_file()
+                and recognition.stat().st_size >= recognition_minimum
+                and detection.is_file()
+                and detection.stat().st_size >= detection_minimum
+            ):
+                return FaceModelPaths(recognition=recognition, detection=detection)
+    raise FileNotFoundError(
+        "AntelopeV2 recognition and detection models were not found. Select either the GUI-downloaded "
+        "folder containing recognition/model.onnx and detection/model.onnx, or a standard InsightFace "
+        "folder containing glintr100.onnx and scrfd_10g_bnkps.onnx."
+    )
+
+
+def models_complete(model_dir: str | Path) -> bool:
+    try:
+        resolve_model_paths(model_dir)
+        return True
+    except (FileNotFoundError, OSError):
+        return False
 
 
 def ensure_models(model_dir: str | Path, progress=None) -> Path:

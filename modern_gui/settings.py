@@ -16,6 +16,28 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_text_encoder": "",
     "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
     "minimax_h3_convrot_bwd_mode": "bf16",
+    "minimax_h3_text_encoder_load_mode": "auto",
+    "minimax_h3_text_cache_dtype": "bfloat16",
+    "minimax_h3_preview_decode_min_free_gb": "9.0",
+    "minimax_h3_depth_vae_device": "training",
+    "minimax_h3_keep_depth_vae_on_device": False,
+    "minimax_h3_depth_every_n_steps": "1",
+}
+KREA2_DEPTH_DEFAULTS = {
+    "krea2_depth_vae_device": "training",
+}
+
+MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
+    "krea2_generalization_preset",
+    "krea2_weight_noise_sigma",
+    "krea2_weight_noise_mode",
+    "krea2_weight_noise_bound_norm",
+    "krea2_depth_anchor_weight",
+    "krea2_depth_anchor_model",
+    "krea2_depth_anchor_input_size",
+    "krea2_depth_anchor_gradient_weight",
+    "krea2_depth_anchor_grad_checkpoint",
+    "krea2_keep_depth_helpers_on_gpu",
 }
 
 FIELD_LABELS = {
@@ -23,6 +45,9 @@ FIELD_LABELS = {
     "minimax_h3_text_encoder": "Compact Qwen3-VL-32B Text Encoder",
     "recache_latents": "Rebuild Image/Latent Cache",
     "recache_text": "Rebuild Caption/Text Cache",
+    "sample_every_n_epochs": "Sample Every N Epochs (fractions allowed)",
+    "sample_every_n_steps": "Sample Every N Steps",
+    "sample_at_first": "Sample At First",
 }
 
 SECTION_TITLES = {
@@ -55,8 +80,11 @@ CHOICES = {
     "compile_dynamic": ["auto", "true", "false"],
     "log_with": ["none", "tensorboard", "wandb"],
     "krea2_weight_noise_mode": ["relative", "absolute"],
-    "krea2_generalization_preset": ["Off (Baseline)", "Gentle", "Balanced", "Strong"],
+    "krea2_generalization_preset": ["Off (Baseline)", "Weight Noise Only", "Balanced Experimental"],
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
+    "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
+    "minimax_h3_depth_vae_device": ["training", "secondary"],
+    "krea2_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
 }
 
@@ -111,7 +139,7 @@ def load_settings() -> dict[str, Any]:
     payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         return {}
-    for key, value in MINIMAX_H3_DEFAULTS.items():
+    for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS).items():
         payload.setdefault(key, value)
     return payload
 
@@ -153,7 +181,7 @@ def _section_for(key: str) -> str:
         return "optimization"
     if "timestep" in key or key in {"discrete_flow_shift", "preserve_distribution_shape", "train_high_noise", "train_low_noise"}:
         return "timesteps"
-    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_")):
+    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_")):
         return "regularization"
     if key.startswith(("sample_",)):
         return "sampling"
@@ -210,8 +238,10 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     modes = MODE_RULES.get(key)
     if key.startswith("flux2_") or key == "fp8_text_encoder":
         modes = ["Flux.2 Klein", "Flux.2 Dev"]
+    elif key in MINIMAX_H3_SHARED_REGULARIZATION_KEYS:
+        modes = ["Krea 2", MINIMAX_H3_MODE]
     elif key.startswith("krea2_") or key.startswith("dop_"):
-        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein"]
+        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein", MINIMAX_H3_MODE]
     elif key.startswith("minimax_h3_"):
         modes = [MINIMAX_H3_MODE]
     if key in {"network_type", "mixed_precision", "compile", "fp8_base", "fp8_scaled"}:

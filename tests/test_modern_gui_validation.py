@@ -27,6 +27,21 @@ def test_valid_krea_setup_passes_preflight(tmp_path: Path):
     assert result["errors"] == []
 
 
+def test_off_generalization_preset_rejects_stale_nonzero_depth(tmp_path: Path):
+    settings = valid_krea_settings(tmp_path)
+    settings.update(
+        {
+            "krea2_generalization_preset": "Off (Baseline)",
+            "krea2_weight_noise_sigma": "0",
+            "krea2_depth_anchor_weight": "0.01",
+        }
+    )
+
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+
+    assert any("preset is Off" in message for message in messages)
+
+
 def test_krea_incompatible_runtime_options_are_actionable(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
     settings.update(
@@ -67,14 +82,82 @@ def test_minimax_h3_preflight_enforces_experimental_24gb_contract(tmp_path: Path
 
     result = validate_training_settings(settings)
     assert result["errors"] == []
-    assert any("1024px rank-16 one-step run was validated" in item["message"] for item in result["warnings"])
+    assert any("two-epoch run" in item["message"] for item in result["warnings"])
 
     settings.update({"compile": True, "fp8_base": True, "blocks_to_swap": "0", "sample_at_first": True})
     messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
     assert any("Torch Compile" in message for message in messages)
     assert any("FP8 flags" in message for message in messages)
     assert any("1–48" in message for message in messages)
-    assert any("samples are not implemented" in message for message in messages)
+    assert any("compact Qwen3-VL text encoder" in message for message in messages)
+
+
+def test_minimax_h3_dop_and_training_samples_are_accepted(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": str(dataset),
+        "output_dir": str(tmp_path),
+        "output_name": "h3",
+        "vae_model": "vae.safetensors",
+        "minimax_h3_dit_model": "dit.safetensors",
+        "minimax_h3_text_encoder": "te.safetensors",
+        "learning_rate": "1e-4",
+        "gradient_accumulation_steps": "1",
+        "network_dim_low": "16",
+        "network_type": "LoRA",
+        "max_train_epochs": "1",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+        "sample_every_n_epochs": "1",
+        "sample_prompts_data": [{"enabled": True, "prompt": "portrait", "width": 768, "height": 768}],
+        "dop_enabled": True,
+        "dop_loss_weight": "0.2",
+        "dop_trigger_word": "sks",
+        "dop_class_word": "person",
+    }
+    result = validate_training_settings(settings)
+    assert result["errors"] == []
+
+    settings["sample_prompts_data"][0].update({"neg": "blur", "guidance": 5, "width": 770})
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+    assert any("negative prompt" in message for message in messages)
+    assert any("guidance and CFG at 1.0" in message for message in messages)
+    assert any("multiples of 32" in message for message in messages)
+
+
+def test_minimax_secondary_depth_configuration_is_validated(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    settings = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "dataset_config": str(dataset),
+        "output_dir": str(tmp_path),
+        "output_name": "h3-depth",
+        "vae_model": "vae.safetensors",
+        "minimax_h3_dit_model": "dit.safetensors",
+        "learning_rate": "1e-4",
+        "gradient_accumulation_steps": "1",
+        "network_dim_low": "16",
+        "network_type": "LoRA",
+        "max_train_epochs": "1",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+        "krea2_generalization_preset": "Balanced Experimental",
+        "krea2_depth_anchor_weight": "0.01",
+        "minimax_h3_depth_vae_device": "secondary",
+        "minimax_h3_keep_depth_vae_on_device": True,
+        "minimax_h3_depth_every_n_steps": "4",
+    }
+
+    assert validate_training_settings(settings)["errors"] == []
+
+    settings["minimax_h3_depth_every_n_steps"] = "0"
+    messages = [item["message"] for item in validate_training_settings(settings)["errors"]]
+    assert any("cadence" in message for message in messages)
 
 
 def test_exact_resume_is_revalidated_even_when_loaded_from_json(tmp_path: Path):
@@ -166,14 +249,29 @@ def test_saved_state_recovery_is_not_silently_ignored_by_staged_plan(tmp_path: P
     assert any("cannot be combined with a staged plan" in item["message"] for item in result["errors"])
 
 
-def test_sampling_cadence_rejects_values_argparse_cannot_use(tmp_path: Path):
+def test_sampling_cadence_accepts_fractional_epochs_but_rejects_invalid_values(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
-    settings.update({"sample_every_n_epochs": "1.5", "sample_every_n_steps": "-2"})
+    settings.update({"sample_every_n_epochs": "0.5", "sample_every_n_steps": "-2"})
 
     result = validate_training_settings(settings)
 
-    assert any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
+    assert not any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
     assert any(item["key"] == "sample_every_n_steps" for item in result["errors"])
+
+    settings["sample_every_n_epochs"] = "half"
+    result = validate_training_settings(settings)
+    assert any(item["key"] == "sample_every_n_epochs" for item in result["errors"])
+
+
+def test_checkpoint_cadence_is_validated(tmp_path: Path):
+    settings = valid_krea_settings(tmp_path)
+    settings.update({"save_every_n_epochs": "2", "save_every_n_steps": "40"})
+    result = validate_training_settings(settings)
+    assert not any(item["key"].startswith("save_every") for item in result["errors"])
+
+    settings["save_every_n_steps"] = "every batch"
+    result = validate_training_settings(settings)
+    assert any(item["key"] == "save_every_n_steps" for item in result["errors"])
 
 
 def test_existing_lora_face_only_plan_skips_irrelevant_sft_requirements(tmp_path: Path):

@@ -9,6 +9,8 @@ from sample_gallery import parse_training_sample_path
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".m4v"}
+SAMPLE_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 
 
 def discover_samples(output_dir: str, output_name: str = "", limit: int = 300) -> dict[str, Any]:
@@ -19,7 +21,7 @@ def discover_samples(output_dir: str, output_name: str = "", limit: int = 300) -
     candidates = []
     for path in search_root.rglob("*"):
         try:
-            if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
+            if path.is_file() and path.suffix.lower() in SAMPLE_SUFFIXES:
                 candidates.append((path.stat().st_mtime, path))
         except OSError:
             continue
@@ -34,6 +36,7 @@ def discover_samples(output_dir: str, output_name: str = "", limit: int = 300) -
             "path": str(path),
             "url": f"/api/sample-file?path={quote(str(path))}",
             "modified": modified,
+            "media_kind": "video" if path.suffix.lower() in VIDEO_SUFFIXES else "image",
         }
         if parsed is None:
             ungrouped.append(item)
@@ -82,8 +85,8 @@ def allowed_sample_roots(settings: dict[str, Any], history: list[dict[str, Any]]
 
 def resolve_sample_file(path: str, allowed_roots: list[Path]) -> tuple[Path, str]:
     resolved = Path(path).expanduser().resolve()
-    if resolved.suffix.lower() not in IMAGE_SUFFIXES or not resolved.is_file():
-        raise FileNotFoundError("Sample image does not exist or has an unsupported format.")
+    if resolved.suffix.lower() not in SAMPLE_SUFFIXES or not resolved.is_file():
+        raise FileNotFoundError("Sample media does not exist or has an unsupported format.")
     if not any(resolved == root or root in resolved.parents for root in allowed_roots):
         raise PermissionError("Sample path is outside configured output directories.")
     return resolved, mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"

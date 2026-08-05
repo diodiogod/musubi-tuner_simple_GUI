@@ -50,6 +50,44 @@ not contain the GUI files.
 - These predate the perceptual-training work and must not be overwritten by an
   upstream snapshot.
 
+### MiniMax H3 pruned ConvRot image-only path
+
+- Primary isolated entry points: `minimax_h3_image_cache_latents.py`,
+  `minimax_h3_image_cache_text_encoder_outputs.py`,
+  `minimax_h3_image_train_network.py`, `minimax_h3_image_generate.py`, and
+  `minimax_h3_face_refinement.py`.
+- Architecture and strict checkpoint support live under `minimax_h3/`; the
+  accepted base is Comfy's pruned FL2VA ConvRot INT8 checkpoint. Never replace
+  this with a silent full-BF16 conversion or weaken its key/dtype checks.
+- `minimax_h3/image_sampling.py` is the shared native image sampler for
+  scheduled previews, standalone generation, depth decoding, and DRaFT. H3
+  predicts `clean - noise`; its Euler sign and shift-12 schedule differ from
+  ordinary velocity helpers. The video VAE decode duplicates one latent to two
+  temporal tokens and keeps frame zero.
+- Latent caching loads the VAE in FP32 and marks
+  `posterior_policy=video_vae=fp32`. Unmarked older experimental caches are
+  regenerated even with validated skip-existing behavior. Preview/depth decode
+  remains FP16.
+- `minimax_h3/model.py` can temporarily park only frozen resident block weights
+  for preview VAE headroom. It must not mutate LoRA parameters or the H2D-only
+  offloader's streamed CPU masters.
+- The H3 trainer independently integrates the shared DOP, adapter-weight-noise,
+  and depth-anchor helpers. All remain disabled by default. H3 clean-latent
+  reconstruction is `x0 = xt + sigma * (clean - noise)` with the trainer's
+  1..1001 timestep convention.
+- Face refinement consumes and emits a complete H3 LoRA through
+  `backends/minimax_h3_face.py`. Krea Turbo fixed evaluation is intentionally
+  not reused for H3; standalone H3 previews are the current comparison path.
+- GUI integration: `backends/minimax_h3.py`, both GUI implementations, and the
+  typed stage handoff. Preserve the automatic 24 GB defaults and experimental
+  warnings when importing upstream H3 work.
+- Upstream PR #1018 is broader BF16 video/audio work and currently has a
+  different checkpoint/memory target. Reconcile file by file when it lands;
+  never merge it wholesale over this downstream compact path.
+- Tests: `tests/test_minimax_h3_*`, `tests/test_modern_gui_prompt_preview.py`,
+  `tests/test_modern_gui_face_stages.py`, and the H3 cases in the shared
+  regularization tests.
+
 ### Adapter weight noise
 
 - Implementation: `training/weight_noise.py`.
@@ -87,14 +125,14 @@ not contain the GUI files.
 - Effective regularization settings are embedded in saved LoRA metadata under
   `ss_krea2_*` keys for reproducibility and job-history audits.
 
-### Differential Output Preservation (Krea 2 and FLUX.2 Klein)
+### Differential Output Preservation (Krea 2, MiniMax H3, and FLUX.2 Klein)
 
 - Shared implementation: `training/dop.py`; technique reference:
   `https://github.com/ostris/ai-toolkit`. This is an independent Musubi adaptation.
-- Architecture seams: `krea2_train_network.py` and `flux_2_train_network.py`
+- Architecture seams: `krea2_train_network.py`, `minimax_h3_image_train_network.py`, and `flux_2_train_network.py`
   call the shared helper from their model-specific `process_batch` overrides.
 - Cache seams: `krea2_cache_text_encoder_outputs.py`,
-  `flux_2_cache_text_encoder_outputs.py`, and optional DOP tensors in
+  `minimax_h3_image_cache_text_encoder_outputs.py`, `flux_2_cache_text_encoder_outputs.py`, and optional DOP tensors in
   `dataset/cache_io.py`. Normal cache keys and behavior remain unchanged when DOP is off.
 - Shared-parser seam: the block marked `DOWNSTREAM` in `training/parser_common.py`
   adds disabled-by-default DOP arguments.

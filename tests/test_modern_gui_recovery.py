@@ -4,6 +4,7 @@ import pytest
 
 from modern_gui import recovery
 from modern_gui.recovery import (
+    effective_history_settings,
     import_output_jobs,
     prepare_continuation,
     prepare_exact_recovery,
@@ -11,6 +12,61 @@ from modern_gui.recovery import (
     resolve_exact_recovery_state,
     validate_accelerate_state,
 )
+
+
+def test_legacy_minimax_replay_does_not_activate_new_depth_features():
+    job = {
+        "mode": "MiniMax H3 (Experimental)",
+        "settings": {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "krea2_generalization_preset": "Balanced Experimental",
+            "krea2_weight_noise_sigma": "0.0125",
+            "krea2_depth_anchor_weight": "0.01",
+        },
+    }
+
+    settings = effective_history_settings(job)
+
+    assert settings["krea2_generalization_preset"] == "Off (Baseline)"
+    assert settings["krea2_weight_noise_sigma"] == "0"
+    assert settings["krea2_depth_anchor_weight"] == "0"
+
+
+def test_current_minimax_replay_preserves_explicit_depth_features():
+    job = {
+        "mode": "MiniMax H3 (Experimental)",
+        "settings": {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_depth_every_n_steps": "2",
+            "krea2_generalization_preset": "Balanced Experimental",
+            "krea2_weight_noise_sigma": "0.0125",
+            "krea2_depth_anchor_weight": "0.01",
+        },
+    }
+
+    settings = effective_history_settings(job)
+
+    assert settings["krea2_generalization_preset"] == "Balanced Experimental"
+    assert settings["krea2_weight_noise_sigma"] == "0.0125"
+    assert settings["krea2_depth_anchor_weight"] == "0.01"
+
+
+def test_recorded_minimax_depth_command_is_not_reinterpreted_as_legacy_baseline():
+    job = {
+        "mode": "MiniMax H3 (Experimental)",
+        "command": "train.py --depth_anchor_weight 0.01 --weight_noise_sigma 0.0125",
+        "settings": {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "krea2_generalization_preset": "Balanced Experimental",
+            "krea2_weight_noise_sigma": "0.0125",
+            "krea2_depth_anchor_weight": "0.01",
+        },
+    }
+
+    settings = effective_history_settings(job)
+
+    assert settings["krea2_generalization_preset"] == "Balanced Experimental"
+    assert settings["krea2_depth_anchor_weight"] == "0.01"
 
 
 def complete_state(path: Path) -> Path:

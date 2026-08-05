@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,8 +40,10 @@ from modern_gui.dataset_media import (
     save_media_caption,
 )
 from modern_gui.jobs import SUPERVISOR
+from job_performance import enrich_job, read_job_log
 from modern_gui.recovery import (
     clear_desktop_history,
+    effective_history_settings,
     import_output_jobs,
     load_desktop_history,
     prepare_continuation,
@@ -48,6 +52,7 @@ from modern_gui.recovery import (
 )
 from modern_gui.monitor import gpu_snapshot
 from modern_gui.samples import allowed_sample_roots, discover_samples, resolve_sample_file
+from modern_gui.sampling import estimate_steps_per_epoch
 from modern_gui.validation import require_valid_training_settings, validate_training_settings
 from modern_gui.settings import load_settings, save_settings, settings_schema
 
@@ -204,13 +209,29 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 access = resolve_media_token(token)
                 return self._send_file(access.path, allow_ranges=access.kind == "video")
             if parsed.path == "/api/jobs":
-                modern = [dict(job, _source="web", _history_index=index) for index, job in enumerate(SUPERVISOR.history())]
-                return self._json({"jobs": modern + load_desktop_history()})
+                modern = [enrich_job(dict(job, _source="web", _history_index=index)) for index, job in enumerate(SUPERVISOR.history())]
+                desktop = [enrich_job(job) for job in load_desktop_history()]
+                jobs = sorted(modern + desktop, key=lambda job: str(job.get("started_at") or ""), reverse=True)
+                return self._json({"jobs": jobs})
             if parsed.path == "/api/jobs/active":
                 after = 0
                 if parsed.query.startswith("after="):
                     after = int(parsed.query.removeprefix("after="))
                 return self._json(SUPERVISOR.snapshot(after))
+            if parsed.path == "/api/jobs/log":
+                query = parse_qs(parsed.query)
+                source = query.get("source", ["desktop"])[0]
+                index = int(query.get("index", ["-1"])[0])
+                jobs = load_desktop_history() if source == "desktop" else SUPERVISOR.history()
+                if index < 0 or index >= len(jobs):
+                    raise IndexError("The selected history entry no longer exists.")
+                job = jobs[index]
+                return self._json(
+                    {
+                        "log": read_job_log(job.get("console_log_path") or ""),
+                        "performance": enrich_job(job)["performance"],
+                    }
+                )
             if parsed.path == "/api/gpu":
                 return self._json(gpu_snapshot())
             if parsed.path == "/api/samples":
@@ -249,15 +270,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 requested = unquote(query.get("path", [""])[0])
                 settings = load_settings()
                 history = SUPERVISOR.history() + load_desktop_history()
-                sample, content_type = resolve_sample_file(requested, allowed_sample_roots(settings, history))
-                content = sample.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Cache-Control", "private, max-age=30")
-                self.end_headers()
-                self.wfile.write(content)
-                return
+                sample, _content_type = resolve_sample_file(requested, allowed_sample_roots(settings, history))
+                return self._send_file(sample, allow_ranges=sample.suffix.lower() in {".mp4", ".webm", ".mov", ".m4v"})
             if parsed.path == "/api/face-image":
                 query = parse_qs(parsed.query)
                 requested = Path(unquote(query.get("path", [""])[0])).expanduser().resolve()
@@ -360,6 +374,17 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 )
             if self.path == "/api/dataset/inspect":
                 return self._json(inspect_dataset_sources(body.get("text", ""), body.get("path", "")))
+            if self.path == "/api/dataset/estimate-steps":
+                dataset_path = str(body.get("path", "")).strip()
+                if not dataset_path:
+                    raise ValueError("Choose a dataset TOML before estimating epoch steps.")
+                return self._json(
+                    estimate_steps_per_epoch(
+                        dataset_path,
+                        body.get("gradient_accumulation_steps", 1),
+                        body.get("text") or None,
+                    )
+                )
             if self.path == "/api/dataset/media":
                 return self._json(
                     list_dataset_media(
@@ -486,14 +511,14 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     raise KeyError("The library prompt no longer exists.")
                 return self._json({"deleted": True})
             if self.path == "/api/prompts/preview":
-                from modern_gui.prompt_preview import build_krea_preview
+                from modern_gui.prompt_preview import build_prompt_preview
 
                 active = SUPERVISOR.snapshot(after=2**63 - 1).get("active")
                 if active and active.get("status") in {"starting", "running", "stopping"}:
                     raise RuntimeError("A web GUI job is already active.")
                 settings = dict(body.get("settings", {}))
                 prompts = [item for item in body.get("prompts", []) if item.get("enabled", True)]
-                command, save_path = build_krea_preview(settings, prompts)
+                command, save_path = build_prompt_preview(settings, prompts)
                 prompt_file = (
                     Path(command[command.index("--from_file") + 1])
                     if "--from_file" in command
@@ -502,17 +527,25 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 resolved_lora = (
                     str(command[command.index("--lora_weight") + 1])
                     if "--lora_weight" in command
+                    else str(command[command.index("--network_weights") + 1])
+                    if "--network_weights" in command
                     else ""
                 )
-                preview_mode = "Krea 2 Turbo" if "--turbo" in command else "Krea 2"
+                resolved_lora_multiplier = (
+                    str(command[command.index("--lora_multiplier") + 1])
+                    if "--lora_multiplier" in command
+                    else ""
+                )
+                is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
+                preview_mode = "MiniMax H3 (Experimental)" if is_h3 else ("Krea 2 Turbo" if "--turbo" in command else "Krea 2")
                 try:
                     existing_outputs = [
                         str(path.resolve()) for path in save_path.glob("*")
-                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
                     ]
                     job = SUPERVISOR.start_commands(
                         [command],
-                        name=f"{settings.get('output_name') or 'Krea 2'} sample preview",
+                        name=f"{settings.get('output_name') or preview_mode} sample preview",
                         mode=preview_mode,
                         kind="sample_test",
                         settings=settings,
@@ -533,6 +566,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                         "save_path": str(save_path),
                         "preview_mode": preview_mode,
                         "network_weights": resolved_lora,
+                        "lora_multiplier": resolved_lora_multiplier,
                     }
                 )
             if self.path == "/api/path/select":
@@ -584,6 +618,11 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 from backends.krea2_face_eval import prepare
 
                 settings = dict(body.get("settings", {}))
+                if settings.get("training_mode") != "Krea 2":
+                    raise ValueError(
+                        "Fixed Turbo face evaluation is Krea 2-only. MiniMax H3 face refinement is available, "
+                        "but its fixed evaluation recipe has not been validated yet."
+                    )
                 config = dict(settings.get("face_refinement_config") or {})
                 input_lora = str(body.get("input_lora") or config.get("input_lora") or "")
                 baseline = body.get("baseline_result") or None
@@ -664,6 +703,13 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     raise IndexError("The selected history entry no longer exists.")
                 prepare = prepare_continuation if self.path.endswith("continuation") else prepare_exact_recovery
                 return self._json({"settings": prepare(jobs[index])})
+            if self.path == "/api/jobs/replay-settings":
+                source = body.get("source", "desktop")
+                index = int(body.get("index", -1))
+                jobs = load_desktop_history() if source == "desktop" else SUPERVISOR.history()
+                if index < 0 or index >= len(jobs):
+                    raise IndexError("The selected history entry no longer exists.")
+                return self._json({"settings": effective_history_settings(jobs[index])})
             if self.path == "/api/jobs/prepare-face":
                 source = body.get("source", "desktop")
                 index = int(body.get("index", -1))
@@ -743,8 +789,25 @@ def main():
     parser.add_argument("--port", default=8675, type=int)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), MusubiWebHandler)
     url = f"http://{args.host}:{args.port}"
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), MusubiWebHandler)
+    except OSError as exc:
+        # A second launcher should be harmless when this GUI is already
+        # running. Confirm the port belongs to our local server before asking
+        # the default browser to reuse its existing window/tab.
+        if exc.errno in {98, 10048}:
+            try:
+                with urllib.request.urlopen(f"{url}/api/health", timeout=0.6) as response:
+                    healthy = response.status == 200
+            except (OSError, urllib.error.URLError):
+                healthy = False
+            if healthy:
+                print(f"Musubi modern GUI is already running at {url}")
+                if not args.no_browser:
+                    webbrowser.open(url, new=0)
+                return
+        raise
     print(f"Musubi modern GUI is available at {url}")
     if not args.no_browser:
         webbrowser.open(url)

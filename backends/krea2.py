@@ -26,6 +26,7 @@ def build_commands(settings):
     add_arg(cmd, "--depth_anchor_model", settings.get("krea2_depth_anchor_model"))
     add_arg(cmd, "--depth_anchor_input_size", settings.get("krea2_depth_anchor_input_size"))
     add_arg(cmd, "--depth_anchor_gradient_weight", settings.get("krea2_depth_anchor_gradient_weight"))
+    add_arg(cmd, "--depth_anchor_vae_device", settings.get("krea2_depth_vae_device", "training"))
     if not settings.get("krea2_depth_anchor_grad_checkpoint", True):
         cmd.append("--no-depth_anchor_grad_checkpoint")
     add_arg(cmd, "--keep_depth_helpers_on_gpu", settings.get("krea2_keep_depth_helpers_on_gpu"))

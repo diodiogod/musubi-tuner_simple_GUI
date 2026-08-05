@@ -15,6 +15,21 @@ def reconstruct_clean_latents(noisy_latents: torch.Tensor, velocity: torch.Tenso
     return noisy_latents.float() - t * velocity.float()
 
 
+def reconstruct_clean_latents_h3(
+    noisy_latents: torch.Tensor,
+    clean_minus_noise: torch.Tensor,
+    timesteps: torch.Tensor,
+) -> torch.Tensor:
+    """Recover H3 x0 from ``x_t=(1-sigma)x0+sigma*noise``.
+
+    The experimental H3 trainer stores timesteps on Musubi's 1..1001 scale
+    and the model predicts ``clean - noise``, hence
+    ``x0 = x_t + sigma * prediction`` with ``sigma=(t-1)/1000``.
+    """
+    sigma = ((timesteps.float() - 1.0) / 1000.0).view(-1, *([1] * (noisy_latents.ndim - 1)))
+    return noisy_latents.float() + sigma * clean_minus_noise.float()
+
+
 def resize_latents_for_depth_decode(
     latents: torch.Tensor, input_size: int, spatial_compression_ratio: int = 8
 ) -> torch.Tensor:

@@ -34,7 +34,7 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - Save/load settings and auto-restore of your last session
 - LoRA conversion tools
 - Accelerate setup tab for first-time installation
-- Guided Differential Output Preservation (DOP) for Krea 2 and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
+- Guided Differential Output Preservation (DOP) for Krea 2, experimental MiniMax H3, and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
 - Dedicated Training Notes workspace with permanent custom comments plus an optional live hyperparameter summary rebuilt for each run and embedded in LoRA metadata
 
 ## Current Workspace Layout
@@ -91,10 +91,12 @@ DOP guide: [docs/dop.md](./docs/dop.md)
 - Still-image LoRA over the frozen ~20.97 GB pruned ConvRot INT8 FL2VA checkpoint
 - Does not require the ~66 GB BF16 transformer
 - 24 GB-oriented safe defaults: rank 16, BF16 LoRA/backward, gradient checkpointing, and 30 H2D-only swapped blocks
-- Advanced speed tuning: 15 swapped blocks is currently training at roughly 19–20 GB on an RTX 4090, but has less safety margin and is not yet the automatic default
-- Compact ~15.69 GB Qwen3-VL file is needed only for text caching; the VAE is needed only for latent caching
-- LoRA-only, batch size 1, no video/audio training, and no in-training previews
-- Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak on a 24 GB RTX 4090
+- Advanced speed tuning: 15 swapped blocks completed two epochs at roughly 19–20 GB on an RTX 4090 and produced a working likeness LoRA, but has less safety margin and is not the automatic default
+- FP32-policy latent caching, compact NVFP4/AWQ caption caching, scheduled training previews, and sequential standalone LoRA image inference
+- Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, all disabled by default
+- Focused 24 GB GPU smokes completed for previews, DOP/weight noise, depth, and the H3 DRaFT graph with the real AntelopeV2 reward; useful long-run advanced recipes remain experimental
+- LoRA-only, batch size 1, and no video/audio training
+- Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak; the longer two-epoch 15-block run used roughly 19–20 GB
 
 Docs: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
 
@@ -194,22 +196,24 @@ the exact background, colors, or lighting. It also performs an extra VAE decode 
 pass, so it increases training time and VRAM use. Its best settings for Krea 2 are not yet
 established.
 
+The same DOP, adapter-weight-noise, and depth-anchor controls are exposed for experimental MiniMax H3. Their H3 math and cache keys are model-specific, and all remain disabled by default. On 24 GB, test one technique at a time with the conservative swap setting; see the [MiniMax H3 guide](./docs/minimax_h3_experimental.md#advanced-regularization-and-face-refinement).
+
 For a meaningful first test, compare **Off**, **Weight Noise Only**, and **Balanced Experimental**
 using the same dataset, seed, step count, and sample prompts. Start with weight-noise strength
 `0.0125` and depth-anchor strength `0.01`. See [the Krea 2 guide](./docs/krea2.md#experimental-lora-generalization-controls-in-this-gui-fork)
 for implementation details, cautions, and attribution.
 
-### Krea 2 Face Refinement (DRaFT, Experimental)
+### Krea 2 / MiniMax H3 Face Refinement (DRaFT, Experimental)
 
 Face Refinement is an optional **staged-training step** for human-identity LoRAs. It can follow standard
-training automatically or run by itself from an existing Krea 2 LoRA. In refinement-only mode,
+training automatically or run by itself from an existing Krea 2 or MiniMax H3 LoRA. In refinement-only mode,
 select the source LoRA in the Face Refinement window; no dataset TOML or dummy training stage is required.
 Once the starting LoRA has learned the subject, Krea generates temporary images from a varied prompt list. A
 frozen face-recognition model compares each generated face with embeddings prepared from your
 reference folder, and the similarity reward updates the LoRA through the final denoising step.
 
 - It does not use a second dataset TOML. Settings and prompts live in the GUI/job snapshot.
-- It can use the previous standard stage's LoRA or an explicitly selected existing Krea 2 LoRA.
+- It can use the previous standard stage's LoRA or an explicitly selected existing LoRA from the active model family.
 - Automatic handoff uses the previous stage's LoRA file, not its optimizer-state directory.
 - Reference images establish identity but are not pixel targets during refinement.
 - **Review Results…** shows each detected face's similarity score separately from images skipped
@@ -234,6 +238,7 @@ reference folder, and the similarity reward updates the LoRA through the final d
   compared against the baseline, then **Build Plan from Weak Poses** prepares an editable plan.
   The UI shows the trigger and LoRA strength used. Unique prompts are encoded once before the
   image model loads, then reused while seed variants generate sequentially.
+- MiniMax H3 uses its native compact standalone preview instead of the Krea-only fixed Turbo evaluator. Its heavier DRaFT path starts at 35 swapped blocks on 24 GB and remains more experimental than baseline H3 LoRA training.
 - Double-click a pose in the embedded evaluation report to inspect all generated images for that
   angle in a thumbnail gallery. Refinement setup also exposes the intermediate LoRA save interval;
   `0` disables intermediate checkpoints, while the final LoRA is always saved.
@@ -259,7 +264,7 @@ separate terms; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 - Save prompt presets without deleting older ones
 - Enable only the prompts you want active for a run
 - Duplicate a prompt and edit the copy
-- Test Krea 2 prompts directly from the GUI
+- Test Krea 2 and individual MiniMax H3 prompts directly from the GUI
 - Preview generated sample images inside the app
 - Open a global prompt library with search, tags, collections, favorites, and model filters
 - Collect and deduplicate prompts from current settings or historical jobs

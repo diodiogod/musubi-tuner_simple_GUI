@@ -1,4 +1,4 @@
-const state = { settings: {}, schema: null, dataset: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null };
+const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
 let loadedFaceResult = null;
 let controlSequence = 0;
 const $ = selector => document.querySelector(selector);
@@ -71,6 +71,7 @@ function go(view, {historyMode = "push", focusHeading = true} = {}) {
   const target=view==="home"?`${location.pathname}${location.search}`:`${location.pathname}${location.search}#${view}`;
   if(historyMode!=="none"&&`${location.pathname}${location.search}${location.hash}`!==target)history[historyMode==="replace"?"replaceState":"pushState"](null,"",target);
   window.scrollTo(0, 0);
+  if(view==="run")requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
 function schemaFields(sectionIds) {
   return state.schema.sections.filter(s => sectionIds.includes(s.id)).flatMap(s => s.fields);
@@ -92,25 +93,55 @@ const HELP = {
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested setting for a 24 GB GPU. The int8 choice is for advanced, unvalidated experiments.",
   recache_latents: "Rebuild the cached image information before training. Enable this for the first run or after changing images, resolution, or VAE.",
   recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
+  sample_every_n_epochs: "Generate scheduled samples after this many epochs. Fractions are allowed: 0.5 means twice per epoch; the GUI converts it to steps using the dataset estimate.",
+  sample_every_n_steps: "Generate scheduled samples after this many optimizer steps. The dataset estimate helps you choose a useful cadence.",
+  sample_at_first: "Generate the scheduled samples once before the first training step.",
+  save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. Keep this at 1 for a checkpoint after every epoch, or leave it blank/0 to disable epoch-based saves.",
+  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. This is useful for short epochs or fine-grained recovery points; leave it blank/0 to disable step-based saves.",
   timestep_sampling: "For MiniMax H3, leave this on krea2_shift. The GUI selects it automatically; it does not mean that a Krea model is being used.",
   dop_enabled: "Differential Output Preservation adds a class-preservation objective. It costs extra compute and requires correct trigger/class captions.",
+  dop_trigger_word: "The exact subject or concept token used in your training captions. DoP uses it to identify what the LoRA is allowed to learn. It must match the token in the captions exactly.",
+  dop_class_word: "A plain description of what the subject should remain, such as 'man', 'woman', 'dog', or 'clothed person'. DoP uses this comparison to discourage unrelated changes.",
+  dop_loss_weight: "How strongly DoP protects the class behavior. Higher values preserve more but can weaken LoRA learning. Start with 1.0 and compare against a run with DoP disabled.",
+  krea2_weight_noise_sigma: "Adds a very small amount of noise to LoRA updates during training. This may reduce overfitting on small datasets. 0 disables it; 0.0125 is the experimental preset value.",
+  krea2_weight_noise_mode: "Relative scales the noise to each weight's size and is the recommended mode. Absolute applies the same noise scale everywhere and is mainly for controlled experiments.",
+  krea2_weight_noise_bound_norm: "Limits unusually large noise updates so weight noise is less likely to destabilize training. Keep this enabled when using relative weight noise.",
+  krea2_depth_anchor_weight: "Controls how strongly training is nudged toward the pose and body structure of each source image. 0 disables depth. Even small values add substantial compute and VRAM use.",
+  krea2_depth_anchor_model: "The frozen Depth Anything model used to compare image structure. The default Small model is the intended balance of speed and memory; change it only when testing another compatible model.",
+  krea2_depth_anchor_input_size: "Resolution used by the depth model, not the LoRA training resolution. Larger values can preserve finer structure but cost more VRAM and time. 518 is the tested default.",
+  krea2_depth_anchor_gradient_weight: "Controls how much of the depth signal is allowed to flow back into LoRA learning. 0.5 is the tested value. This is different from Depth Anchor Weight, which scales the final depth loss.",
+  krea2_depth_anchor_grad_checkpoint: "Recomputes part of the depth calculation during backward pass to save VRAM. Keep it enabled on normal GPUs. Disabling it may be faster, but uses more VRAM and can cause an out-of-memory error.",
+  krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
+  krea2_depth_vae_device: "Select where Krea 2 performs the differentiable VAE decode used by depth anchoring. Training GPU is the established default. Secondary sends only the predicted latent to another visible CUDA GPU, decodes it there, and returns pixels and gradients automatically.\n\nKrea uses a lighter 2D image VAE than MiniMax, so an 8 GB helper GPU may be usable, but this is experimental and not guaranteed. Start with a short run and check the startup log to confirm the device mapping.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
   timestep_sampling: "This controls which noise levels the model practices during training. You normally do not need to choose it yourself because each training mode selects an appropriate value.\n\nFor MiniMax H3, leave it on krea2_shift. This is the setting used by the successful 24 GB test. Despite the name, it does not load or train a Krea model; MiniMax H3 simply uses the same style of noise schedule. Change it only when following a specific advanced recipe.",
   dop_enabled: "Differential Output Preservation adds a preservation objective beside the normal training loss. It can reduce unwanted changes outside the trained concept, especially for small or narrow datasets.\n\nIt costs additional compute and depends on correct trigger and class captions. Review the DOP weight and words under Regularization before enabling it.",
-  krea2_generalization_preset: "This preset coordinates several Krea 2 regularization controls to trade exact dataset matching for broader prompt and pose behavior.\n\nGentle stays close to baseline training. Balanced is a practical starting point for small identity datasets. Strong applies more regularization and should be evaluated carefully against fixed prompts.",
+  krea2_generalization_preset: "This preset applies coordinated adapter weight-noise and depth-anchor values. It is available for Krea 2 and experimental MiniMax H3.\n\nOff sets both strengths to zero. Weight Noise Only applies relative noise at 0.0125 without loading the depth models. Balanced Experimental combines 0.0125 weight noise with a 0.01 depth anchor. Changing the preset updates the visible advanced values immediately. MiniMax H3 depth is VRAM-heavy, so test it with a short run and conservative block swapping.",
+  krea2_depth_anchor_gradient_weight: "This controls how strongly gradients from the structural comparison travel back toward the LoRA. It works inside the depth calculation; Depth Anchor Weight separately controls how much the finished depth loss contributes to total training loss.\n\nKeep 0.5 for initial tests. Raising it does not simply produce 'more accurate depth' and may overpower normal identity or appearance learning.",
+  krea2_depth_anchor_grad_checkpoint: "Enabled saves VRAM by discarding intermediate depth calculations and recomputing them during backward pass. The tradeoff is extra computation, so each affected step may be slower.\n\nFor a 24 GB training GPU, keep this enabled. Disable it only when you have measured substantial free VRAM and want to test whether retaining the depth graph improves speed. It does not change the intended depth objective or LoRA quality by itself.",
+  krea2_keep_depth_helpers_on_gpu: "Enabled keeps the frozen Depth Anything model and its working tensors on the GPU between training steps. This avoids repeated transfers and can make depth-enabled training faster, but permanently consumes additional VRAM.\n\nDisabled moves those helpers away when they are not being used. This is safer on tight GPUs and does not weaken the depth signal or LoRA quality; it can only be slower. On a 24 GB MiniMax run, leave it disabled unless depth helpers are assigned to a separate GPU with enough memory.",
   blocks_to_swap: "Block swapping reduces peak VRAM by moving inactive transformer blocks between GPU and system memory. More swapped blocks generally use less VRAM but increase transfer overhead and slow each step.\n\nStart with the lowest value that fits your GPU. If a run still runs out of memory, increase gradually; if there is comfortable headroom, lower it for speed.",
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
+  minimax_h3_text_cache_dtype: "Controls only how the completed caption embeddings are stored. The Comfy-style Qwen3-VL tower still performs its encoding calculations in FP32.\n\nUse bfloat16 (recommended) for caches half the size and lower training-time disk/CPU traffic. Float32 is available for controlled fidelity comparisons. After changing this, rebuild only the Caption/Text Cache; the Image/Latent Cache does not need to be rebuilt.",
+  minimax_h3_depth_vae_device: "Select where the frozen MiniMax video VAE performs differentiable depth decoding. Secondary uses another CUDA device while the DiT and Depth Anything remain on the training GPU.\n\nThis decoder needs far more than its ~5 GB weights during backward pass. A secondary GPU with at least 16 GB VRAM is recommended. An 8 GB helper GPU is not supported, even with reduced depth resolution. Confirm the logical device mapping in the training log before relying on a multi-GPU setup.",
+  minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. This can reduce transfer overhead on a dedicated secondary GPU with ample VRAM.\n\nIt does not reduce the VAE's peak backward-pass memory and cannot make an 8 GB helper GPU usable. Disable it when VRAM is tight or the helper GPU is shared. This changes speed and idle VRAM use, not LoRA quality.",
+  minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
   recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
-  recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster."
+  recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster.",
+  sample_every_n_epochs: "Generate the scheduled comparison prompts after this many completed epochs. Enter 0.5 to sample twice during each epoch. Musubi accepts whole-number epoch values, so the GUI converts a fractional value to an equivalent optimizer-step cadence using the dataset estimate shown in the Training Plan.",
+  sample_every_n_steps: "Generate the scheduled comparison prompts after this many optimizer steps. This is useful when you want a precise cadence inside a short epoch; the estimate beside the controls shows the relationship to your dataset.",
+  sample_at_first: "Generate one comparison before the first training step. This gives you a baseline to compare with later checkpoints.",
+  save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. The default of 1 saves at each epoch boundary. This is independent from preview sampling: a checkpoint is saved even when no preview is scheduled.",
+  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. Use this for fine-grained recovery points inside an epoch. If both epoch and step cadences are enabled, Musubi can save at either cadence."
 };
 function helpFor(field) {
-  return HELP[field.key] || `${field.label} maps directly to Musubi's “${field.key}” setting. Its current value is preserved in saved recipes and job history.`;
+  return HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
 }
 function openHelp(field) {
   $("#help-title").textContent = field.label; $("#help-copy").textContent = LONG_HELP_COPY[field.key] || helpFor(field); $("#help-key").textContent = field.key;
@@ -205,6 +236,7 @@ function fieldControl(field, {wide = false} = {}) {
   const commit = () => {
     if(customInput){customInput.hidden=input.value!=="__custom__";if(input.value==="__custom__")customInput.focus()}
     state.settings[field.key] = field.type === "boolean" ? input.checked : input.value==="__custom__" ? customInput.value : input.value;
+    if(field.key === "krea2_generalization_preset" && applyGeneralizationPreset(input.value)) return;
     if (field.key === "training_mode") selectMode(input.value);
     if (field.key === "appearance_mode") applyTheme(input.value, {syncSetting:false});
     if (field.key === "dataset_config") $("#dataset-path").value = input.value;
@@ -219,10 +251,52 @@ function fieldControl(field, {wide = false} = {}) {
   return wrap;
 }
 function looksNumeric(value) { return typeof value === "number" || (typeof value === "string" && value !== "" && /^-?\d+(\.\d+)?$/.test(value)); }
+function applyGeneralizationPreset(preset){
+  const values={
+    "Off (Baseline)":{noise:"0",depth:"0"},
+    "Weight Noise Only":{noise:"0.0125",depth:"0"},
+    "Balanced Experimental":{noise:"0.0125",depth:"0.01"}
+  }[preset];
+  if(!values)return false;
+  Object.assign(state.settings,{
+    krea2_generalization_preset:preset,
+    krea2_weight_noise_sigma:values.noise,
+    krea2_weight_noise_mode:"relative",
+    krea2_depth_anchor_weight:values.depth,
+    krea2_depth_anchor_model:"depth-anything/Depth-Anything-V2-Small-hf",
+    krea2_depth_anchor_input_size:"518",
+    krea2_depth_anchor_gradient_weight:"0.5",
+    krea2_depth_anchor_grad_checkpoint:true
+  });
+  renderGuided();renderAllSettings();sync();
+  toast(`${preset} applied: weight noise ${values.noise}, depth ${values.depth}.`);
+  return true;
+}
 function findField(key) { return state.schema.sections.flatMap(s => s.fields).find(f => f.key === key); }
 function appendFields(host, keys) {
   host.innerHTML = "";
   keys.map(findField).filter(Boolean).filter(field => !field.modes?.length || field.modes.includes(state.settings.training_mode)).forEach(field => host.append(fieldControl(field)));
+}
+async function renderMinimaxDepthHardwareNotice() {
+  const notice=$("#minimax-depth-hardware-notice");
+  if(!notice)return;
+  notice.hidden=false;
+  notice.className="issue warning";
+  notice.textContent="Checking detected GPU memory for experimental MiniMax depth…";
+  try {
+    const snapshot=state.depthGpuSnapshot||await api("/api/gpu");
+    state.depthGpuSnapshot=snapshot;
+    if(!snapshot.available||!snapshot.devices?.length){
+      notice.textContent="GPU memory could not be detected. For MiniMax depth on a secondary GPU, use at least 16 GB VRAM; 8 GB helpers are unsupported.";
+      return;
+    }
+    const devices=snapshot.devices.map(device=>`${device.name} (${(device.memory_total/1073741824).toFixed(0)} GB)`).join(" · ");
+    const hasSmallGpu=snapshot.devices.some(device=>device.memory_total<16*1024**3);
+    notice.className=`issue ${hasSmallGpu?"warning":"ok"}`;
+    notice.textContent=`Detected: ${devices}. ${hasSmallGpu?"Do not select an 8 GB-class GPU as the MiniMax depth VAE secondary device; use a 16 GB-or-larger helper GPU, or leave depth disabled.":"A 16 GB-or-larger GPU is present, but confirm the training log maps it to the selected secondary device."}`;
+  } catch (_) {
+    notice.textContent="GPU memory could not be detected. For MiniMax depth on a secondary GPU, use at least 16 GB VRAM; 8 GB helpers are unsupported.";
+  }
 }
 function renderStartingPoint(host) {
   const current=["new","weights","state"].includes(state.settings.starting_point_mode)?state.settings.starting_point_mode:"new";
@@ -258,16 +332,37 @@ function renderGuided() {
   const mode = state.settings.training_mode;
   const modelKeys = mode === "Krea 2"
     ? ["krea2_dit_model","krea2_text_encoder","vae_model","krea2_turbo_dit","krea2_projector_diff"]
-    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_convrot_bwd_mode","vae_model"]
+    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_text_cache_dtype","minimax_h3_convrot_bwd_mode","vae_model"]
     : mode?.startsWith("Flux.2") ? ["flux2_dit_model","flux2_text_encoder","vae_model"]
     : ["is_i2v","dit_high_noise","dit_low_noise","t5_model","clip_model","vae_model"];
   appendFields($("#model-fields"), modelKeys);
   appendFields($("#data-fields"), ["dataset_config","project_root","output_dir","output_name"]);
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
-  appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","dop_enabled","krea2_generalization_preset"]);
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key);
+  appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","krea2_generalization_preset"]);
+  if(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"){
+    const presetField=$("#method-fields").querySelector('[data-key="krea2_generalization_preset"]');
+    if(presetField){
+      const action=document.createElement("div");action.className="field-actions";
+      const button=document.createElement("button");button.type="button";button.className="quiet";button.textContent="Apply selected preset";
+      button.title="Apply this preset's actual weight-noise and depth settings. Use this after loading an older project whose displayed preset may not match its saved values.";
+      button.addEventListener("click",()=>applyGeneralizationPreset(presetField.querySelector("select")?.value||state.settings.krea2_generalization_preset));
+      action.append(button);presetField.append(action);
+    }
+  }
+  const depthComputeKeys=["minimax_h3_depth_vae_device","minimax_h3_keep_depth_vae_on_device","minimax_h3_depth_every_n_steps"];
+  const kreaDepthComputeKeys=["krea2_depth_vae_device"];
+  const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
+  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode);
+  $("#dop-settings").hidden=!supportsDop;
+  appendFields($("#dop-fields"),dopKeys);
+  const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)";
+  appendFields($("#minimax-depth-fields"),depthComputeKeys);
+  if(mode==="MiniMax H3 (Experimental)")renderMinimaxDepthHardwareNotice();
+  const kreaDepthCompute=$("#krea-depth-compute");kreaDepthCompute.hidden=mode!=="Krea 2";
+  appendFields($("#krea-depth-fields"),kreaDepthComputeKeys);
   appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
   renderReview();
   renderPlan();
@@ -284,7 +379,13 @@ function selectMode(mode) {
       compile:false, fp8_base:false, fp8_scaled:false,
       minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"Qwen/Qwen3-VL-32B-Instruct",
       minimax_h3_convrot_bwd_mode:"bf16",
+      minimax_h3_depth_vae_device:state.settings.minimax_h3_depth_vae_device||"training",
+      minimax_h3_keep_depth_vae_on_device:state.settings.minimax_h3_keep_depth_vae_on_device??false,
+      minimax_h3_depth_every_n_steps:state.settings.minimax_h3_depth_every_n_steps||"1",
     });
+    const face=faceConfig(),faceBlocks=Number(face.blocks_to_swap);
+    face.cfg_scale=1;
+    if(!Number.isInteger(faceBlocks)||faceBlocks<30||faceBlocks>48)face.blocks_to_swap=35;
   }
   renderGuided(); renderAllSettings(); sync();
 }
@@ -369,11 +470,23 @@ function uniqueStageLabel(base="Stage"){
 function defaultPromptForMode(){
   const mode=state.settings.training_mode||"Wan 2.2",turbo=mode==="Krea 2"&&String(state.settings.krea2_turbo_dit||"").trim();
   if(mode==="Krea 2")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:turbo?8:28,seed:42,guidance:turbo?1:5.5,...(turbo?{mu:1.15}:{})};
+  if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:39,fps:24,steps:20,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
   if(mode==="Wan 2.2")return {enabled:true,prompt:"",neg:"",width:832,height:480,frames:25,steps:20,seed:42,guidance:5,cfg_scale:1};
   return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:20,seed:42,guidance:5,cfg_scale:1};
 }
-function promptCardIssues(prompt,index){
-  if(prompt.enabled===false)return [];
+function ensurePreviewSettings(){
+  if(typeof state.settings.preview_use_lora!=="boolean")state.settings.preview_use_lora=true;
+  if(state.settings.preview_lora_multiplier==null||state.settings.preview_lora_multiplier==="")state.settings.preview_lora_multiplier="1.0";
+}
+function promptPreviewUsesLora(prompt){ensurePreviewSettings();return typeof prompt?._preview_use_lora==="boolean"?prompt._preview_use_lora:state.settings.preview_use_lora}
+function applyPromptModelDefaults(index){
+  const prompt=state.settings.sample_prompts_data?.[index];if(!prompt)return;
+  const mode=state.settings.training_mode||"current model",preserved=Object.fromEntries(Object.entries(prompt).filter(([key])=>key==="prompt"||key==="enabled"||key.startsWith("_library_")||key.startsWith("_preview_")));
+  Object.keys(prompt).forEach(key=>delete prompt[key]);Object.assign(prompt,defaultPromptForMode(),preserved);
+  renderPlan();sync();toast(`${mode} defaults applied to prompt ${index+1}.`);
+}
+function promptCardIssues(prompt,index,{includeDisabled=false}={}){
+  if(prompt.enabled===false&&!includeDisabled)return [];
   const issues=[],prefix=`Prompt ${index+1}`;
   if(!String(prompt.prompt||"").trim())issues.push(`${prefix} needs text`);
   [["width","width"],["height","height"],["steps","steps"],["frames","frame count"]].forEach(([key,label])=>{
@@ -386,6 +499,13 @@ function promptCardIssues(prompt,index){
     const value=String(prompt[key]??"").trim();
     if(value&&!Number.isFinite(Number(value)))issues.push(`${prefix} has invalid ${label}`);
   });
+  if(state.settings.training_mode==="MiniMax H3 (Experimental)"){
+    if(String(prompt.neg||"").trim())issues.push(`${prefix} cannot use a negative prompt with MiniMax H3`);
+    if(Number(prompt.guidance??1)!==1||Number(prompt.cfg_scale??1)!==1)issues.push(`${prefix} must keep MiniMax H3 guidance and CFG at 1.0`);
+    const frames=Number(prompt.frames??39);
+    if(frames!==1&&(frames<5||(frames-5)%17!==0))issues.push(`${prefix} frames must be 5, 22, 39, ... (or 1 for the legacy still preview)`);
+    if(Number(prompt.width||0)%32||Number(prompt.height||0)%32)issues.push(`${prefix} MiniMax H3 size must be a multiple of 32`);
+  }
   return issues;
 }
 function stageCardIssues(stage,index){
@@ -399,7 +519,7 @@ function stageCardIssues(stage,index){
   if(!/^\d+$/.test(limit)||Number(limit)<1)issues.push(`${name} needs a positive limit`);
   if(stage.type!=="face_refinement"&&!String(stage.dataset_config||"").trim())issues.push(`${name} needs a dataset TOML`);
   if(stage.type!=="face_refinement"&&stage.dop_mode==="enable"){
-    if(!["Krea 2","Flux.2 Klein"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
+    if(!["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
     const strength=Number(stage.dop_loss_weight||state.settings.dop_loss_weight||0),trigger=String(stage.dop_trigger_word||state.settings.dop_trigger_word||"").trim(),classWord=String(stage.dop_class_word||state.settings.dop_class_word||"").trim();
     if(!Number.isFinite(strength)||strength<=0)issues.push(`${name} needs a positive DOP strength`);
     if(!trigger||!classWord||trigger.toLowerCase()===classWord.toLowerCase())issues.push(`${name} needs distinct DOP trigger and class words`);
@@ -415,14 +535,21 @@ function promptPlanIssues(){
   (state.settings.sample_prompts_data||[]).forEach((prompt,index)=>issues.push(...promptCardIssues(prompt,index)));
   (state.settings.staged_training_config||[]).forEach((stage,index)=>issues.push(...stageCardIssues(stage,index)));
   if(state.settings.use_staged_training&&!(state.settings.staged_training_config||[]).some(stage=>stage.enabled!==false))issues.push("Staged training needs at least one included stage");
-  [["sample_every_n_epochs","epoch cadence"],["sample_every_n_steps","step cadence"]].forEach(([key,label])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!/^\d+$/.test(value)||Number(value)<1))issues.push(`Sample ${label} must be a positive whole number or 0`)});
+  [["sample_every_n_epochs","epoch cadence",/^\d+(?:\.\d+)?$/],["sample_every_n_steps","step cadence",/^\d+$/]].forEach(([key,label,pattern])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!pattern.test(value)||Number(value)<=0))issues.push(`Sample ${label} must be a positive ${key==="sample_every_n_epochs"?"number":"whole number"} or 0`)});
+  [["save_every_n_epochs","epoch checkpoint cadence"],["save_every_n_steps","step checkpoint cadence"]].forEach(([key,label])=>{const value=String(state.settings[key]??"").trim();if(value&&value!=="0"&&(!/^\d+$/.test(value)||Number(value)<1))issues.push(`Save ${label} must be a positive whole number or 0`)});
   return issues;
 }
 function sampleScheduleLabel(){
   const parts=[];
   if(state.settings.sample_at_first)parts.push("At start");
   const epochs=String(state.settings.sample_every_n_epochs||"").trim(),steps=String(state.settings.sample_every_n_steps||"").trim();
-  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} epoch${epochs==="1"?"":"s"}`);
+  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} ${Number(epochs)>1?"epochs":"epoch"}`);
+  if(steps&&steps!=="0")parts.push(`Every ${steps} steps`);
+  return parts.join(" + ")||"Off";
+}
+function checkpointScheduleLabel(){
+  const parts=[],epochs=String(state.settings.save_every_n_epochs||"").trim(),steps=String(state.settings.save_every_n_steps||"").trim();
+  if(epochs&&epochs!=="0")parts.push(`Every ${epochs} ${Number(epochs)===1?"epoch":"epochs"}`);
   if(steps&&steps!=="0")parts.push(`Every ${steps} steps`);
   return parts.join(" + ")||"Off";
 }
@@ -431,6 +558,7 @@ function renderPlanOverview(){
   $("#plan-prompt-count").textContent=`${included.length} / ${prompts.length}`;
   $("#plan-prompt-health").textContent=!prompts.length?"Add a prompt":included.length?`${included.length} used for comparisons`:"All prompts are off";
   $("#plan-sample-schedule").textContent=sampleScheduleLabel();
+  $("#plan-checkpoint-schedule").textContent=checkpointScheduleLabel();
   $("#plan-stage-count").textContent=state.settings.use_staged_training?`${activeStages.length} active`:"Normal run";
   $("#plan-stage-health").textContent=state.settings.use_staged_training?(activeStages.length?"Ordered handoff plan":"Enable at least one stage"):"Uses the main recipe";
   $("#plan-health").textContent=issues.length?`${issues.length} to review`:"Ready";
@@ -438,8 +566,10 @@ function renderPlanOverview(){
   $("#plan-overview").classList.toggle("has-issues",issues.length>0);
   $("#prompt-tab-count").textContent=String(prompts.length);$("#stage-tab-count").textContent=String(stages.length);
   $("#plan-save-note").textContent=state.dirty?"Plan has unsaved changes":"Changes stay in this workspace";
-  const preview=$("#preview-prompts");preview.textContent=included.length?`Generate ${included.length} enabled`:"Generate enabled";preview.disabled=!included.length||Boolean(invalidIncluded.length)||state.settings.training_mode!=="Krea 2";
-  preview.title=state.settings.training_mode!=="Krea 2"?"Standalone prompt preview is currently available for Krea 2.":invalidIncluded.length?"Fix the included prompt cards marked Needs attention before generating previews.":"Generate standalone previews without leaving this plan.";
+  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3=state.settings.training_mode==="MiniMax H3 (Experimental)",h3SelectionInvalid=h3&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
+  preview.textContent=h3?(included.length===1?`Generate selected with ${sourceLabel}`:included.length?"Generate individually below":"Enable one prompt to generate"):included.length?`Generate ${included.length} with ${mixedSources?"one source":sourceLabel}`:"Generate enabled";
+  preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3SelectionInvalid||mixedSources;
+  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":!included.length?"Enable one prompt before generating a preview.":invalidIncluded.length?"Fix the included prompt card marked Needs attention before generating its preview.":h3&&included.length>1?"MiniMax H3 safely loads its large models once per prompt. Generate from an individual card, or enable only one prompt.":mixedSources?"Enabled cards mix Base and LoRA. Generate them individually, or set them to the same preview source.":`Generate with ${sourceLabel}.`;
 }
 function promptMeta(prompt){
   const values=[`${prompt.width||"—"} × ${prompt.height||"—"}`,`${prompt.steps||"—"} steps`,String(prompt.seed??"").trim()?`Seed ${prompt.seed}`:"Random seed"];
@@ -461,13 +591,28 @@ function renderPromptCards(){
     return;
   }
   prompts.forEach((prompt,index)=>{
-    const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index);
-    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id);
+    const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index),previewIssues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),previewKind=state.settings.training_mode==="MiniMax H3 (Experimental)"&&Number(prompt.frames??39)>1?"video":"preview";
+    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
-    const thumbnail=linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
-    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" ${state.settings.training_mode!=="Krea 2"||cardIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewUrl=previewPath?`/api/sample-file?path=${encodeURIComponent(previewPath)}`:"",previewIsVideo=/\.(mp4|webm|mov|m4v)$/i.test(previewPath||"");
+    const thumbnail=previewUrl?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated preview">`):linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
+    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    const footerActions=card.querySelector(".prompt-card-footer>div"),defaults=document.createElement("button"),source=document.createElement("label"),previewButton=card.querySelector('[data-action="preview"]');
+    defaults.type="button";defaults.className="text-action";defaults.dataset.action="defaults";defaults.textContent=`Use ${modelLabel} defaults`;defaults.title=`Reset only this prompt's sampling values to the recommended ${modelLabel} settings. Prompt text is preserved.`;
+    source.className="preview-card-toggle";source.title=useLora?"This card generates with the selected/current LoRA. Turn it off for the base model; use Edit to choose the LoRA file and strength.":"This card generates with the base model. Turn it on for the selected/current LoRA; use Edit to choose the file and strength.";source.innerHTML=`<input type="checkbox" data-action="preview-lora" ${useLora?"checked":""}><span>${useLora?"LoRA":"Base"}</span>`;
+    if(previewSupported){previewButton.textContent=previewing?"Previewing…":previewReady?`Again: ${previewKind} with ${useLora?"LoRA":"base"}`:`Generate ${previewKind} with ${useLora?"LoRA":"base"}`;footerActions.prepend(defaults,source)}else footerActions.prepend(defaults);
     card.querySelector("img")?.addEventListener("error",event=>event.currentTarget.remove());
+    const cardVideo=card.querySelector(".prompt-card-visual video");
+    if(cardVideo){cardVideo.addEventListener("canplay",()=>cardVideo.play().catch(()=>{}),{once:true});cardVideo.addEventListener("error",()=>cardVideo.remove())}
+    const visual=card.querySelector(".prompt-card-visual");
+    if(previewUrl){
+      visual.title="Double-click to open the full preview";
+      visual.setAttribute("aria-label","Double-click to open the full generated preview");
+      visual.addEventListener("dblclick",()=>openSamplePreview({media_kind:previewIsVideo?"video":"image",url:previewUrl,name:prompt._library_name||`Sample prompt ${index+1}`}));
+    }
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
+    card.querySelector('[data-action="defaults"]').addEventListener("click",()=>applyPromptModelDefaults(index));
+    card.querySelector('[data-action="preview-lora"]')?.addEventListener("change",event=>{prompt._preview_use_lora=event.target.checked;renderPlan();sync()});
     card.querySelectorAll('[data-action="edit"]').forEach(button=>button.addEventListener("click",()=>openPlanPromptEditor(index,button)));
     card.querySelector('[data-action="preview"]').addEventListener("click",()=>startPromptPreview([{...prompt,enabled:true}],{indices:[index],stayInPlan:true}));
     card.querySelector('[data-action="view-run"]')?.addEventListener("click",()=>go("run"));
@@ -504,7 +649,7 @@ function renderPlanPromptEditor(){
   const words=planEditorSection("Prompt text","This is the content you will compare across checkpoints.");
   words.querySelector(".guided-fields").append(
     objectField("Positive prompt","prompt",prompt.prompt||"",value=>prompt.prompt=value,{type:"textarea",wide:true,help:"Describe the result Musubi should generate. Hover or focus this label for help."}),
-    objectField("Negative prompt","neg",prompt.neg||"",value=>prompt.neg=value,{type:"textarea",wide:true,help:"Optional concepts or defects to discourage in this comparison sample."})
+    objectField("Negative prompt","neg",prompt.neg||"",value=>prompt.neg=value,{type:"textarea",wide:true,help:mode==="MiniMax H3 (Experimental)"?"MiniMax H3 does not use classifier-free guidance. Leave this blank.":"Optional concepts or defects to discourage in this comparison sample."})
   );
   const resolution=planEditorSection("Frame and composition","Use a preset or enter an exact size. The selected values are preserved in Musubi's prompt file.");
   const presets=document.createElement("div");presets.className="resolution-presets";
@@ -518,8 +663,8 @@ function renderPlanPromptEditor(){
   );
   const sampling=planEditorSection("Sampling behavior","Keep the seed fixed for a direct checkpoint comparison, or leave it blank for a random seed.");
   sampling.querySelector(".guided-fields").append(
-    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":"Number of denoising steps for this sample."}),
-    objectField("Guidance","guidance",prompt.guidance??"",value=>prompt.guidance=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses 5.5; Turbo usually uses 1.0.":"Classifier-free guidance for this sample."}),
+    objectField("Denoising steps","steps",prompt.steps||"",value=>prompt.steps=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses about 28 steps; Turbo commonly uses about 8.":mode==="MiniMax H3 (Experimental)"?"20 steps matches the current ComfyUI MiniMax H3 workflow default.":"Number of denoising steps for this sample."}),
+    objectField("Guidance","guidance",prompt.guidance??"",value=>prompt.guidance=value,{type:"number",help:mode==="Krea 2"?"RAW commonly uses 5.5; Turbo usually uses 1.0.":mode==="MiniMax H3 (Experimental)"?"MiniMax H3 is guidance-distilled. Keep this at 1.0.":"Classifier-free guidance for this sample."}),
     objectField("Seed","seed",prompt.seed??"",value=>prompt.seed=value,{type:"number",help:"A fixed seed makes visual changes across checkpoints easier to attribute to training."})
   );
   const seedActions=document.createElement("div");seedActions.className="seed-actions";seedActions.innerHTML=`<span>Seed mode</span><button type="button" class="${String(prompt.seed??"").trim()?"active":""}" data-seed-mode="fixed">Fixed</button><button type="button" class="${String(prompt.seed??"").trim()?"":"active"}" data-seed-mode="random">Random</button>`;
@@ -527,6 +672,15 @@ function renderPlanPromptEditor(){
   seedActions.querySelector('[data-seed-mode="random"]').addEventListener("click",()=>{prompt.seed="";renderPlanPromptEditor();sync()});
   sampling.append(seedActions);
   host.append(words,resolution,sampling);
+  if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode)){
+    const previewSource=planEditorSection("Standalone preview source","This affects Generate Preview for this card only. The selected LoRA file and strength are shared so every LoRA-enabled card compares the same checkpoint.");
+    previewSource.querySelector(".guided-fields").append(
+      objectField("Generate this card with","_preview_use_lora",promptPreviewUsesLora(prompt)?"lora":"base",value=>prompt._preview_use_lora=value==="lora",{type:"select",options:[{label:"Current / selected LoRA",value:"lora"},{label:"Base model only",value:"base"}],help:"Choose LoRA to test what training learned, or Base to create a control image without the LoRA."}),
+      objectField("LoRA file (blank = automatic)","preview_lora_path",state.settings.preview_lora_path||"",value=>state.settings.preview_lora_path=value,{wide:true,browseKind:"file",help:"Leave blank to use the continuation LoRA or latest checkpoint matching this run. Browse to test a specific safetensors file."}),
+      objectField("LoRA strength","preview_lora_multiplier",state.settings.preview_lora_multiplier||"1.0",value=>state.settings.preview_lora_multiplier=value,{type:"number",help:"1.0 applies the LoRA at its normal strength. This shared value is used by every prompt card set to LoRA."})
+    );
+    host.append(previewSource);
+  }
   if(mode==="Krea 2"){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.innerHTML='<summary>Standalone preview timestep controls</summary><p>Mu, Y1, and Y2 are honored by standalone Krea preview generation. Musubi training samples currently use the trainer’s RAW shift defaults.</p><div class="guided-fields"></div>';
     advanced.querySelector(".guided-fields").append(objectField("Mu","mu",prompt.mu??"",value=>prompt.mu=value,{type:"number",help:"Direct shift override for standalone preview."}),objectField("Y1","y1",prompt.y1??"",value=>prompt.y1=value,{type:"number",help:"Low-resolution shift endpoint for standalone preview."}),objectField("Y2","y2",prompt.y2??"",value=>prompt.y2=value,{type:"number",help:"High-resolution shift endpoint for standalone preview."}));
@@ -535,13 +689,17 @@ function renderPlanPromptEditor(){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.open=mode==="Wan 2.2";advanced.innerHTML='<summary>Model-specific sample controls</summary><div class="guided-fields"></div>';
     const fields=advanced.querySelector(".guided-fields");
     if(mode==="Wan 2.2")fields.append(objectField("Frames","frames",prompt.frames??25,value=>prompt.frames=value,{type:"number",help:"Number of frames in a Wan sample."}));
+    if(mode==="MiniMax H3 (Experimental)")fields.append(
+      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames. One frame keeps the older still-image preview, which can look blurry and is not representative of normal video output."}),
+      objectField("FPS","fps",prompt.fps??24,value=>prompt.fps=value,{type:"number",help:"Playback speed for the silent preview MP4. 24 FPS matches MiniMax H3's normal timing."})
+    );
     fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}),objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
     if(mode==="Wan 2.2")fields.append(objectField("I2V source image","image_path",prompt.image_path||"",value=>prompt.image_path=value,{wide:true,browseKind:"file",help:"Optional starting image for Wan I2V samples."}));
     host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${prompt.enabled!==false?"checked":""}><span><strong>Include in scheduled training samples</strong><small>Turning this off keeps the card and its settings without sending it to Musubi.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{prompt.enabled=event.target.checked;$("#plan-prompt-editor-state").textContent=prompt.enabled?"Included in scheduled samples":"Not included in scheduled samples";sync()});host.append(include);
-  const refreshPreviewAction=()=>{$("#plan-prompt-preview").disabled=mode!=="Krea 2"||Boolean(promptCardIssues(prompt,index).length)};
+  const refreshPreviewAction=()=>{const button=$("#plan-prompt-preview"),issues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),useLora=promptPreviewUsesLora(prompt);button.disabled=!["Krea 2","MiniMax H3 (Experimental)"].includes(mode)||Boolean(issues.length);button.textContent=`Generate with ${useLora?"LoRA":"base"}`;button.title=issues[0]||`Generate this prompt with ${useLora?"the selected/current LoRA":"the base model only"}.`};
   host.oninput=refreshPreviewAction;host.onchange=refreshPreviewAction;refreshPreviewAction();
 }
 function stageHandoff(previous,current){
@@ -595,10 +753,10 @@ function renderStageEditor(){
     scheduleFields.append(limitMode==="steps"?objectField("Maximum steps","steps",stage.steps||1,value=>{stage.steps=value;stage.epochs=""},{type:"number"}):objectField("Epochs","epochs",stage.epochs||1,value=>{stage.epochs=value;stage.steps=""},{type:"number"}));
   }
   host.append(schedule);
-  if(!face&&["Krea 2","Flux.2 Klein"].includes(mode)){
+  if(!face&&["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode)){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.innerHTML='<summary>Stage regularization overrides</summary><p>Inherit follows the main recipe. An explicit setting affects only this stage.</p><div class="guided-fields"></div>';
     const fields=advanced.querySelector(".guided-fields");fields.append(objectField("DOP behavior","dop_mode",stage.dop_mode||"inherit",value=>stage.dop_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Enable for this stage",value:"enable"},{label:"Disable for this stage",value:"disable"}]}),objectField("DOP strength","dop_loss_weight",stage.dop_loss_weight||"",value=>stage.dop_loss_weight=value,{type:"number"}),objectField("DOP trigger word","dop_trigger_word",stage.dop_trigger_word||"",value=>stage.dop_trigger_word=value),objectField("DOP class word","dop_class_word",stage.dop_class_word||"",value=>stage.dop_class_word=value));
-    if(mode==="Krea 2")fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
+    if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode))fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${stage.enabled!==false?"checked":""}><span><strong>Include this stage</strong><small>Disabled stages stay in the plan but are skipped during training.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{stage.enabled=event.target.checked;$("#stage-editor-state").textContent=stage.enabled?"Included in the staged run":"Not included in the staged run";sync()});host.append(include);
@@ -621,8 +779,9 @@ function renderPlan(){
   appendFields($("#run-cache-policies"),["recache_latents","recache_text"]);
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text"]);
   appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first"]);
+  appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
-  renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
+  ensurePreviewSettings();renderSamplingEstimate();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
 }
 async function saveTrainingPlan(){
   const issues=promptPlanIssues();renderPlanOverview();
@@ -650,13 +809,36 @@ function clientTrainingSettingsSummary(){
     let dop=`DOP ${Number(settings.dop_loss_weight)>0?Number(settings.dop_loss_weight):"?"}`;
     if(String(settings.dop_class_word||"").trim())dop+=` (${settings.dop_class_word})`;parts.push(dop);
   }
-  if(settings.training_mode==="Krea 2"){
+  if(["Krea 2","MiniMax H3 (Experimental)"].includes(settings.training_mode)){
     if(Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
     if(Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
-    if(String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
+    if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
   }
   const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
+  const saveEpochs=String(settings.save_every_n_epochs||"").trim(),saveSteps=String(settings.save_every_n_steps||"").trim();
+  if(saveEpochs&&saveEpochs!=="0")parts.push(`save every ${saveEpochs} epoch${Number(saveEpochs)===1?"":"s"}`);
+  if(saveSteps&&saveSteps!=="0")parts.push(`save every ${saveSteps} steps`);
   return `Settings: ${parts.join("; ")}`;
+}
+function renderSamplingEstimate(){
+  const host=$("#sampling-epoch-estimate");if(!host)return;
+  const estimate=state.samplingEstimate;
+  if(!estimate)host.innerHTML='<span><strong>Estimated steps per epoch</strong><small>Load or audit the dataset to calculate this.</small></span><button class="quiet" id="estimate-epoch-steps" type="button">Estimate from dataset</button>';
+  else{
+    const steps=Number(estimate.steps_per_epoch||0),samples=Number(estimate.effective_samples||0),batches=Number(estimate.batches_per_epoch||0),fraction=String(state.settings.sample_every_n_epochs||"").trim();
+    const implied=fraction&&fraction!=="0"&&!Number.isInteger(Number(fraction))&&steps?Math.max(1,Math.round(steps*Number(fraction))):0;
+    host.innerHTML=`<span><strong>${steps?`Estimated ${steps.toLocaleString()} optimizer steps per epoch`:"No usable samples found"}</strong><small>${samples.toLocaleString()} effective samples · ${batches.toLocaleString()} batches${implied?` · ${implied.toLocaleString()} steps for every ${fraction} epoch`:""}</small></span><button class="quiet" id="estimate-epoch-steps" type="button">Recalculate</button>`;
+  }
+  $("#estimate-epoch-steps")?.addEventListener("click",estimateSamplingSteps);
+}
+async function estimateSamplingSteps(){
+  const path=String($("#dataset-path")?.value||state.settings.dataset_config||"").trim();
+  if(!path){toast("Choose a dataset TOML before estimating epoch steps.","error");return}
+  try{
+    await flushDatasetDraft();
+    const payload=await api("/api/dataset/estimate-steps",{method:"POST",body:JSON.stringify({path,text:$("#dataset-source")?.value||"",gradient_accumulation_steps:state.settings.gradient_accumulation_steps||1})});
+    state.samplingEstimate=payload;renderSamplingEstimate();
+  }catch(error){state.samplingEstimate=null;renderSamplingEstimate();toast(error.message,"error")}
 }
 function renderTrainingSummary(){
   const summary=clientTrainingSettingsSummary();
@@ -667,19 +849,24 @@ async function openPromptLibrary(){
   const payload=await api("/api/prompt-library");libraryEntries=payload.prompts||[];renderLibrary();if(!$("#prompt-library-dialog").open)$("#prompt-library-dialog").showModal();
 }
 async function startPromptPreview(prompts,{indices=[],stayInPlan=true}={}){
+  const sources=new Set(prompts.map(prompt=>promptPreviewUsesLora(prompt)));
+  if(sources.size>1)return toast("These cards mix Base and LoRA preview sources. Generate them individually, or set them to the same source first.","error");
+  const previewSettings={...state.settings,preview_use_lora:sources.values().next().value??state.settings.preview_use_lora};
   state.promptPreview={status:"starting",indices:[...indices],jobId:null,message:"Preparing preview"};renderPlan();
   try{
-    const payload=await api("/api/prompts/preview",{method:"POST",body:JSON.stringify({settings:state.settings,prompts})});
+    const payload=await api("/api/prompts/preview",{method:"POST",body:JSON.stringify({settings:previewSettings,prompts})});
     state.promptPreview={status:"running",indices:[...indices],jobId:payload.job?.id||null,message:"Generating preview",savePath:payload.save_path};
     lastLogId=0;renderActive(payload.job);renderPlan();
-    if(!stayInPlan)go("run");toast("Preview started. You can keep editing this plan.");
+    if(!stayInPlan)go("run");
+    const source=payload.network_weights?`LoRA ${String(payload.network_weights).split(/[\\/]/).pop()} at ${payload.lora_multiplier||"1.0"}×`:"the base model (LoRA off)";
+    toast(`Preview started with ${source}. You can keep editing this plan.`);
   }catch(e){
     state.promptPreview={status:"failed",indices:[...indices],jobId:null,message:e.message};renderPlan();toast(e.message,"error");
   }
 }
 function promptIdentityClient(prompt){
   const normalized={};
-  Object.keys(prompt||{}).filter(key=>key!=="enabled"&&!key.startsWith("_library_")).sort().forEach(key=>{const value=prompt[key];normalized[key]=typeof value==="string"?value.trim():value});
+  Object.keys(prompt||{}).filter(key=>key!=="enabled"&&!key.startsWith("_library_")&&!key.startsWith("_preview_")).sort().forEach(key=>{const value=prompt[key];normalized[key]=typeof value==="string"?value.trim():value});
   return JSON.stringify(normalized);
 }
 function renderLibrary(){
@@ -693,12 +880,53 @@ function renderLibrary(){
 }
 function openLibraryEditor(entry){$("#library-edit-id").value=entry.id;$("#library-edit-name").value=entry.name||"";$("#library-edit-prompt").value=entry.prompt_data?.prompt||"";$("#library-edit-collection").value=entry.collection||"";$("#library-edit-tags").value=(entry.tags||[]).join(", ");$("#prompt-editor-dialog").showModal()}
 function faceConfig(){state.settings.face_refinement_config=state.settings.face_refinement_config&&typeof state.settings.face_refinement_config==="object"?state.settings.face_refinement_config:{};return state.settings.face_refinement_config}
+function updateFacePromptModeLabels(config){
+  const poseActive=Boolean(config.pose_aware&&config.pose_plan?.enabled);
+  $("#pose-plan-title").textContent="Per-pose targets and stopping";
+  $("#pose-plan-help").innerHTML=poseActive?"Pose-aware training is on. Set each angle's share, identity target, and stopping rules in the table; edit its training prompts in the matching tab below.":"These rows are prepared but are not used until Pose-aware training is enabled. For a normal all-angle refinement, use the general prompts below.";
+  $("#pose-prompts-help").innerHTML=poseActive?"These are the prompts used for this run. Select an angle tab, then edit one prompt per line; keep the matching <code>[angle]</code> tag at the start.":"Enable Pose-aware training to use separate prompts for each viewing angle.";
+  const fallbackPrompts=$("#face-fallback-prompts");fallbackPrompts.open=!poseActive;fallbackPrompts.classList.toggle("is-inactive",poseActive);
+  $("#face-prompts-title").textContent=poseActive?"General refinement prompts (fallback)":"General refinement prompts";
+  $("#face-prompts-help").textContent=poseActive?"Kept for later; not used while the pose plan is active.":"Used for normal all-angle refinement when the pose plan is off.";
+}
+function renderPosePlanTable(host,config,buckets){
+  const labels={frontal:"Frontal",three_quarter_left:"Three-quarter left",three_quarter_right:"Three-quarter right",profile_left:"Profile left",profile_right:"Profile right",looking_up:"Looking up",looking_down:"Looking down"};
+  const order=["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
+  const counts=config.preflight_report?.pose_bucket_counts||{};
+  host.className="pose-plan-table-wrap";
+  host.innerHTML=`<div class="pose-plan-table" role="table" aria-label="Pose training plan"><div class="pose-plan-row pose-plan-header" role="row"><span>Use</span><span>Viewing angle</span><span>Refs</span><span>Share %</span><span>Target</span><span>Target patience</span><span>Plateau patience</span><span>Min evaluations</span></div></div>`;
+  const table=host.querySelector(".pose-plan-table");
+  order.forEach(name=>{
+    const bucket=buckets[name]||{},count=Number(counts[name]||0),label=labels[name]||name.replaceAll("_"," ");
+    const row=document.createElement("div");row.className=`pose-plan-row${bucket.enabled===false?" is-disabled":""}`;row.dataset.pose=name;row.setAttribute("role","row");
+    row.innerHTML=`<label class="pose-plan-use"><input type="checkbox" data-pose-enabled ${bucket.enabled!==false?"checked":""}><span class="sr-only">Use ${esc(label)}</span></label><div class="pose-plan-name"><strong>${esc(label)}</strong><small>${esc(name)}</small></div><span class="pose-plan-refs ${count<Number(config.pose_min_references??2)?"is-low":""}" title="${esc(`${count} reference face${count===1?"":"s"} assigned to this angle`)}">${count}</span>${[["share",bucket.share??0,"0","100","0.1"],["target",bucket.target??.55,"0","1","0.01"],["patience",bucket.patience??2,"0","","1"],["plateau_patience",bucket.plateau_patience??4,"0","","1"],["min_evaluations",bucket.min_evaluations??2,"1","","1"]].map(([key,value,min,max,step])=>`<input class="pose-plan-input" type="number" min="${min}"${max?` max="${max}"`:""} step="${step}" data-pose-field="${key}" value="${esc(String(Math.round(Number(value)*100)/100))}" aria-label="${esc(`${label} ${key.replaceAll("_"," ")}`)}">`).join("")}`;
+    row.querySelector("[data-pose-enabled]").addEventListener("change",event=>{bucket.enabled=event.target.checked;row.classList.toggle("is-disabled",!event.target.checked);sync()});
+    row.querySelectorAll("[data-pose-field]").forEach(input=>input.addEventListener("change",event=>{const key=event.target.dataset.poseField;const value=Number(event.target.value);if(Number.isFinite(value))bucket[key]=value;sync()}));
+    table.append(row);
+  });
+}
+function renderPosePromptEditor(host,config,buckets){
+  const labels={frontal:"Frontal",three_quarter_left:"Three-quarter left",three_quarter_right:"Three-quarter right",profile_left:"Profile left",profile_right:"Profile right",looking_up:"Looking up",looking_down:"Looking down"};
+  const order=["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
+  const active=order.includes(state.facePosePromptTab)?state.facePosePromptTab:(order.find(name=>buckets[name]?.enabled!==false)||order[0]);
+  state.facePosePromptTab=active;
+  const bucket=buckets[active]||{},label=labels[active]||active.replaceAll("_"," "),prompts=Array.isArray(bucket.prompts)?bucket.prompts:[],count=Number(config.preflight_report?.pose_bucket_counts?.[active]||0);
+  host.innerHTML=`<div class="pose-prompt-tabs" role="tablist" aria-label="Pose prompt tabs">${order.map(name=>{const item=buckets[name]||{},itemLabel=labels[name]||name.replaceAll("_"," "),itemPrompts=Array.isArray(item.prompts)?item.prompts:[];return `<button type="button" role="tab" aria-selected="${name===active}" class="${name===active?"active":""}" data-pose-prompt-tab="${name}"><span>${esc(itemLabel)}</span><small>${itemPrompts.length}</small></button>`}).join("")}</div><div class="pose-prompt-panel" role="tabpanel"><div class="pose-prompt-panel-head"><div><strong>${esc(label)} prompts</strong><small>${count} matching reference${count===1?"":"s"} · one prompt per line</small></div><button type="button" class="quiet" data-pose-ideas>Add suggested prompts</button></div><textarea data-pose-prompts aria-label="${esc(`${label} pose prompts`)}" placeholder="[${esc(active)}] ${esc(label.toLowerCase())} portrait of {trigger}, natural daylight">${esc(prompts.join("\n"))}</textarea><p class="pose-prompt-note">Keep <code>[${esc(active)}]</code> at the start of each line. This tag sends the prompt to the matching viewing-angle references.</p></div>`;
+  host.querySelectorAll("[data-pose-prompt-tab]").forEach(button=>button.addEventListener("click",()=>{state.facePosePromptTab=button.dataset.posePromptTab;renderPosePromptEditor(host,config,buckets)}));
+  host.querySelector("[data-pose-prompts]").addEventListener("change",event=>{bucket.prompts=event.target.value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);renderPosePromptEditor(host,config,buckets);sync()});
+  host.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${active}] ${phrases[active]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderPosePromptEditor(host,config,buckets);sync()});
+}
 function renderFaceWorkspace(){
-  const config=faceConfig(),set=(key,value)=>{config[key]=value};
+  const config=faceConfig(),set=(key,value)=>{config[key]=value},isH3=state.settings.training_mode==="MiniMax H3 (Experimental)",supportsFace=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
   config.pose_plan ||= {enabled:false,preset:"balanced_identity",overall_anchor_weight:.8,variations:["natural","studio","cinematic","expression"],buckets:{}};
   ["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"].forEach(name=>{config.pose_plan.buckets[name]||={enabled:true,share:14.286,target:.55,patience:2,plateau_patience:4,min_evaluations:2,prompts:[]}});
-  $("#face-mode-warning").style.display=state.settings.training_mode==="Krea 2"?"none":"";
-  const setup=$("#face-setup-fields");setup.innerHTML="";setup.append(objectField("Starting LoRA source","input_mode",config.input_mode||"previous_stage",v=>set("input_mode",v),{type:"select",options:[{label:"Use LoRA from previous stage",value:"previous_stage"},{label:"Refine an existing LoRA",value:"existing_lora"}]}),objectField("Input LoRA","input_lora",config.input_lora||state.settings.network_weights||"",v=>set("input_lora",v),{wide:true,browseKind:"file",help:"Required when refinement is the first stage; later face stages can consume the previous stage automatically."}),objectField("Trigger word","trigger_word",config.trigger_word||"",v=>set("trigger_word",v),{help:"The unique subject token used by reference and evaluation prompts."}),objectField("Reference directory","reference_dir",config.reference_dir||"",v=>set("reference_dir",v),{wide:true,browseKind:"directory"}),objectField("Face model directory","face_model_dir",config.face_model_dir||"",v=>set("face_model_dir",v),{wide:true,browseKind:"directory"}),objectField("License acknowledged","license_acknowledged",config.license_acknowledged||false,v=>set("license_acknowledged",v),{type:"boolean"}));
+  updateFacePromptModeLabels(config);
+  $("#face-mode-warning").style.display=supportsFace?"none":"";
+  const evaluationTab=$('[data-face-step="evaluation"]');
+  evaluationTab.disabled=isH3;
+  evaluationTab.title=isH3?"Fixed Turbo evaluation is Krea 2-only; MiniMax H3 refinement itself is available.":"";
+  const setup=$("#face-setup-fields");setup.innerHTML="";setup.append(objectField("Starting LoRA source","input_mode",config.input_mode||"previous_stage",v=>set("input_mode",v),{type:"select",options:[{label:"Use LoRA from previous stage",value:"previous_stage"},{label:"Refine an existing LoRA",value:"existing_lora"}]}),objectField("Input LoRA","input_lora",config.input_lora||state.settings.network_weights||"",v=>set("input_lora",v),{wide:true,browseKind:"file",help:"Required when refinement is the first stage; later face stages can consume the previous stage automatically."}),objectField("Trigger word","trigger_word",config.trigger_word||"",v=>set("trigger_word",v),{help:"The unique subject token used by reference and evaluation prompts."}),objectField("Reference directory","reference_dir",config.reference_dir||"",v=>set("reference_dir",v),{wide:true,browseKind:"directory",help:"Folder containing clear reference photographs of the person whose identity should be preserved."}),objectField("AntelopeV2 model folder","face_model_dir",config.face_model_dir||"",v=>set("face_model_dir",v),{wide:true,browseKind:"directory",help:"Click Browse and choose the AntelopeV2 folder itself. Existing InsightFace folders with glintr100.onnx and scrfd_10g_bnkps.onnx work, as do folders downloaded by this GUI."}),objectField("I acknowledge the AntelopeV2 model terms","license_acknowledged",config.license_acknowledged||false,v=>set("license_acknowledged",v),{type:"boolean",help:"Required only before this GUI downloads third-party model files. It is not needed merely to select models you already have."}));
+  const modelFolderHelp=document.createElement("div");modelFolderHelp.className="plan-card-note";modelFolderHelp.innerHTML="<strong>Already have InsightFace or ReActor models?</strong> Use Browse and select the folder containing <code>glintr100.onnx</code> and <code>scrfd_10g_bnkps.onnx</code>. Select the folder, not an individual ONNX file. Otherwise, leave the default folder selected, acknowledge the model terms, and use the download button below.";setup.append(modelFolderHelp);
   const recipe=$("#face-recipe-fields");recipe.innerHTML="";recipe.className="face-recipe-groups";
   const addRecipeGroup=(title,copy,controls,open=false)=>{
     const group=document.createElement("details");group.className="recipe-group";group.open=open;
@@ -711,7 +939,7 @@ function renderFaceWorkspace(){
     objectField("Learning rate","learning_rate",config.learning_rate??1e-4,v=>set("learning_rate",v),{type:"number"}),
     objectField("Denoising steps","denoise_steps",config.denoise_steps??12,v=>set("denoise_steps",v),{type:"number"}),
     objectField("DRaFT truncation K","draft_k",config.draft_k??1,v=>set("draft_k",v),{type:"number"}),
-    objectField("CFG scale","cfg_scale",config.cfg_scale??5.5,v=>set("cfg_scale",v),{type:"number"})
+    objectField("CFG scale","cfg_scale",isH3?1:(config.cfg_scale??5.5),v=>set("cfg_scale",v),{type:"number",help:isH3?"MiniMax H3 is guidance-distilled, so this is fixed at 1.0.":"Krea 2 face-refinement classifier-free guidance."})
   ],true);
   addRecipeGroup("Quality and stopping","Identity targets, anti-copy pressure, and automatic stopping.",[
     objectField("Target similarity","target_similarity",config.target_similarity??.45,v=>set("target_similarity",v),{type:"number"}),
@@ -721,33 +949,27 @@ function renderFaceWorkspace(){
     objectField("Anti-copy weight","anti_copy_weight",config.anti_copy_weight??.02,v=>set("anti_copy_weight",v),{type:"number"})
   ]);
   addRecipeGroup("Pose guidance","How pose buckets affect the identity reward.",[
-    objectField("Pose aware","pose_aware",config.pose_aware||false,v=>set("pose_aware",v),{type:"boolean"}),
+    objectField("Pose aware","pose_aware",config.pose_aware||false,v=>{set("pose_aware",v);updateFacePromptModeLabels(config)},{type:"boolean",help:"When on, training uses only the prompts in the enabled viewing-angle rows. Turn it off to use the general fallback prompts instead."}),
     objectField("Pose reward weight","pose_reward_weight",config.pose_reward_weight??.2,v=>set("pose_reward_weight",v),{type:"number"}),
     objectField("Minimum pose references","pose_min_references",config.pose_min_references??2,v=>set("pose_min_references",v),{type:"number"}),
     objectField("Overall identity anchor","pose_anchor",config.pose_plan?.overall_anchor_weight??.8,v=>{config.pose_plan.overall_anchor_weight=v},{type:"number"}),
-    objectField("Prompt idea styles","pose_variations",(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).join(", "),v=>{config.pose_plan.variations=String(v).split(",").map(x=>x.trim().toLowerCase()).filter(Boolean)},{wide:true,help:"Comma-separated styles used by Create Prompt Ideas: natural, studio, cinematic, expression."})
+    objectField("Prompt idea styles","pose_variations",(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).join(", "),v=>{config.pose_plan.variations=String(v).split(",").map(x=>x.trim().toLowerCase()).filter(Boolean)},{wide:true,help:"Comma-separated styles used by Add suggested prompts: natural, studio, cinematic, expression."})
   ]);
   addRecipeGroup("Runtime and checkpoints","Memory, previews, and saved refinement checkpoints.",[
     objectField("Preview every","preview_every",config.preview_every??5,v=>set("preview_every",v),{type:"number"}),
+    ...(isH3?[objectField("Saved preview quality","quality_preview_mode",config.quality_preview_mode||"one_frame",v=>set("quality_preview_mode",v),{type:"select",options:[{label:"Fast one-frame (recommended for frequent previews)",value:"one_frame"},{label:"Native five-frame + center frame (slower)",value:"five_frame"}],help:"Refinement updates always remain one-frame. Five-frame mode runs an additional no-gradient MiniMax inference whenever a preview is due; it improves decode detail but can substantially increase seconds per iteration."}),objectField("Five-frame preview steps","quality_preview_steps",config.quality_preview_steps??20,v=>set("quality_preview_steps",v),{type:"number",help:"Used only for optional five-frame quality previews, not for the refinement gradient."}),objectField("Always save final preview","quality_preview_final",config.quality_preview_final??true,v=>set("quality_preview_final",v),{type:"boolean",help:"Creates the selected preview at completion or early stop even when the final step is not on the normal cadence."})]:[]),
     objectField("Save every","save_every",config.save_every??10,v=>set("save_every",v),{type:"number"}),
-    objectField("Blocks to swap","blocks_to_swap",config.blocks_to_swap??10,v=>set("blocks_to_swap",v),{type:"number"}),
+    objectField("Blocks to swap","blocks_to_swap",config.blocks_to_swap??(isH3?35:10),v=>set("blocks_to_swap",v),{type:"number",help:isH3?"MiniMax H3 face refinement is substantially heavier than normal LoRA training. Start at 35 on 24 GB.":"Move inactive transformer blocks through CPU memory to reduce VRAM."}),
     objectField("GPU","gpu_id",config.gpu_id||"auto",v=>set("gpu_id",v)),
     objectField("Q/K/V/O only","qkvo_only",config.qkvo_only??true,v=>set("qkvo_only",v),{type:"boolean"}),
     objectField("Checkpoint VAE","checkpoint_vae",config.checkpoint_vae??true,v=>set("checkpoint_vae",v),{type:"boolean"})
-  ]);
+  ],isH3);
   config.prompts=Array.isArray(config.prompts)?config.prompts:[];const promptHost=$("#face-prompts");promptHost.innerHTML=config.prompts.length?"":'<div class="empty">Add at least one refinement prompt.</div>';config.prompts.forEach((prompt,index)=>{const row=document.createElement("div");row.className="structured-item face-prompt-card";row.innerHTML=`<div class="structured-item-head"><div><strong>Prompt ${index+1}</strong><small>${esc(String(prompt).replace(/\s+/g," ").trim()||"Empty prompt")}</small></div><div class="structured-item-actions"><button>Remove</button></div></div><details class="prompt-details"><summary>Edit prompt</summary><div class="prompt-field-host"></div></details>`;row.querySelector(".prompt-field-host").append(objectField("Prompt","prompt",prompt,v=>{config.prompts[index]=v},{type:"textarea",wide:true}));row.querySelector(".structured-item-actions button").addEventListener("click",()=>{config.prompts.splice(index,1);renderFaceWorkspace();sync()});promptHost.append(row)});
-  const poseHost=$("#pose-plan"),plan=config.pose_plan||{},buckets=plan.buckets||{};poseHost.innerHTML=Object.keys(buckets).length?"":'<div class="empty">Enable pose-aware training to configure pose goals.</div>';
-  Object.entries(buckets).forEach(([name,bucket])=>{
-    const references=(config.preflight_report?.pose_bucket_counts||{})[name]||0,share=Math.round(Number(bucket.share||0)*10)/10;
-    const row=document.createElement("article");row.className="structured-item pose-card";
-    row.innerHTML=`<div class="structured-item-head"><div><strong>${esc(name.replaceAll("_"," "))}</strong><small>${esc(references)} reference${references===1?"":"s"} · ${esc(share)}% share · target ${esc(bucket.target??.55)}</small></div><div class="structured-item-actions"><label class="compact-toggle"><input type="checkbox" data-pose-enabled ${bucket.enabled!==false?"checked":""}> Include</label><button data-pose-ideas>Create prompt ideas</button></div></div><details class="pose-details"><summary>Tune target and prompts</summary><div class="guided-fields"></div></details>`;
-    const fields=row.querySelector(".guided-fields");
-    fields.append(objectField("Share %","share",share,v=>bucket.share=v,{type:"number"}),objectField("Identity target","target",bucket.target??.55,v=>bucket.target=v,{type:"number"}),objectField("Target patience","patience",bucket.patience??2,v=>bucket.patience=v,{type:"number"}),objectField("Plateau patience","plateau_patience",bucket.plateau_patience??4,v=>bucket.plateau_patience=v,{type:"number"}),objectField("Minimum evaluations","min_evaluations",bucket.min_evaluations??2,v=>bucket.min_evaluations=v,{type:"number"}),objectField("Pose-tagged prompts","prompts",(bucket.prompts||[]).join("\n"),v=>bucket.prompts=String(v).split(/\r?\n/).map(x=>x.trim()).filter(Boolean),{type:"textarea",wide:true,help:`Each line must begin with [${name}] so the reward uses the matching reference bucket.`}));
-    row.querySelector("[data-pose-enabled]").addEventListener("change",event=>{bucket.enabled=event.target.checked;renderFaceWorkspace();sync()});
-    row.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${name}] ${phrases[name]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderFaceWorkspace();sync()});
-    poseHost.append(row);
-  });
-  const evalHost=$("#face-eval-fields");evalHost.innerHTML="";evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
+  const poseHost=$("#pose-plan"),plan=config.pose_plan||{},buckets=plan.buckets||{};
+  if(Object.keys(buckets).length){renderPosePlanTable(poseHost,config,buckets);renderPosePromptEditor($("#pose-prompt-editor"),config,buckets)}
+  else {poseHost.innerHTML='<div class="empty">Enable pose-aware training to configure pose goals.</div>';$("#pose-prompt-editor").innerHTML=""}
+  const evalHost=$("#face-eval-fields");evalHost.innerHTML=isH3?'<div class="issue warning">MiniMax H3 DRaFT refinement is available, but the fixed comparison recipe is not validated yet. Use standalone MiniMax H3 prompt previews to inspect checkpoints.</div>':"";if(!isH3)evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
+  ["#face-baseline","#face-compare","#load-face-result","#open-face-results","#build-weak-pose-plan"].forEach(selector=>{$(selector).disabled=isH3});
   const report=config.preflight_report,excluded=new Set(config.excluded_reference_images||[]),poseNames=["uncertain","frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
   const reportHost=$("#face-preflight-report");
   if(report){
@@ -865,7 +1087,7 @@ async function loadDatasetDocument({quiet = false} = {}) {
   try {
     await withBusy(button, "Loading…", async () => {
       const payload = await api(`/api/dataset?path=${encodeURIComponent(path)}`);
-      state.datasetFormDirty=false;state.datasetRawDirty=false;state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;
+      state.datasetFormDirty=false;state.datasetRawDirty=false;state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;state.samplingEstimate=null;
       state.selectedDataset=payload.datasets.length?0:-1;state.datasetTab=payload.datasets.length?"media":"settings";
       renderDataset(payload,state.selectedDataset);
       const linkedPath=payload.path||path,recipeChanged=!sameLocalPath(state.settings.dataset_config,linkedPath);
@@ -886,6 +1108,16 @@ function ensureDatasetLoaded() {
   if (!path || (state.dataset && sameLocalPath(state.dataset.path,path))) return;
   $("#dataset-path").value = path;
   loadDatasetDocument({quiet:true});
+}
+async function loadDatasetForSettings({quiet = false} = {}) {
+  const path = String(state.settings.dataset_config || "").trim();
+  if (!path) {
+    if (!quiet) toast("This recipe has no Dataset TOML. Choose one before starting.", "error");
+    return false;
+  }
+  if (state.dataset && sameLocalPath(state.dataset.path, path)) return true;
+  $("#dataset-path").value = path;
+  return loadDatasetDocument({quiet});
 }
 function renderDataset(payload, selected = state.selectedDataset) {
   state.dataset=payload;
@@ -1281,13 +1513,19 @@ async function previewCommands() {
   $("#command-preview").textContent = lines.join("\n"); $("#command-dialog").showModal();
 }
 async function startJob() {
+  if (state.settings.dataset_config && !await loadDatasetForSettings()) {
+    go("datasets");
+    return toast("The Dataset TOML could not be loaded. Choose a valid file before starting.", "error");
+  }
   if (!await validateSettings()) return toast("Review the setup issues before starting.");
   if (!await saveSettings()) return;
   const payload = await api("/api/jobs/start",{method:"POST",body:JSON.stringify({settings:state.settings,run_cache:true})});
   lastLogId = 0; $("#live-log").textContent = ""; renderActive(payload.job); go("run"); toast("Musubi training started.");
 }
 
-let lastLogId = 0, latestProgressLine = "", followLog = localStorage.getItem("musubi-log-follow") !== "false";
+function readLocalPreference(key,fallback){try{const value=localStorage.getItem(key);return value==null?fallback:value}catch(_){return fallback}}
+function writeLocalPreference(key,value){try{localStorage.setItem(key,String(value))}catch(_){} }
+let lastLogId = 0, latestProgressLine = "", followLog = readLocalPreference("musubi-log-follow","true")==="true";
 function parseProgressLine(message){
   const text=String(message||"").trim(),match=text.match(/^steps:\s*(\d{1,3})%.*?\b(\d+)\s*\/\s*(\d+)\s*\[([^\]]+)\]/i);
   if(!match)return null;
@@ -1297,10 +1535,23 @@ function parseProgressLine(message){
 function updateLiveProgress(progress){
   if(!progress)return;latestProgressLine=progress.text;$("#live-progress").hidden=false;$("#live-progress-text").textContent=progress.text;
 }
+function keepLiveLogAtBottom(){
+  const log=$("#live-log"),pane=log.closest("[data-run-pane=log]"),run=$("#run");
+  if(!followLog||!run.classList.contains("active")||(!run.classList.contains("run-split-view")&&!pane?.classList.contains("active")))return;
+  log.scrollTop=log.scrollHeight;
+}
+const LIVE_LOG_BOTTOM_TOLERANCE=32;
+function isLiveLogAtBottom(log){return log.scrollHeight-log.scrollTop-log.clientHeight<=LIVE_LOG_BOTTOM_TOLERANCE}
+function setFollowLog(enabled,{scroll=false,persist=true}={}){followLog=Boolean(enabled);setTerminalToggle($("#follow-log"),followLog);if(persist)writeLocalPreference("musubi-log-follow",followLog);if(followLog&&scroll){const log=$("#live-log");requestAnimationFrame(()=>{log.scrollTop=log.scrollHeight})}}
 function appendLogEntries(entries){
-  const log=$("#live-log"),durable=[];entries.forEach(entry=>{const progress=parseProgressLine(entry.message);if(progress)updateLiveProgress(progress);else durable.push(entry.message)});
-  if(!durable.length)return;const wasNearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<36;if(log.textContent==="Waiting for a job…")log.textContent="";
-  log.textContent+=durable.join("\n")+"\n";if(followLog&&wasNearBottom)log.scrollTop=log.scrollHeight;
+  const log=$("#live-log"),durable=[];
+  // Older runs and already-buffered Windows carriage-return artifacts may
+  // have left blank rows in the terminal. Compact them when new output arrives
+  // so the real tail remains reachable without changing meaningful log text.
+  if(log.textContent.includes("\n\n"))log.textContent=log.textContent.split(/\r?\n/).filter(line=>line.trim()).join("\n");
+  entries.forEach(entry=>{const message=String(entry.message??"").replaceAll("\r","").trimEnd();if(!message.trim())return;const progress=parseProgressLine(message);if(progress)updateLiveProgress(progress);else durable.push(message)});
+  if(!durable.length)return;const wasNearBottom=isLiveLogAtBottom(log);if(log.textContent==="Waiting for a job…")log.textContent="";
+  log.textContent+=durable.join("\n")+"\n";if(followLog&&(wasNearBottom||log.clientHeight===0))log.scrollTop=log.scrollHeight;requestAnimationFrame(()=>keepLiveLogAtBottom());
 }
 async function pollJob() {
   try {
@@ -1310,7 +1561,7 @@ async function pollJob() {
     if(state.promptPreview?.jobId&&payload.active?.id===state.promptPreview.jobId){
       const status=payload.active.status;
       if(["completed","failed","stopped"].includes(status)&&state.promptPreview.status!==status){
-        state.promptPreview={...state.promptPreview,status,message:status==="completed"?"Preview ready":`Preview ${status}`};
+        state.promptPreview={...state.promptPreview,status,outputs:payload.active.sample_outputs||state.promptPreview.outputs||[],message:status==="completed"?"Preview ready":`Preview ${status}`};
         renderPlan();
         toast(status==="completed"?"Prompt preview finished. Open Samples to compare it.":`Prompt preview ${status}.`,status==="completed"?"info":"error");
       }
@@ -1359,10 +1610,18 @@ async function loadSamples() {
 }
 function renderSampleGallery(){
   const items=[...state.samples.groups.flatMap(group=>group.items),...(state.samples.ungrouped||[])].sort((a,b)=>b.modified-a.modified);
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} images</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}"><img src="${item.url}" loading="lazy" alt=""><strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
-  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>{const item=items[Number(button.dataset.index)];$("#sample-preview-image").src=item.url;$("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal()}));
+  const media=item=>item.media_kind==="video"?`<video src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" loading="lazy" alt="">`;
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} output${items.length===1?"":"s"}</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}">${media(item)}<strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
+  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>openSamplePreview(items[Number(button.dataset.index)])));
 }
-const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false};
+function openSamplePreview(item){
+  const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
+  video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
+  image.hidden=isVideo;video.hidden=!isVideo;
+  if(isVideo){video.src=item.url;video.load()}else image.src=item.url;
+  $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
+}
+const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
 function renderComparison(index) {
   compareState.group=index;
   $$(".sample-series").forEach((b,i)=>b.classList.toggle("active",i===index));
@@ -1370,26 +1629,46 @@ function renderComparison(index) {
   const restored=(sequence,fallback)=>{const found=sequence?items.findIndex(x=>x.sequence_kind===sequence[0]&&x.sequence===sequence[1]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
   compareState.leftIndex=restored(compareState.leftSequence,Math.max(0,items.length-2));
   compareState.rightIndex=restored(compareState.rightSequence,items.length-1);
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">${esc(items[0]?.prefix||"TRAINING SAMPLE")} · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} versions</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span title="Left/right changes versions. Up/down changes prompts. Touch supports horizontal and vertical swipes.">Keyboard and touch navigation enabled</span></div><div id="compare-viewport"></div><div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B"></select></div>`;
+  const isVideo=items[0]?.media_kind==="video";
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">${esc(items[0]?.prefix||"TRAINING SAMPLE")} · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} versions</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>${isVideo?"Synchronized video comparison":"Keyboard and touch navigation enabled"}</span></div><div id="compare-viewport"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B"></select></div>`;
   const options=items.map((item,i)=>`<option value="${i}">${esc(item.sequence_label||`${item.sequence_kind} ${item.sequence}`)} · ${esc(item.name)}</option>`).join("");
   $("#select-a").innerHTML=options;$("#select-b").innerHTML=options;$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;
   const renderMode=()=>{
     const a=items[compareState.leftIndex],b=items[compareState.rightIndex],host=$("#compare-viewport");
+    const previousMaster=host.querySelector('video[data-video-role="b"]');
+    if(previousMaster&&Number.isFinite(previousMaster.duration)&&previousMaster.duration>0)compareState.videoProgress=previousMaster.currentTime/previousMaster.duration;
     compareState.leftSequence=[a.sequence_kind,a.sequence];compareState.rightSequence=[b.sequence_kind,b.sequence];
     $$("#compare-stage .compare-tools button").forEach(x=>x.classList.toggle("active",x.dataset.mode===compareState.mode));
     $("#wipe-lock").style.display=compareState.mode==="wipe"?"":"none";
+    const media=(item,role)=>isVideo?`<video class="sync-video" data-video-role="${role}" src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" alt="Version ${role.toUpperCase()}">`;
     if(compareState.mode==="side"){
-      host.innerHTML=`<div class="compare-main"><div class="compare-image"><img src="${a.url}" alt="Version A"><label>A · ${esc(a.sequence_label)}</label></div><div class="compare-image"><img src="${b.url}" alt="Version B"><label>B · ${esc(b.sequence_label)}</label></div></div>`;
+      host.innerHTML=`<div class="compare-main"><div class="compare-image">${media(a,"a")}<label>A · ${esc(a.sequence_label)}</label></div><div class="compare-image">${media(b,"b")}<label>B · ${esc(b.sequence_label)}</label></div></div>`;
     }else{
-      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer"><img src="${b.url}" alt="Version B"></div><div class="wipe-layer a" id="wipe-a"><img src="${a.url}" alt="Version A"></div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.sequence_label)}</span></div>`;
+      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer">${media(b,"b")}</div><div class="wipe-layer a" id="wipe-a">${media(a,"a")}</div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.sequence_label)}</span></div>`;
       setWipe(compareState.wipe);bindWipe();
     }
+    if(isVideo)bindVideoSync(host);
     $("#sample-range").value=compareState.rightIndex;
   };
   const setVersion=idx=>{compareState.rightIndex=Math.max(0,Math.min(items.length-1,idx));compareState.leftIndex=Math.max(0,compareState.rightIndex-1);$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;renderMode()};
   const movePrompt=delta=>renderComparison((index+delta+state.samples.groups.length)%state.samples.groups.length);
   const setWipe=value=>{compareState.wipe=Math.max(0,Math.min(100,value));const layer=$("#wipe-a"),line=$("#wipe-divider"),stage=$("#wipe-stage");if(layer)layer.style.clipPath=`inset(0 ${100-compareState.wipe}% 0 0)`;if(line)line.style.left=`${compareState.wipe}%`;stage?.setAttribute("aria-valuenow",String(Math.round(compareState.wipe)))};
   function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",move);stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
+  function bindVideoSync(host){
+    const master=host.querySelector('video[data-video-role="b"]'),slave=host.querySelector('video[data-video-role="a"]'),play=$("#video-play"),progress=$("#video-progress"),time=$("#video-time"),mute=$("#video-mute"),loop=$("#video-loop"),note=$("#video-compare-note");
+    if(!master||!slave)return;
+    const clock=value=>{if(!Number.isFinite(value))return "0:00";const seconds=Math.max(0,Math.floor(value));return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}`};
+    const setRatio=ratio=>{compareState.videoProgress=Math.max(0,Math.min(1,ratio||0));[master,slave].forEach(video=>{if(Number.isFinite(video.duration)&&video.duration>0)video.currentTime=compareState.videoProgress*video.duration});progress.value=String(Math.round(compareState.videoProgress*1000));time.textContent=`${clock(master.currentTime)} / ${clock(master.duration)}`};
+    const align=force=>{if(!Number.isFinite(master.duration)||!Number.isFinite(slave.duration)||master.duration<=0||slave.duration<=0)return;const ratio=master.currentTime/master.duration,target=ratio*slave.duration;if(force||Math.abs(slave.currentTime-target)>.06)slave.currentTime=target;compareState.videoProgress=ratio;progress.value=String(Math.round(ratio*1000));time.textContent=`${clock(master.currentTime)} / ${clock(master.duration)}`};
+    const updateDetails=()=>{if(master.readyState<1||slave.readyState<1)return;const sameSize=master.videoWidth===slave.videoWidth&&master.videoHeight===slave.videoHeight,durationDelta=Math.abs(master.duration-slave.duration);note.textContent=sameSize&&durationDelta<.05?`${master.videoWidth}×${master.videoHeight} · ${clock(master.duration)} · matched previews`:`Previews differ (${master.videoWidth}×${master.videoHeight}, ${clock(master.duration)} versus ${slave.videoWidth}×${slave.videoHeight}, ${clock(slave.duration)}); playback is aligned by progress.`;setRatio(compareState.videoProgress)};
+    const applySound=()=>{master.muted=compareState.videoMuted;slave.muted=true;mute.textContent=compareState.videoMuted?"🔇 Muted":"🔊 B sound"};
+    const applyLoop=()=>{master.loop=compareState.videoLoop;slave.loop=compareState.videoLoop;loop.textContent=compareState.videoLoop?"↻ Loop on":"↻ Loop off"};
+    const pauseBoth=()=>{master.pause();slave.pause();compareState.videoPlaying=false;play.textContent="▶ Play"};
+    const playBoth=async()=>{compareState.videoPlaying=true;play.textContent="❚❚ Pause";align(true);const results=await Promise.allSettled([slave.play(),master.play()]);if(results.some(result=>result.status==="rejected"))pauseBoth()};
+    master.addEventListener("loadedmetadata",updateDetails);slave.addEventListener("loadedmetadata",updateDetails);master.addEventListener("timeupdate",()=>align(false));master.addEventListener("ended",()=>{if(!compareState.videoLoop)pauseBoth()});
+    play.onclick=()=>compareState.videoPlaying?pauseBoth():playBoth();progress.oninput=()=>{const resume=compareState.videoPlaying;pauseBoth();setRatio(Number(progress.value)/1000);if(resume)playBoth()};mute.onclick=()=>{compareState.videoMuted=!compareState.videoMuted;applySound()};loop.onclick=()=>{compareState.videoLoop=!compareState.videoLoop;applyLoop()};
+    applySound();applyLoop();setRatio(compareState.videoProgress);if(compareState.videoPlaying)playBoth();
+  }
   $("#select-a").addEventListener("change",e=>{compareState.leftIndex=Number(e.target.value);renderMode()});$("#select-b").addEventListener("change",e=>{compareState.rightIndex=Number(e.target.value);renderMode()});$("#sample-range").addEventListener("input",e=>setVersion(Number(e.target.value)));
   $$("#compare-stage .compare-tools button").forEach(x=>x.addEventListener("click",()=>{compareState.mode=x.dataset.mode;renderMode()}));
   $("#prev-prompt").addEventListener("click",()=>movePrompt(-1));$("#next-prompt").addEventListener("click",()=>movePrompt(1));$("#prev-version").addEventListener("click",()=>setVersion(compareState.rightIndex-1));$("#next-version").addEventListener("click",()=>setVersion(compareState.rightIndex+1));
@@ -1402,6 +1681,11 @@ async function loadJobs() {
   $$("#recent-jobs [data-recent-index]").forEach(button=>button.addEventListener("click",()=>{const job=state.jobs[Number(button.dataset.recentIndex)],row=document.createElement("div");row.dataset.source=job._source;row.dataset.index=job._history_index;showJobDetails(job,row)}));
   renderJobs();
 }
+function formatJobSpeed(value){return value==null?"—":`${Number(value).toFixed(3)} s/it`}
+function jobRowMarkup(j,i){
+  const key=`${j._source}:${j._history_index}`,selected=(state.jobComparison||[]).some(item=>item.key===key),perf=j.performance||{},speed=perf.median_seconds_per_iteration??perf.overall_seconds_per_iteration;
+  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><span class="job-status ${esc(j.status)}">${esc(j.status)}</span><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${j.kind==="training"&&["failed","stopped"].includes(j.status)?'<button class="quiet recover-job" title="Resume the verified saved optimizer and step position">Resume exact</button>':""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)==="Krea 2"?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
+}
 function renderJobs(){
   const query=($("#job-search")?.value||"").trim().toLowerCase(),status=$("#job-status-filter")?.value||"";
   const filtered=(state.jobs||[]).filter(job=>{
@@ -1413,25 +1697,33 @@ function renderJobs(){
   state.jobPage=Math.min(state.jobPage,pageCount-1);
   const jobs=filtered.slice(state.jobPage*pageSize,(state.jobPage+1)*pageSize);
   const host=$("#jobs-list");host.classList.toggle("empty",!filtered.length);$("#job-result-count").textContent=`${filtered.length} of ${(state.jobs||[]).length}`;
-  host.innerHTML=filtered.length?`<div class="job-header" aria-hidden="true"><span>Run</span><span>Status</span><span>Workflow</span><span>Actions</span></div>`+jobs.map((j,i)=>`<article class="job-row" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><span class="job-status ${esc(j.status)}">${esc(j.status)}</span><div><strong>${esc((j.phase||j.kind||"").replaceAll("_"," "))}</strong><small>${esc(j._source)}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${j.kind==="training"&&["failed","stopped"].includes(j.status)?'<button class="quiet recover-job" title="Resume the verified saved optimizer and step position">Resume exact</button>':""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View details</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)==="Krea 2"?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open logs</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`).join("")+`<nav class="history-pager" aria-label="History pages"><button class="quiet" data-job-page="-1" ${state.jobPage===0?"disabled":""}>Previous</button><span>Page ${state.jobPage+1} of ${pageCount}</span><button class="quiet" data-job-page="1" ${state.jobPage>=pageCount-1?"disabled":""}>Next</button></nav>`:"No jobs match the current filters.";
-  host.querySelectorAll(".job-row").forEach(row=>{const job=jobs[Number(row.dataset.listIndex)],menu=row.querySelector(".job-menu"),more=row.querySelector(".more-job");row.querySelector(".continue-job").addEventListener("click",()=>prepareJob(row,"continuation").catch(error=>toast(error.message,"error")));row.querySelector(".recover-job")?.addEventListener("click",()=>prepareJob(row,"recovery").catch(error=>toast(error.message,"error")));more.addEventListener("click",e=>{e.stopPropagation();$$(".job-menu").forEach(x=>{if(x!==menu)x.hidden=true});menu.hidden=!menu.hidden;more.setAttribute("aria-expanded",String(!menu.hidden));if(!menu.hidden)menu.querySelector("button")?.focus()});row.querySelector(".job-name").addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="details"]').addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="repeat"]').addEventListener("click",()=>repeatJob(job));menu.querySelector('[data-action="apply"]').addEventListener("click",()=>applyJobSettings(job));menu.querySelector('[data-action="prompts"]')?.addEventListener("click",()=>importJobPrompts(job));menu.querySelector('[data-action="face"]')?.addEventListener("click",()=>prepareFaceJob(row));menu.querySelector('[data-action="output"]').addEventListener("click",()=>openJobPath(row,"output"));menu.querySelector('[data-action="logs"]').addEventListener("click",()=>openJobPath(row,"logs"));menu.querySelector('[data-action="copy"]').addEventListener("click",()=>copyJobCommand(job))});
+  host.innerHTML=filtered.length?`<div class="job-header" aria-hidden="true"><span>Run</span><span>Status</span><span>Performance</span><span>Actions</span></div>`+jobs.map((j,i)=>jobRowMarkup(j,i)).join("")+`<nav class="history-pager" aria-label="History pages"><button class="quiet" data-job-page="-1" ${state.jobPage===0?"disabled":""}>Previous</button><span>Page ${state.jobPage+1} of ${pageCount}</span><button class="quiet" data-job-page="1" ${state.jobPage>=pageCount-1?"disabled":""}>Next</button></nav>`:"No jobs match the current filters.";
+  host.querySelectorAll(".job-row").forEach(row=>{const job=jobs[Number(row.dataset.listIndex)],menu=row.querySelector(".job-menu"),more=row.querySelector(".more-job");row.querySelector(".continue-job").addEventListener("click",()=>prepareJob(row,"continuation").catch(error=>toast(error.message,"error")));row.querySelector(".recover-job")?.addEventListener("click",()=>prepareJob(row,"recovery").catch(error=>toast(error.message,"error")));more.addEventListener("click",e=>{e.stopPropagation();$$(".job-menu").forEach(x=>{if(x!==menu)x.hidden=true});menu.hidden=!menu.hidden;more.setAttribute("aria-expanded",String(!menu.hidden));if(!menu.hidden)menu.querySelector("button")?.focus()});row.querySelector(".job-name").addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="details"]').addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="compare"]').addEventListener("click",()=>toggleJobComparison(job));menu.querySelector('[data-action="repeat"]').addEventListener("click",()=>repeatJob(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="apply"]').addEventListener("click",()=>applyJobSettings(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="prompts"]')?.addEventListener("click",()=>importJobPrompts(job));menu.querySelector('[data-action="face"]')?.addEventListener("click",()=>prepareFaceJob(row));menu.querySelector('[data-action="output"]').addEventListener("click",()=>openJobPath(row,"output"));menu.querySelector('[data-action="logs"]').addEventListener("click",()=>openJobPath(row,"logs"));menu.querySelector('[data-action="copy"]').addEventListener("click",()=>copyJobCommand(job))});
   host.querySelectorAll("[data-job-page]").forEach(button=>button.addEventListener("click",()=>{state.jobPage+=Number(button.dataset.jobPage);renderJobs();$("#jobs-list").scrollIntoView({block:"start"})}));
 }
 let detailJob=null,detailRow=null;
-function showJobDetails(job,row){detailJob=job;detailRow=row;$("#job-dialog-title").textContent=job.name||job.output_name||job.title||"Unnamed job";const snapshot=job.settings_snapshot||job.settings||{};const rows=[["Status",job.status],["Mode",job.mode||snapshot.training_mode],["Started",job.started_at?new Date(job.started_at).toLocaleString():"—"],["Progress",job.progress||job.phase||"—"],["Output",snapshot.output_name||job.output_name||"—"],["Return code",job.return_code??"—"]];$("#job-dialog-summary").innerHTML=rows.map(([a,b])=>`<div class="review-row"><span>${esc(a)}</span><strong>${esc(b??"—")}</strong></div>`).join("");$("#job-dialog-json").textContent=JSON.stringify(job,null,2);$("#job-dialog").showModal()}
-function repeatJob(job){const snapshot=structuredClone(job.settings_snapshot||job.settings||{});if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Load this job as a new editable run?"))return;discardWorkspaceDrafts();snapshot.resume_path="";snapshot.network_weights="";snapshot.starting_point_mode="new";snapshot.recovery_mode=false;snapshot.resume_exact_position=false;snapshot.output_name=`${snapshot.output_name||job.output_name||"run"}-repeat`;state.settings=snapshot;renderGuided();renderAllSettings();sync();go("setup");setStep("review");toast("Repeat loaded as a new editable run.")}
+function drawJobSpeedChart(canvas,jobs){const ctx=canvas.getContext("2d"),box=canvas.getBoundingClientRect(),scale=devicePixelRatio||1;canvas.width=Math.max(300,Math.round(box.width*scale));canvas.height=Math.round(220*scale);ctx.scale(scale,scale);const w=canvas.width/scale,h=canvas.height/scale,pad=36,series=jobs.map(job=>job.performance?.speed_history||[]).filter(points=>points.length);ctx.clearRect(0,0,w,h);ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--line");ctx.beginPath();ctx.moveTo(pad,10);ctx.lineTo(pad,h-pad);ctx.lineTo(w-10,h-pad);ctx.stroke();if(!series.length){ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted");ctx.font="12px sans-serif";ctx.fillText("No measured per-step timing curve was saved for this historical job.",pad+15,h/2);return}const maxX=Math.max(...series.flat().map(p=>Number(p[0])||0),1),maxY=Math.max(...series.flat().map(p=>Number(p[1])||0),1),colors=["#51d6a2","#73a9ff"];series.forEach((points,index)=>{ctx.strokeStyle=colors[index%colors.length];ctx.lineWidth=1.6;ctx.beginPath();points.forEach((p,i)=>{const x=pad+(Number(p[0])/maxX)*(w-pad-15),y=10+(1-Number(p[1])/maxY)*(h-pad-15);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y)});ctx.stroke()});ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted");ctx.font="11px sans-serif";ctx.fillText("step",w-38,h-10);ctx.save();ctx.translate(12,h/2);ctx.rotate(-Math.PI/2);ctx.fillText("s/it",0,0);ctx.restore()}
+function showJobDetails(job,row){detailJob=job;detailRow=row;$("#job-dialog-title").textContent=job.name||job.output_name||job.title||"Unnamed job";const snapshot=job.settings_snapshot||job.settings||{},p=job.performance||{};const rows=[["Status",job.status],["Source",`${job._source||"desktop"} GUI`],["Mode",job.mode||snapshot.training_mode],["Started",job.started_at?new Date(job.started_at).toLocaleString():"—"],["Progress",job.progress||job.phase||`${p.step||0} / ${p.total_steps||0}`],["Measured median",formatJobSpeed(p.median_seconds_per_iteration)],["Recent median",formatJobSpeed(p.recent_seconds_per_iteration)],["Whole-job estimate",formatJobSpeed(p.overall_seconds_per_iteration)],["Output",snapshot.output_name||job.output_name||"—"],["Return code",job.return_code??"—"]];$("#job-dialog-summary").innerHTML=rows.map(([a,b])=>`<div class="review-row"><span>${esc(a)}</span><strong>${esc(b??"—")}</strong></div>`).join("");const note=$("#job-performance-note");note.className=`issue ${p.sample_count?"ok":"warning"}`;note.textContent=p.sample_count?`${p.sample_count} measured speed samples. Loading, cache preparation, previews, and saves are excluded from this curve.`:"This older job has no saved per-step timing curve. Its whole-job estimate includes loading, caching, previews, and checkpoint saves.";$("#job-console-log").hidden=true;$("#job-console-log").textContent="";$("#job-dialog-json").textContent=JSON.stringify(job,null,2);$("#job-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-speed-chart"),[job]))}
+async function loadJobConsole(){if(!detailRow)return;const host=$("#job-console-log");try{const payload=await api(`/api/jobs/log?source=${encodeURIComponent(detailRow.dataset.source)}&index=${encodeURIComponent(detailRow.dataset.index)}`);host.textContent=payload.log;host.hidden=false;host.scrollTop=host.scrollHeight}catch(error){host.textContent=`No saved console log is available for this job.\n\n${error.message}`;host.hidden=false}}
+function toggleJobComparison(job){state.jobComparison ||= [];const key=`${job._source}:${job._history_index}`,index=state.jobComparison.findIndex(item=>item.key===key);if(index>=0)state.jobComparison.splice(index,1);else{if(state.jobComparison.length>=2)state.jobComparison.shift();state.jobComparison.push({key,job})}const button=$("#compare-jobs");button.disabled=state.jobComparison.length!==2;button.textContent=`Compare selected (${state.jobComparison.length}/2)`;renderJobs()}
+function showJobComparison(){const jobs=(state.jobComparison||[]).map(item=>item.job);if(jobs.length!==2)return;$("#job-compare-summary").innerHTML=jobs.map(job=>{const p=job.performance||{};return `<article><strong>${esc(job.name||job.output_name||job.title||"Unnamed")}</strong><small>${esc(job._source)} GUI · ${esc(job.mode||job.settings?.training_mode||job.settings_snapshot?.training_mode||"")}</small><p>Median: ${formatJobSpeed(p.median_seconds_per_iteration)}<br>Recent: ${formatJobSpeed(p.recent_seconds_per_iteration)}<br>Whole-job estimate: ${formatJobSpeed(p.overall_seconds_per_iteration)}<br>Samples: ${p.sample_count||0}</p></article>`}).join("");$("#job-compare-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-compare-chart"),jobs))}
+async function replaySettings(job){const p=await api("/api/jobs/replay-settings",{method:"POST",body:JSON.stringify({source:job._source,index:Number(job._history_index)})});return structuredClone(p.settings||{})}
+function splitRepeatName(name){let base=String(name||"").trim()||"run",generation=0,match;while((match=base.match(/-repeat(\d*)$/i))){generation+=Number(match[1]||1);base=base.slice(0,match.index).replace(/-+$/g,"")||"run"}return {base,generation}}
+function nextRepeatName(name){const parsed=splitRepeatName(name);let generation=parsed.generation+1;for(const job of state.jobs||[]){const snapshot=job.settings_snapshot||job.settings||{},existing=splitRepeatName(snapshot.output_name||job.output_name||job.name);if(existing.base.toLowerCase()===parsed.base.toLowerCase())generation=Math.max(generation,existing.generation+1)}return `${parsed.base}-repeat${generation===1?"":generation}`}
+async function repeatJob(job){const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Load this job as a new editable run?"))return;discardWorkspaceDrafts();snapshot.resume_path="";snapshot.network_weights="";snapshot.starting_point_mode="new";snapshot.recovery_mode=false;snapshot.resume_exact_position=false;snapshot.output_name=nextRepeatName(snapshot.output_name||job.output_name||job.name||"run");state.settings=snapshot;renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");setStep("review");toast(datasetLoaded?"Repeat loaded as a new editable run.":"Repeat loaded, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}
 async function openJobPath(row,kind){try{const p=await api("/api/jobs/open-path",{method:"POST",body:JSON.stringify({source:row.dataset.source,index:Number(row.dataset.index),kind})});toast(`Opened ${p.opened}`)}catch(e){toast(e.message)}}
-function applyJobSettings(job){const snapshot=job.settings_snapshot||job.settings;if(!snapshot)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Apply this job's saved recipe?"))return;discardWorkspaceDrafts();state.settings={...state.settings,...snapshot};renderGuided();renderAllSettings();sync();go("setup");toast("Job recipe applied for review.")}
+async function applyJobSettings(job){if(!confirmWorkspaceReplacement("Apply this job's saved recipe?"))return;const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");discardWorkspaceDrafts();state.settings={...state.settings,...snapshot};renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");toast(datasetLoaded?"Job recipe applied for review.":"Recipe applied, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}
 function importJobPrompts(job){const prompts=(job.settings_snapshot||job.settings||{}).sample_prompts_data||[];state.settings.sample_prompts_data||=[];const known=new Set(state.settings.sample_prompts_data.map(x=>JSON.stringify(x)));let added=0;prompts.forEach(x=>{const key=JSON.stringify(x);if(!known.has(key)){state.settings.sample_prompts_data.push(structuredClone(x));known.add(key);added++}});sync();toast(`${added} sample prompt${added===1?"":"s"} imported.`)}
 async function copyJobCommand(job){const value=Array.isArray(job.commands)?job.commands.map(x=>Array.isArray(x)?x.join(" "):x).join("\n"):job.command||"";if(!value)return toast("No command was recorded for this job.");await navigator.clipboard.writeText(value);toast("Command copied.")}
-async function prepareJob(row,action){if(!confirmWorkspaceReplacement(action==="recovery"?"Load this exact recovery?":"Load this continuation?"))return;const p=await api(`/api/jobs/prepare-${action}`,{method:"POST",body:JSON.stringify({source:row.dataset.source,index:Number(row.dataset.index)})});discardWorkspaceDrafts();state.settings=p.settings;renderGuided();renderAllSettings();sync();go("setup");setStep("review");toast(action==="recovery"?"Verified recovery loaded for review.":"Continuation loaded for review.")}
+async function prepareJob(row,action){if(!confirmWorkspaceReplacement(action==="recovery"?"Load this exact recovery?":"Load this continuation?"))return;const p=await api(`/api/jobs/prepare-${action}`,{method:"POST",body:JSON.stringify({source:row.dataset.source,index:Number(row.dataset.index)})});discardWorkspaceDrafts();state.settings=p.settings;renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");setStep("review");const label=action==="recovery"?"Verified recovery loaded for review.":"Continuation loaded for review.";toast(datasetLoaded?label:`${label} Its saved Dataset TOML could not be loaded; choose a valid file before starting.`,datasetLoaded?"info":"error")}
 async function prepareFaceJob(row){if(!confirmWorkspaceReplacement("Load this face-refinement continuation?"))return;try{const p=await api("/api/jobs/prepare-face",{method:"POST",body:JSON.stringify({source:row.dataset.source,index:Number(row.dataset.index)})});discardWorkspaceDrafts();state.settings=p.settings;renderGuided();renderAllSettings();sync();go("face");toast("Face-refinement continuation loaded for review.")}catch(e){toast(e.message)}}
 
 async function initialize() {
   try {
     const payload=await api("/api/settings");state.settings=payload.settings;state.schema=payload.schema;
     if(!state.settings.face_refinement_config?.pose_plan){const defaults=await api("/api/face/defaults");state.settings.face_refinement_config=state.settings.face_refinement_config||{};state.settings.face_refinement_config.pose_plan=defaults.pose_plan;state.settings.face_refinement_config.face_model_dir ||= defaults.face_model_dir}
-    applyTheme(state.settings.appearance_mode||localStorage.getItem("musubi-theme")||"Dark",{syncSetting:false});
+    const savedTheme=readLocalPreference("musubi-theme",state.settings.appearance_mode||"Dark");
+    applyTheme(savedTheme,{syncSetting:true});
     renderGuided();renderAllSettings();sync(false);setDirty(false);$("#dataset-path").value=state.settings.dataset_config||"";
     $("#save-dataset").disabled=true;$("#inspect-dataset").disabled=true;
     $("#server-status").classList.add("online");$("#server-status").lastChild.textContent="Local service";
@@ -1452,6 +1744,7 @@ $$(".model-tile").forEach(n=>n.addEventListener("click",()=>{selectMode(n.datase
 function closeDialogSafely(dialog){
   if(dialog?.id==="dataset-media-dialog"&&state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))return false;
   if(dialog?.id==="dataset-media-dialog")state.datasetCaptionDirty=false;
+  if(dialog?.id==="sample-preview-dialog"){const video=$("#sample-preview-video"),image=$("#sample-preview-image");video?.pause();if(video)video.hidden=true;if(image)image.hidden=false}
   dialog?.close();return true;
 }
 $$("[data-close]").forEach(n=>n.addEventListener("click",()=>closeDialogSafely(document.getElementById(n.dataset.close))));
@@ -1474,11 +1767,12 @@ $("#apply-workspace").addEventListener("click",async()=>{try{const result=await 
 $("#setting-search").addEventListener("input",filterSettings);$("#show-all-modes").addEventListener("change",filterSettings);$("#settings-json").addEventListener("change",()=>{if(acceptRawSettings()){renderGuided();renderAllSettings();sync()}});
 $("#load-dataset").addEventListener("click",()=>loadDatasetDocument());
 $("#dataset-path").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();loadDatasetDocument()}});
-$("#dataset-source").addEventListener("input",()=>{state.datasetFormDirty=false;state.datasetRawDirty=true;setDatasetDirty(true)});
+$("#dataset-source").addEventListener("input",()=>{state.datasetFormDirty=false;state.datasetRawDirty=true;state.samplingEstimate=null;renderSamplingEstimate();setDatasetDirty(true)});
 $("#browse-dataset").addEventListener("click",()=>withBusy($("#browse-dataset"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"file",initial:$("#dataset-path").value})});if(result.path){$("#dataset-path").value=result.path;await loadDatasetDocument()}}).catch(e=>toast(e.message,"error")));
 $("#inspect-dataset").addEventListener("click",()=>withBusy($("#inspect-dataset"),"Auditing…",inspectDataset).catch(e=>toast(e.message,"error")));
 $("#validate-dataset").addEventListener("click",()=>parseDatasetRawDraft({announce:true}).catch(error=>toast(error.message,"error")));
 $("#dataset-defaults").addEventListener("click",selectDatasetDefaults);
+$("#estimate-epoch-steps")?.addEventListener("click",estimateSamplingSteps);
 $$("[data-dataset-tab]").forEach((button,index,buttons)=>{
   button.addEventListener("click",async()=>{if(button.disabled)return;try{await flushDatasetDraft();setDatasetTab(button.dataset.datasetTab)}catch(error){toast(error.message,"error")}});
   button.addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const enabled=buttons.filter(item=>!item.disabled),current=enabled.indexOf(button),target=event.key==="Home"?0:event.key==="End"?enabled.length-1:(current+(event.key==="ArrowLeft"?-1:1)+enabled.length)%enabled.length;enabled[target]?.click();enabled[target]?.focus()});
@@ -1502,10 +1796,15 @@ $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{st
 $("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});$("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
 $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));
 function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}
-const wrapLog=localStorage.getItem("musubi-log-wrap")!=="false";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
-$("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);localStorage.setItem("musubi-log-wrap",String(active))});
-$("#follow-log").addEventListener("click",event=>{followLog=!followLog;setTerminalToggle(event.currentTarget,followLog);localStorage.setItem("musubi-log-follow",String(followLog));if(followLog)$("#live-log").scrollTop=$("#live-log").scrollHeight});
-$("#live-log").addEventListener("scroll",event=>{if(!followLog)return;const log=event.currentTarget;if(log.scrollHeight-log.scrollTop-log.clientHeight>80){followLog=false;setTerminalToggle($("#follow-log"),false);localStorage.setItem("musubi-log-follow","false")}});
+const wrapLog=readLocalPreference("musubi-log-wrap","true")==="true";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);
+$("#wrap-log").addEventListener("click",event=>{const active=!$("#live-log").classList.contains("wrap-lines");$("#live-log").classList.toggle("wrap-lines",active);setTerminalToggle(event.currentTarget,active);writeLocalPreference("musubi-log-wrap",active)});
+$("#follow-log").addEventListener("click",()=>setFollowLog(!followLog,{scroll:!followLog}));
+$("#live-log").addEventListener("scroll",event=>{const log=event.currentTarget;if(isLiveLogAtBottom(log)){if(!followLog)setFollowLog(true)}else if(followLog)setFollowLog(false)});
+function setRunSplitRatio(ratio,persist=true){const value=Math.min(.75,Math.max(.25,Number(ratio)||.5)),percent=Math.round(value*100),stack=$("#run-panel-stack"),divider=$("#run-split-divider");stack.style.gridTemplateColumns=`calc(${percent}% - 5px) 10px calc(${100-percent}% - 5px)`;divider.setAttribute("aria-valuenow",String(percent));if(persist)writeLocalPreference("musubi-run-split-ratio",value)}
+function setRunSplitView(enabled,persist=true){const run=$("#run"),button=$("#toggle-run-split");run.classList.toggle("run-split-view",enabled);button.setAttribute("aria-pressed",String(enabled));button.textContent=enabled?"Use tabs":"Show split view";if(persist)writeLocalPreference("musubi-run-split",enabled)}
+const initialRunSplit=readLocalPreference("musubi-run-split","false")==="true";setRunSplitView(initialRunSplit,false);setRunSplitRatio(Number(readLocalPreference("musubi-run-split-ratio","0.5")),false);
+$("#toggle-run-split").addEventListener("click",()=>setRunSplitView(!$("#run").classList.contains("run-split-view")));
+const runDivider=$("#run-split-divider");runDivider.addEventListener("pointerdown",event=>{if(!$("#run").classList.contains("run-split-view"))return;event.preventDefault();const stack=$("#run-panel-stack"),rect=stack.getBoundingClientRect();const move=moveEvent=>setRunSplitRatio((moveEvent.clientX-rect.left)/rect.width,false),stop=()=>{window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",stop);const value=Number(runDivider.getAttribute("aria-valuenow"))/100;writeLocalPreference("musubi-run-split-ratio",value)};window.addEventListener("pointermove",move);window.addEventListener("pointerup",stop)});runDivider.addEventListener("keydown",event=>{if(!["ArrowLeft","ArrowRight"].includes(event.key))return;event.preventDefault();const current=Number(runDivider.getAttribute("aria-valuenow"))/100;setRunSplitRatio(current+(event.key==="ArrowRight"?.05:-.05))});
 function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   const buttons=$$(buttonSelector),panes=$$(paneSelector);
   buttons[0]?.parentElement?.setAttribute("role","tablist");
@@ -1520,6 +1819,8 @@ function bindTabs(buttonSelector,paneSelector,buttonKey,paneKey){
   buttons.find(button=>button.classList.contains("active"))?.click();
 }
 bindTabs("[data-run-tab]","[data-run-pane]","runTab","runPane");
+$$('[data-run-tab]').forEach(button=>button.addEventListener("click",()=>{if($("#run").classList.contains("run-split-view"))setRunSplitView(false)}));
+$("[data-run-tab=log]").addEventListener("click",()=>requestAnimationFrame(()=>keepLiveLogAtBottom()));
 bindTabs("[data-plan-tab]","[data-plan-pane]","planTab","planPane");
 bindTabs("[data-face-step]","[data-face-pane]","faceStep","facePane");
 $("#use-stages").addEventListener("change",e=>{state.settings.use_staged_training=e.target.checked;renderPlan();sync()});
@@ -1537,10 +1838,10 @@ $("#add-face-stage").addEventListener("click",addOrUpdateFaceStage);$("#review-f
 $("#download-face-models").addEventListener("click",async()=>{
   const config=faceConfig();
   if(!config.license_acknowledged)return toast("Acknowledge the third-party model license before downloading.");
-  if(!confirm("Download the AntelopeV2 detection and recognition models (about 220 MB) into the selected model directory?"))return;
+  if(!confirm("Download the AntelopeV2 detection and recognition models (about 280 MB) into the selected model folder?"))return;
   const button=$("#download-face-models");button.disabled=true;button.textContent="Downloading AntelopeV2…";
   try{const payload=await api("/api/face/models/download",{method:"POST",body:JSON.stringify({face_model_dir:config.face_model_dir})});config.face_model_dir=payload.model_dir;renderFaceWorkspace();sync();toast("AntelopeV2 models are ready.")}
-  catch(e){toast(e.message)}finally{button.disabled=false;button.textContent="Download AntelopeV2 models"}
+  catch(e){toast(e.message)}finally{button.disabled=false;button.textContent="Download models to selected folder"}
 });
 $("#apply-pose-preset").addEventListener("click",async()=>{try{const config=faceConfig(),payload=await api("/api/face/pose-preset",{method:"POST",body:JSON.stringify({preset:$("#pose-preset").value,plan:config.pose_plan})});config.pose_plan=payload.pose_plan;config.pose_aware=true;renderFaceWorkspace();sync();toast("Pose preset applied.")}catch(e){toast(e.message)}});
 $("#import-pose-prompts").addEventListener("click",()=>$("#pose-prompt-file").click());
@@ -1587,7 +1888,7 @@ document.addEventListener("keydown",event=>{
   if(event.key==="ArrowUp")$("#prev-prompt")?.click();
   if(event.key==="ArrowDown")$("#next-prompt")?.click();
 });
-$("#job-open-output").addEventListener("click",()=>detailRow&&openJobPath(detailRow,"output"));$("#job-open-logs").addEventListener("click",()=>detailRow&&openJobPath(detailRow,"logs"));$("#job-dialog-copy").addEventListener("click",()=>detailJob&&copyJobCommand(detailJob));
+$("#job-view-console").addEventListener("click",()=>loadJobConsole());$("#job-open-output").addEventListener("click",()=>detailRow&&openJobPath(detailRow,"output"));$("#job-open-logs").addEventListener("click",()=>detailRow&&openJobPath(detailRow,"logs"));$("#job-dialog-copy").addEventListener("click",()=>detailJob&&copyJobCommand(detailJob));$("#compare-jobs").addEventListener("click",showJobComparison);
 applyTheme(localStorage.getItem("musubi-theme")||"Dark",{syncSetting:false,persist:false});
 window.addEventListener("beforeunload",event=>{if(!state.dirty&&!state.datasetDirty&&!state.datasetFormDirty&&!state.datasetRawDirty&&!state.datasetCaptionDirty)return;event.preventDefault();event.returnValue=""});
 window.addEventListener("popstate",()=>{const requested=location.hash.replace(/^#/,"")||"home";if($(`.view#${CSS.escape(requested)}`))go(requested,{historyMode:"none"})});

@@ -1,6 +1,6 @@
 # Differential Output Preservation (DOP)
 
-DOP is an experimental LoRA-training option for **Krea 2** and **FLUX.2 Klein 4B/9B**. It helps a LoRA learn a named subject without replacing the base model's broader knowledge of the subject's class.
+DOP is an experimental LoRA-training option for **Krea 2**, **MiniMax H3 image-only**, and **FLUX.2 Klein 4B/9B**. It helps a LoRA learn a named subject without replacing the base model's broader knowledge of the subject's class.
 
 For example, if every caption contains `Alice` and the preservation class is `a woman`, the cache stores both:
 
@@ -13,7 +13,7 @@ This can help prompts distinguish the trained character from other people of the
 
 ## GUI setup
 
-1. Select Krea 2 or FLUX.2 Klein.
+1. Select Krea 2, MiniMax H3 (Experimental), or FLUX.2 Klein.
 2. Open **Training → Identity & Class Preservation · DOP**.
 3. Enable DOP.
 4. Enter the exact subject trigger used in every caption.
@@ -27,7 +27,7 @@ Choose wording that makes the replaced caption read naturally. For example, `pho
 
 ## Cost and monitoring
 
-DOP performs three DiT predictions per batch instead of one: normal subject training, a frozen base-model class prediction, and a LoRA-enabled class prediction. Expect a substantial speed cost. The base teacher runs without gradients, so the memory increase is smaller than running three normal training passes, but model and configuration differences still matter.
+DOP performs three DiT predictions per batch instead of one: normal subject training, a frozen base-model class prediction, and a LoRA-enabled class prediction. Expect a substantial speed cost. The base teacher runs without gradients, so the memory increase is smaller than running three normal training passes, but model and configuration differences still matter. For 24 GB MiniMax H3, keep the conservative block-swap default for the first DOP test.
 
 The Monitor page reports:
 
@@ -56,4 +56,4 @@ One practical experiment is stronger preservation in an early, lower-resolution 
 
 ## Attribution
 
-The technique was studied from [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit), where it is called Differential Output Preservation. This repository contains an independent Musubi adaptation for cached-text Krea 2 and FLUX.2 Klein training.
+The technique was studied from [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit), where it is called Differential Output Preservation. This repository contains an independent Musubi adaptation for cached-text Krea 2, MiniMax H3, and FLUX.2 Klein training.

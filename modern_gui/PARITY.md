@@ -17,11 +17,11 @@ semantics, and has regression coverage. Merely retaining a value in raw JSON is 
 | Notes and generated settings summary | Training Plan → Notes | Complete |
 | Standard staged training plan | Training Plan → Stages | Complete |
 | Stage DOP/depth overrides and cache policy | Training Plan → Stages | Complete |
-| Krea face-refinement stages | Face Refinement; Training Plan | Complete |
-| DOP, Krea weight noise, depth anchor | New training → Method → Regularization | Complete |
+| Krea / MiniMax H3 face-refinement stages | Face Refinement; Training Plan | Complete |
+| DOP, Krea/MiniMax weight noise and depth anchor | New training → Method → Regularization | Complete |
 | Complete advanced/runtime/logging/sampling settings | All settings | Complete |
 | Sample prompt add/edit/delete/duplicate/enable | Training Plan → Sample prompts | Complete |
-| Global prompt library and Krea preview generation | Training Plan → Sample prompts | Complete |
+| Global prompt library and Krea/MiniMax preview generation | Training Plan → Sample prompts | Complete |
 | Prompt-library favorites, metadata editing, deletion, and tested thumbnails | Prompt library dialog | Complete |
 | Automatic library-thumbnail capture after successful prompt tests | Active run; Prompt library | Complete |
 | Sample comparison and gallery | Samples | Complete |

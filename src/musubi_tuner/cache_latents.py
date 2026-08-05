@@ -284,7 +284,13 @@ def encode_and_save_batch(vae: AutoencoderKLCausal3D, batch: list[ItemInfo]):
         save_latent_cache(item, l)
 
 
-def encode_datasets(datasets: list[BaseDataset], encode: callable, args: argparse.Namespace, supports_alpha: bool = False):
+def encode_datasets(
+    datasets: list[BaseDataset],
+    encode: callable,
+    args: argparse.Namespace,
+    supports_alpha: bool = False,
+    skip_existing_validator: Optional[callable] = None,
+):
     """Common function to encode datasets. This function is called from multiple architecture scripts."""
     num_workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
     for i, dataset in enumerate(datasets):
@@ -304,7 +310,10 @@ def encode_datasets(datasets: list[BaseDataset], encode: callable, args: argpars
             all_latent_cache_paths.extend([item.latent_cache_path for item in batch])
 
             if args.skip_existing:
-                filtered_batch = [item for item in batch if not os.path.exists(item.latent_cache_path)]
+                if skip_existing_validator is None:
+                    filtered_batch = [item for item in batch if not os.path.exists(item.latent_cache_path)]
+                else:
+                    filtered_batch = [item for item in batch if not skip_existing_validator(item.latent_cache_path)]
                 if len(filtered_batch) == 0:
                     continue
                 batch = filtered_batch

@@ -130,6 +130,50 @@ def _job_settings(job: dict[str, Any]) -> dict[str, Any] | None:
     return settings if isinstance(settings, dict) and settings else None
 
 
+def effective_history_settings(job: dict[str, Any]) -> dict[str, Any]:
+    """Apply compatibility rules to a historical job's effective settings."""
+
+    snapshot = _job_settings(job)
+    if not snapshot:
+        raise ValueError("This job has no complete settings snapshot.")
+    settings = copy.deepcopy(snapshot)
+    is_minimax = str(settings.get("training_mode") or job.get("mode") or "").startswith("MiniMax H3")
+    has_minimax_depth_schema = any(
+        key in settings
+        for key in (
+            "minimax_h3_depth_vae_device",
+            "minimax_h3_keep_depth_vae_on_device",
+            "minimax_h3_depth_every_n_steps",
+        )
+    )
+    recorded_commands = job.get("commands") or job.get("command") or []
+    if isinstance(recorded_commands, str):
+        command_text = recorded_commands
+    else:
+        command_text = " ".join(
+            " ".join(str(item) for item in value)
+            if isinstance(value, (list, tuple))
+            else str(value)
+            for value in recorded_commands
+        )
+    log_path = str(job.get("console_log_path") or "").strip()
+    if log_path and not command_text:
+        try:
+            command_text = Path(log_path).read_text(encoding="utf-8", errors="replace")[:65536]
+        except OSError:
+            pass
+    recorded_advanced_minimax = bool(
+        re.search(r"(?:^|\s)--(?:depth_anchor_weight|weight_noise_sigma)(?:\s|=)", command_text)
+    )
+    if is_minimax and not has_minimax_depth_schema and not recorded_advanced_minimax:
+        # These shared Krea values were inert before MiniMax depth support was
+        # introduced. Do not silently activate them when an old job is replayed.
+        settings["krea2_generalization_preset"] = "Off (Baseline)"
+        settings["krea2_weight_noise_sigma"] = "0"
+        settings["krea2_depth_anchor_weight"] = "0"
+    return settings
+
+
 def _recorded_final_stage_settings(job: dict[str, Any]) -> dict[str, Any] | None:
     """Return the effective recipe for the last completed staged run."""
 
@@ -303,9 +347,7 @@ def resolve_exact_recovery_state(job: dict[str, Any]) -> tuple[Path | None, list
 
 
 def prepare_continuation(job: dict[str, Any]) -> dict[str, Any]:
-    snapshot = _job_settings(job)
-    if not isinstance(snapshot, dict) or not snapshot:
-        raise ValueError("This job has no complete settings snapshot.")
+    snapshot = effective_history_settings(job)
     final_settings = _recorded_final_stage_settings(job)
     settings = copy.deepcopy(snapshot)
     if final_settings:
@@ -345,9 +387,7 @@ def prepare_continuation(job: dict[str, Any]) -> dict[str, Any]:
 def prepare_exact_recovery(job: dict[str, Any]) -> dict[str, Any]:
     if job.get("kind") != "training" or job.get("status") not in {"failed", "stopped"}:
         raise ValueError("True recovery is available only for failed or stopped normal training jobs.")
-    snapshot = job.get("settings_snapshot") or job.get("settings")
-    if not isinstance(snapshot, dict) or not snapshot:
-        raise ValueError("This job has no complete settings snapshot.")
+    snapshot = effective_history_settings(job)
     state, rejected = resolve_exact_recovery_state(job)
     if state is None:
         detail = "; ".join(rejected[:4]) or "No associated state folder was found."

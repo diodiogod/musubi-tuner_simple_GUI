@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from job_performance import append_job_log, compact_speed_history, job_log_path, parse_training_speed
+
 from modern_gui.commands import build_command_plan
 from modern_gui.stages import (
     prepare_standard_stage,
@@ -116,8 +118,11 @@ class JobSupervisor:
             self._log.clear()
             self._next_log_id = 1
             self._stop_requested = False
+            job_id = str(uuid.uuid4())
+            console_log = job_log_path(job_id)
+            console_log.unlink(missing_ok=True)
             self._active = {
-                "id": str(uuid.uuid4()),
+                "id": job_id,
                 "name": settings.get("output_name") or "unnamed",
                 "mode": settings.get("training_mode", "Wan 2.2"),
                 "status": "starting",
@@ -138,8 +143,10 @@ class JobSupervisor:
                     "dop_loss": None,
                     "dop_weighted": None,
                     "loss_history": [],
+                    "speed_history": [],
                 },
                 "settings": settings,
+                "console_log_path": str(console_log),
             }
             target = self._run_staged if staged else self._run
             arguments = (settings, stages) if staged else (commands,)
@@ -166,8 +173,11 @@ class JobSupervisor:
             self._log.clear()
             self._next_log_id = 1
             self._stop_requested = False
+            job_id = str(uuid.uuid4())
+            console_log = job_log_path(job_id)
+            console_log.unlink(missing_ok=True)
             self._active = {
-                "id": str(uuid.uuid4()),
+                "id": job_id,
                 "name": name,
                 "mode": mode,
                 "status": "starting",
@@ -181,9 +191,10 @@ class JobSupervisor:
                 "metrics": {
                     "step": 0, "total_steps": 0, "epoch": 0, "total_epochs": 0,
                     "loss": None, "depth_loss": None, "dop_loss": None,
-                    "dop_weighted": None, "loss_history": [],
+                    "dop_weighted": None, "loss_history": [], "speed_history": [],
                 },
                 "settings": dict(settings),
+                "console_log_path": str(console_log),
                 "_completion_context": dict(completion_context or {}),
             }
             thread = threading.Thread(target=self._run, args=(commands,), daemon=True, name="musubi-web-utility")
@@ -208,16 +219,35 @@ class JobSupervisor:
             return dict(self._active)
 
     def _append_log(self, stream: str, message: str) -> None:
+        # tqdm and redirected Windows streams can emit bare carriage-return
+        # progress updates. After universal-newline handling those become
+        # empty output lines; keeping them makes the live terminal grow with
+        # invisible rows even though the compact progress header is correct.
+        message = str(message).replace("\r", "")
+        if stream == "output" and not message.strip():
+            return
         with self._lock:
+            observed_at = _utc_now()
             transient = stream == "output" and is_training_progress_line(message)
             if transient and self._log and self._log[-1].get("transient"):
                 self._log.pop()
-            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": _utc_now(), "transient": transient})
+            self._log.append({"id": self._next_log_id, "stream": stream, "message": message, "time": observed_at, "transient": transient})
             self._next_log_id += 1
+            if self._active:
+                try:
+                    append_job_log(self._active.get("console_log_path", ""), observed_at, stream, message)
+                except OSError:
+                    pass
             if stream == "output" and self._active:
                 update = parse_training_line(message)
                 metrics = self._active.get("metrics", {})
                 metrics.update(update)
+                speed = parse_training_speed(message)
+                if speed:
+                    history = metrics.setdefault("speed_history", [])
+                    history.append([speed["step"], speed["seconds_per_iteration"], observed_at])
+                    metrics["speed_history"] = compact_speed_history(history)
+                    metrics["seconds_per_iteration"] = speed["seconds_per_iteration"]
                 if "loss" in update:
                     history = metrics.setdefault("loss_history", [])
                     point = [int(update.get("step", metrics.get("step", 0))), update["loss"]]
@@ -414,9 +444,11 @@ class JobSupervisor:
 
     def _finish(self, return_code: int) -> None:
         captured = 0
+        sample_outputs: list[str] = []
         with self._lock:
             context = dict((self._active or {}).get("_completion_context") or {})
         if return_code == 0 and context.get("kind") == "sample_test":
+            sample_outputs = self._find_new_sample_outputs(context)
             captured = self._capture_sample_test_thumbnails(context)
         with self._lock:
             stopped = self._stop_requested
@@ -425,6 +457,8 @@ class JobSupervisor:
                 self._active["finished_at"] = _utc_now()
                 self._active["return_code"] = return_code
                 self._active["phase"] = "finished"
+                if sample_outputs:
+                    self._active["sample_outputs"] = sample_outputs
                 if captured:
                     self._active["captured_thumbnails"] = captured
                 record = {key: value for key, value in self._active.items() if key not in {"settings", "stage_settings", "_completion_context"}}
@@ -435,6 +469,18 @@ class JobSupervisor:
                 history.insert(0, record)
                 _write_history(history)
             self._process = None
+
+    @staticmethod
+    def _find_new_sample_outputs(context: dict[str, Any]) -> list[str]:
+        save_path = Path(str(context.get("save_path") or ""))
+        before = set(context.get("existing_outputs") or [])
+        supported = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
+        outputs = [
+            path for path in save_path.glob("*")
+            if path.is_file() and path.suffix.lower() in supported and str(path.resolve()) not in before
+        ]
+        outputs.sort(key=lambda path: (path.stat().st_mtime, path.name))
+        return [str(path.resolve()) for path in outputs]
 
     @staticmethod
     def _capture_sample_test_thumbnails(context: dict[str, Any]) -> int:

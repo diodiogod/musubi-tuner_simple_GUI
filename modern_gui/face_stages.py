@@ -7,7 +7,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from backends import krea2_face
+from backends import krea2_face, minimax_h3_face
+
+
+def validate_face_recipe_for_mode(mode: str, face_config: dict[str, Any]) -> None:
+    try:
+        resolution = int(face_config.get("resolution", 512))
+        blocks = int(face_config.get("blocks_to_swap", 35 if mode == "MiniMax H3 (Experimental)" else 10))
+        denoise_steps = int(face_config.get("denoise_steps", 12))
+        draft_k = int(face_config.get("draft_k", 1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Face Refinement resolution, block swap, and step values must be whole numbers.") from exc
+    if denoise_steps < 1 or not 1 <= draft_k <= denoise_steps:
+        raise ValueError("Face Refinement DRaFT K must be between 1 and the denoising step count.")
+    if mode == "MiniMax H3 (Experimental)":
+        if resolution < 32 or resolution % 32:
+            raise ValueError("MiniMax H3 Face Refinement resolution must be a positive multiple of 32.")
+        if not 30 <= blocks <= 48:
+            raise ValueError("MiniMax H3 Face Refinement needs 30–48 swapped blocks on a 24 GB GPU; start at 35.")
+    elif resolution < 16 or resolution % 16 or not 0 <= blocks <= 26:
+        raise ValueError("Krea 2 Face Refinement resolution must be a multiple of 16 and blocks to swap must be 0–26.")
 
 
 def validate_face_environment(face_config: dict[str, Any]) -> None:
@@ -31,9 +50,12 @@ def prepare_face_stage(
     index: int,
     input_lora: Path,
 ) -> tuple[dict[str, Any], list[str], Path]:
-    if base_settings.get("training_mode") != "Krea 2":
-        raise ValueError("Face Refinement stages require Krea 2 mode.")
+    mode = base_settings.get("training_mode")
+    if mode not in {"Krea 2", "MiniMax H3 (Experimental)"}:
+        raise ValueError("Face Refinement stages require Krea 2 or MiniMax H3 mode.")
+    face_backend = minimax_h3_face if mode == "MiniMax H3 (Experimental)" else krea2_face
     face_config = copy.deepcopy(base_settings.get("face_refinement_config") or {})
+    validate_face_recipe_for_mode(str(mode), face_config)
     if not face_config.get("preflight_report"):
         raise ValueError("Face Refinement needs a completed face-analysis preflight report.")
     if not input_lora.is_file():
@@ -44,7 +66,7 @@ def prepare_face_stage(
         raise ValueError("Face Refinement stages need a positive step count.")
     face_config["steps"] = int(stage_steps)
     label = _stage_label(stage, index)
-    output_path = krea2_face.output_path(base_settings, label)
+    output_path = face_backend.output_path(base_settings, label)
     if output_path.resolve() == input_lora.resolve():
         raise ValueError("Face Refinement output would overwrite its input LoRA.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +90,7 @@ def prepare_face_stage(
     settings["resume_exact_position"] = False
     settings["recovery_mode"] = False
     settings["dop_enabled"] = False
-    command = krea2_face.build_command(settings, face_config, input_lora, output_path, prompts_path)
+    command = face_backend.build_command(settings, face_config, input_lora, output_path, prompts_path)
     return settings, command, output_path
 
 
