@@ -14,6 +14,7 @@ from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3, ARCHITEC
 from musubi_tuner.minimax_h3.image_sampling import decode_image_latent, sample_image_latent
 from musubi_tuner.minimax_h3.image_text_encoder import DEFAULT_PROCESSOR_ID, load_minimax_h3_te
 from musubi_tuner.minimax_h3.model import load_h3_transformer
+from musubi_tuner.minimax_h3.video_sampling import decode_video_latent, sample_video_latent
 from musubi_tuner.minimax_h3.video_vae import load_video_vae
 from musubi_tuner.training.parser_common import read_config_from_file, setup_parser_common
 from musubi_tuner.training.sampling_prompts import load_prompts
@@ -127,10 +128,10 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             parameter.setdefault("height", 768)
             parameter.setdefault("frame_count", 1)
             requested_frames = int(parameter["frame_count"])
-            if requested_frames != 1:
+            if requested_frames not in {1, 5}:
                 logger.warning(
-                    "MiniMax-H3 scheduled training preview requested %s frame(s); using one frame to protect training VRAM. "
-                    "Use the standalone Preview action for native 5/22/39-frame video.",
+                    "MiniMax-H3 scheduled training preview requested unsupported length %s; using one frame. "
+                    "Scheduled previews support 1 or 5 frames; use standalone Preview for 22/39-frame video.",
                     requested_frames,
                 )
                 parameter["frame_count"] = 1
@@ -191,24 +192,39 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         control_video_path=None,
     ):
         del dit_dtype, generator, image_path, control_video_path
-        if frame_count != 1:
-            raise ValueError("Experimental MiniMax-H3 training previews generate one still image only")
+        if frame_count not in {1, 5}:
+            raise ValueError("Experimental MiniMax-H3 training previews support only 1 or 5 frames")
         if do_classifier_free_guidance or guidance_scale != 1.0 or cfg_scale not in {None, 1.0}:
             raise ValueError("MiniMax-H3 is guidance-distilled; preview CFG must remain 1.0")
         seed = int(sample_parameter.get("seed", torch.initial_seed()))
         shift = float(sample_parameter.get("discrete_flow_shift", discrete_flow_shift or 12.0))
         device = accelerator.device
-        latent = sample_image_latent(
-            transformer,
-            sample_parameter["mmh3_hidden_states"],
-            width=width,
-            height=height,
-            steps=sample_steps,
-            seed=seed,
-            shift=shift,
-            device=device,
-            dtype=torch.bfloat16,
-        )
+        if frame_count == 1:
+            latent = sample_image_latent(
+                transformer,
+                sample_parameter["mmh3_hidden_states"],
+                width=width,
+                height=height,
+                steps=sample_steps,
+                seed=seed,
+                shift=shift,
+                device=device,
+                dtype=torch.bfloat16,
+            )
+        else:
+            logger.info("Generating experimental five-frame MiniMax-H3 scheduled preview")
+            latent = sample_video_latent(
+                transformer,
+                sample_parameter["mmh3_hidden_states"],
+                frame_count=frame_count,
+                width=width,
+                height=height,
+                steps=sample_steps,
+                seed=seed,
+                device=device,
+                video_shift=shift,
+                audio_shift=3.0,
+            )
         latent = latent.detach().to("cpu")
         clean_memory_on_device(device)
 
@@ -220,7 +236,12 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             decode_device = self._get_depth_vae_device(args, device) if args.depth_anchor_weight > 0 else device
             vae.to(device=decode_device, dtype=torch.float16).eval()
             with torch.no_grad():
-                pixels = decode_image_latent(vae, latent.to(device=decode_device, dtype=torch.float16)).cpu()
+                decode_latent = latent.to(device=decode_device, dtype=torch.float16)
+                if frame_count == 1:
+                    pixels = decode_image_latent(vae, decode_latent).cpu()
+                else:
+                    video = decode_video_latent(vae, decode_latent, frame_count=frame_count).cpu()
+                    pixels = video.permute(3, 0, 1, 2).unsqueeze(0).float().div_(255.0)
         finally:
             if not (args.depth_anchor_weight > 0 and args.keep_depth_vae_on_device):
                 vae.to("cpu")

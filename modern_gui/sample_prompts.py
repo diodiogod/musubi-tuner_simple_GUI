@@ -8,6 +8,12 @@ from typing import Any
 
 
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+MINIMAX_H3_FIVE_FRAME_PREVIEW = "Five-frame video (experimental)"
+
+
+def minimax_h3_scheduled_preview_frames(settings: dict[str, Any]) -> int:
+    value = str(settings.get("minimax_h3_training_preview_mode") or "").strip().lower()
+    return 5 if value in {"five_frame", MINIMAX_H3_FIVE_FRAME_PREVIEW.lower()} else 1
 
 
 def enabled_sample_prompts(settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -87,8 +93,9 @@ def prepare_sample_prompt_settings(
     prompts = enabled_sample_prompts(prepared)
     if mode == "MiniMax H3 (Experimental)":
         # Keep the prompt card's native-video frame setting for its standalone
-        # Preview button, but make scheduled training samples safe on 24 GB.
-        prompts = [dict(prompt, frames=1) for prompt in prompts]
+        # Preview button, while scheduled samples use the explicit run setting.
+        scheduled_frames = minimax_h3_scheduled_preview_frames(prepared)
+        prompts = [dict(prompt, frames=scheduled_frames) for prompt in prompts]
     lines = [
         serialize_sample_prompt(prompt, mode)
         for prompt in prompts

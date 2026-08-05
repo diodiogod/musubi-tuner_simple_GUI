@@ -94,10 +94,12 @@ const HELP = {
   recache_latents: "Rebuild the cached image information before training. Enable this for the first run or after changing images, resolution, or VAE.",
   recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
   sample_every_n_epochs: "Generate scheduled samples after this many epochs. Fractions are allowed: 0.5 means twice per epoch; the GUI converts it to steps using the dataset estimate.",
+  minimax_h3_training_preview_mode: "Choose whether scheduled MiniMax training samples are a safe still image or an experimental five-frame video. This does not change each card's standalone Preview setting.",
   sample_every_n_steps: "Generate scheduled samples after this many optimizer steps. The dataset estimate helps you choose a useful cadence.",
   sample_at_first: "Generate the scheduled samples once before the first training step.",
   save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. Keep this at 1 for a checkpoint after every epoch, or leave it blank/0 to disable epoch-based saves.",
   save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. This is useful for short epochs or fine-grained recovery points; leave it blank/0 to disable step-based saves.",
+  rename_final_artifacts_to_epoch: "When enabled, the completed LoRA and saved state are renamed from the plain run name to the final epoch suffix, such as run-000002. Disable it when you want the final artifacts to keep the normal run name.",
   timestep_sampling: "For MiniMax H3, leave this on krea2_shift. The GUI selects it automatically; it does not mean that a Krea model is being used.",
   dop_enabled: "Differential Output Preservation adds a class-preservation objective. It costs extra compute and requires correct trigger/class captions.",
   dop_trigger_word: "The exact subject or concept token used in your training captions. DoP uses it to identify what the LoRA is allowed to learn. It must match the token in the captions exactly.",
@@ -114,7 +116,7 @@ const HELP = {
   krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
   krea2_depth_vae_device: "Select where Krea 2 performs the differentiable VAE decode used by depth anchoring. Training GPU is the established default. Secondary sends only the predicted latent to another visible CUDA GPU, decodes it there, and returns pixels and gradients automatically.\n\nKrea uses a lighter 2D image VAE than MiniMax, so an 8 GB helper GPU may be usable, but this is experimental and not guaranteed. Start with a short run and check the startup log to confirm the device mapping.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","minimax_h3_training_preview_mode","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
@@ -132,13 +134,15 @@ const LONG_HELP_COPY = {
   minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. This can reduce transfer overhead on a dedicated secondary GPU with ample VRAM.\n\nIt does not reduce the VAE's peak backward-pass memory and cannot make an 8 GB helper GPU usable. Disable it when VRAM is tight or the helper GPU is shared. This changes speed and idle VRAM use, not LoRA quality.",
   minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested and recommended option for a 24 GB GPU. This setting only controls temporary calculations while the LoRA learns: the frozen base remains the ~21 GB ConvRot INT8 checkpoint, and the saved LoRA format does not change.\n\nThe int8 option is an advanced experiment. It requires working Triton kernels and has not been validated on this setup, so it should not be used for a normal first run.",
+  minimax_h3_training_preview_mode: "One frame (safe) keeps the current low-memory still preview and is the recommended default for frequent sampling.\n\nFive-frame video (experimental) runs native MiniMax video inference inside the sampling pause, then saves a short MP4. It has no training gradients, but it is slower and can temporarily require more VRAM. If it OOMs, training can still be interrupted, so test it with a conservative cadence first. This controls only scheduled in-training samples; each prompt card keeps its own frame count for the standalone Preview button.",
   recache_latents: "This prepares compact training data from every source image using the selected VAE. Enable it for a dataset's first run and whenever images, image resolution, bucketing, or the VAE changes.\n\nFor MiniMax H3, select minimax_h3_video_vae_fp16.safetensors. Do not use a Wan or Krea VAE. Once a compatible cache is current, you can turn this off on later runs to start faster.",
   recache_text: "This prepares caption information using the selected text encoder. Enable it for a dataset's first MiniMax H3 run and whenever captions or the text encoder changes.\n\nFor MiniMax H3, this phase uses qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. The large text encoder is unloaded before LoRA training begins. Once the caption cache is current, you can turn this off on later runs to start faster.",
   sample_every_n_epochs: "Generate the scheduled comparison prompts after this many completed epochs. Enter 0.5 to sample twice during each epoch. Musubi accepts whole-number epoch values, so the GUI converts a fractional value to an equivalent optimizer-step cadence using the dataset estimate shown in the Training Plan.",
   sample_every_n_steps: "Generate the scheduled comparison prompts after this many optimizer steps. This is useful when you want a precise cadence inside a short epoch; the estimate beside the controls shows the relationship to your dataset.",
   sample_at_first: "Generate one comparison before the first training step. This gives you a baseline to compare with later checkpoints.",
   save_every_n_epochs: "Save an intermediate LoRA checkpoint after this many completed epochs. The default of 1 saves at each epoch boundary. This is independent from preview sampling: a checkpoint is saved even when no preview is scheduled.",
-  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. Use this for fine-grained recovery points inside an epoch. If both epoch and step cadences are enabled, Musubi can save at either cadence."
+  save_every_n_steps: "Save an intermediate LoRA checkpoint after this many optimizer steps. Use this for fine-grained recovery points inside an epoch. If both epoch and step cadences are enabled, Musubi can save at either cadence.",
+  rename_final_artifacts_to_epoch: "The trainer's final LoRA normally keeps the run name, while periodic checkpoints receive epoch or step suffixes. When this option is enabled, the Modern GUI renames the final LoRA and final saved-state folder to the last epoch suffix, such as run-000002. Disable it to leave the final run-name files untouched."
 };
 function helpFor(field) {
   return HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
@@ -560,7 +564,9 @@ function renderPlanOverview(){
   $("#plan-prompt-count").textContent=`${included.length} / ${prompts.length}`;
   $("#plan-prompt-health").textContent=!prompts.length?"Add a prompt":included.length?`${included.length} used for comparisons`:"All prompts are off";
   const videoCards=h3?included.filter(prompt=>Number(prompt.frames??1)>1).length:0;
-  $("#plan-sample-schedule").textContent=`${sampleScheduleLabel()}${videoCards?` · training samples forced to 1 frame (${videoCards} video card${videoCards===1?"":"s"})`:""}`;
+  const fiveFrameScheduled=h3&&["five_frame","Five-frame video (experimental)"].includes(state.settings.minimax_h3_training_preview_mode);
+  const h3Schedule=h3?(fiveFrameScheduled?" · scheduled 5-frame video (experimental)":videoCards?` · scheduled 1-frame still (${videoCards} video card${videoCards===1?"":"s"})`:" · scheduled 1-frame still"):"";
+  $("#plan-sample-schedule").textContent=`${sampleScheduleLabel()}${h3Schedule}`;
   $("#plan-checkpoint-schedule").textContent=checkpointScheduleLabel();
   $("#plan-stage-count").textContent=state.settings.use_staged_training?`${activeStages.length} active`:"Normal run";
   $("#plan-stage-health").textContent=state.settings.use_staged_training?(activeStages.length?"Ordered handoff plan":"Enable at least one stage"):"Uses the main recipe";
@@ -693,7 +699,7 @@ function renderPlanPromptEditor(){
     const fields=advanced.querySelector(".guided-fields");
     if(mode==="Wan 2.2")fields.append(objectField("Frames","frames",prompt.frames??25,value=>prompt.frames=value,{type:"number",help:"Number of frames in a Wan sample."}));
     if(mode==="MiniMax H3 (Experimental)")fields.append(
-      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames. This setting is used by the card's standalone Preview button; scheduled in-training samples are automatically written as one-frame stills to protect VRAM."}),
+      objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short standalone preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames here. Scheduled in-training samples use the separate Scheduled MiniMax Preview option in Sampling Frequency."}),
       objectField("FPS","fps",prompt.fps??24,value=>prompt.fps=value,{type:"number",help:"Playback speed for the silent preview MP4. 24 FPS matches MiniMax H3's normal timing."})
     );
     fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}),objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
@@ -781,8 +787,8 @@ function renderPlan(){
   $("#staged-cache-policy").hidden=!state.settings.use_staged_training;
   appendFields($("#run-cache-policies"),["recache_latents","recache_text"]);
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text"]);
-  appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first"]);
-  appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps"]);
+  appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first","minimax_h3_training_preview_mode"]);
+  appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
   ensurePreviewSettings();renderSamplingEstimate();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
 }

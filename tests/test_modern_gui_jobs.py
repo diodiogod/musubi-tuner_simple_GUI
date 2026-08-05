@@ -173,6 +173,44 @@ def test_supervisor_discovers_new_video_preview_outputs(tmp_path):
     assert outputs == [str(generated.resolve())]
 
 
+def test_final_artifact_epoch_rename_matches_classic_toggle(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.safetensors").write_bytes(b"lora")
+    (run_dir / "run-state").mkdir()
+
+    messages = jobs.JobSupervisor._rename_final_training_artifacts(
+        {
+            "output_dir": str(tmp_path),
+            "output_name": "run",
+            "max_train_epochs": "2",
+            "rename_final_artifacts_to_epoch": True,
+        }
+    )
+
+    assert (run_dir / "run-000002.safetensors").is_file()
+    assert (run_dir / "run-000002-state").is_dir()
+    assert len(messages) == 2
+
+
+def test_final_artifact_epoch_rename_can_be_disabled(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.safetensors").write_bytes(b"lora")
+
+    messages = jobs.JobSupervisor._rename_final_training_artifacts(
+        {
+            "output_dir": str(tmp_path),
+            "output_name": "run",
+            "max_train_epochs": "2",
+            "rename_final_artifacts_to_epoch": False,
+        }
+    )
+
+    assert messages == []
+    assert (run_dir / "run.safetensors").is_file()
+
+
 def test_supervisor_preflights_typed_face_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
     supervisor = jobs.JobSupervisor()

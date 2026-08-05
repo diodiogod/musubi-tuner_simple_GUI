@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -20,6 +21,7 @@ from musubi_tuner.minimax_h3_image_train_network import (
 from musubi_tuner.minimax_h3_image_cache_text_encoder_outputs import encode_and_save_batch, is_valid_minimax_h3_text_cache
 from musubi_tuner.training.parser_common import setup_parser_common
 from musubi_tuner.utils.sai_model_spec import build_metadata
+import musubi_tuner.minimax_h3_image_train_network as h3_training
 
 
 class _CPUAccelerator:
@@ -44,6 +46,22 @@ class _FP32TextEncoder:
     @staticmethod
     def encode(_caption):
         return torch.ones(4, 5120, dtype=torch.float32), None
+
+
+class _PreviewTransformer:
+    def park_resident_block_weights_for_decode(self, _minimum_free):
+        return []
+
+    def restore_parked_block_weights(self, _parked):
+        return None
+
+
+class _PreviewVAE:
+    def to(self, *args, **kwargs):
+        return self
+
+    def eval(self):
+        return self
 
 
 def test_trainer_image_flow_target_and_cleanness_conversion():
@@ -75,6 +93,40 @@ def test_experimental_parser_uses_24gb_safe_defaults():
     assert parser.get_default("timestep_sampling") == "krea2_shift"
     assert parser.get_default("depth_anchor_vae_device") == "training"
     assert parser.get_default("depth_anchor_every_n_steps") == 1
+
+
+def test_five_frame_training_preview_uses_video_sampler_and_returns_video_grid(monkeypatch):
+    calls = {}
+
+    def fake_sample_video(_transformer, _hidden, **kwargs):
+        calls["sample"] = kwargs
+        return torch.zeros(1, 24, 2, 2, 2)
+
+    def fake_decode_video(_vae, latent, *, frame_count):
+        calls["decode"] = (tuple(latent.shape), frame_count)
+        return torch.full((5, 4, 6, 3), 128, dtype=torch.uint8)
+
+    monkeypatch.setattr(h3_training, "sample_video_latent", fake_sample_video)
+    monkeypatch.setattr(h3_training, "decode_video_latent", fake_decode_video)
+    monkeypatch.setattr(h3_training, "clean_memory_on_device", lambda _device: None)
+    trainer = MiniMaxH3ImageNetworkTrainer()
+    args = SimpleNamespace(
+        minimax_h3_preview_decode_min_free_gb=0,
+        depth_anchor_weight=0,
+        keep_depth_vae_on_device=False,
+    )
+
+    pixels = trainer.do_inference(
+        _CPUAccelerator(), args, {"mmh3_hidden_states": torch.zeros(3, 5120), "seed": 7},
+        _PreviewVAE(), torch.bfloat16, _PreviewTransformer(), 12.0, 4, 64, 64, 5,
+        None, False, 1.0, 1.0,
+    )
+
+    assert calls["sample"]["frame_count"] == 5
+    assert calls["decode"] == ((1, 24, 2, 2, 2), 5)
+    assert pixels.shape == (1, 3, 5, 4, 6)
+    assert pixels.dtype == torch.float32
+    torch.testing.assert_close(pixels.mean(), torch.tensor(128 / 255))
 
 
 def test_secondary_depth_vae_device_selects_another_visible_gpu(monkeypatch):

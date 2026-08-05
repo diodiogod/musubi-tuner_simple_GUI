@@ -1857,6 +1857,27 @@ class MusubiTunerGUI:
         self.entries["sample_at_first"] = af_cb
         ToolTip(af_cb, "Generate one sample before training starts (step 0).")
 
+        self._minimax_training_preview_frame = ttk.Frame(freq_frame)
+        ttk.Label(self._minimax_training_preview_frame, text="MiniMax scheduled preview:").pack(side="left", padx=(0, 8))
+        preview_mode = ttk.Combobox(
+            self._minimax_training_preview_frame,
+            values=("One frame (safe)", "Five-frame video (experimental)"),
+            state="readonly",
+            width=31,
+        )
+        preview_mode.set("One frame (safe)")
+        preview_mode.pack(side="left")
+        preview_mode.is_required = False; preview_mode.is_path = False
+        self.entries["minimax_h3_training_preview_mode"] = preview_mode
+        ToolTip(
+            preview_mode,
+            "Controls samples generated automatically during MiniMax training. One frame is safer and faster. "
+            "Five frames saves a short MP4, but is slower and can temporarily use more VRAM. This does not change "
+            "the frame count used by each prompt card's standalone Preview button.",
+        )
+        if self.training_mode_var.get() == "MiniMax H3 (Experimental)":
+            self._minimax_training_preview_frame.pack(fill="x", padx=8, pady=(0, 8))
+
         # --- Prompt editor ---
         prompts_frame = ttk.LabelFrame(tab_frame, text="Sample Prompts"); prompts_frame.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -2564,7 +2585,13 @@ class MusubiTunerGUI:
         for prompt_data in prompts_data:
             if not prompt_data.get("enabled", True):
                 continue
-            lines.append(self._serialize_sample_prompt_line(prompt_data, is_krea2))
+            serialized_prompt = dict(prompt_data)
+            if mode == "MiniMax H3 (Experimental)" and output_name_override is None:
+                preview_mode = self.entries["minimax_h3_training_preview_mode"].get().strip().lower()
+                serialized_prompt["frames"] = 5 if preview_mode in {
+                    "five_frame", "five-frame video (experimental)"
+                } else 1
+            lines.append(self._serialize_sample_prompt_line(serialized_prompt, is_krea2))
         if not lines:
             return ""
         # Save next to the dataset config (always outside the repo, always exists)
@@ -6480,6 +6507,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.title_label.config(text="Musubi Tuner")
         self.subtitle_label.config(text=f"{mode} · LoRA training studio")
         self.root.title(f"Musubi Tuner · {mode}")
+        if hasattr(self, "_minimax_training_preview_frame"):
+            if mode == "MiniMax H3 (Experimental)":
+                self._minimax_training_preview_frame.pack(fill="x", padx=8, pady=(0, 8))
+            else:
+                self._minimax_training_preview_frame.pack_forget()
 
         if is_wan:
             self.mode_note_label.config(text="Dual-stage Wan training · T2V and I2V workflows")
@@ -7280,6 +7312,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
             "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
             "minimax_h3_text_cache_dtype": "bfloat16",
+            "minimax_h3_training_preview_mode": "One frame (safe)",
             "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
             "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",

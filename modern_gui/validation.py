@@ -243,9 +243,14 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             if frames != 1 and (frames < 5 or (frames - 5) % 17):
                 error("sample_prompts_data", f"{label} frames must be 1 or MiniMax H3 video lengths 5, 22, 39, ...")
             elif frames != 1:
+                five_frame_scheduled = (
+                    str(settings.get("minimax_h3_training_preview_mode") or "").strip().lower()
+                    in {"five_frame", "five-frame video (experimental)"}
+                )
+                scheduled_description = "five frames" if five_frame_scheduled else "one frame"
                 warning(
                     "sample_prompts_data",
-                    f"{label} keeps {frames} frames for its standalone Preview; scheduled training samples use one frame to protect VRAM.",
+                    f"{label} keeps {frames} frames for standalone Preview; scheduled training samples use {scheduled_description}.",
                 )
             if width % 32 or height % 32:
                 error("sample_prompts_data", f"{label} MiniMax H3 width and height must be multiples of 32.")
@@ -256,6 +261,18 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             bool(settings.get("sample_at_first")),
         )
     )
+    if mode == "MiniMax H3 (Experimental)":
+        preview_mode = str(settings.get("minimax_h3_training_preview_mode") or "One frame (safe)").strip().lower()
+        valid_preview_modes = {
+            "one_frame", "five_frame", "one frame (safe)", "five-frame video (experimental)",
+        }
+        if preview_mode not in valid_preview_modes:
+            error("minimax_h3_training_preview_mode", "Choose the safe one-frame or experimental five-frame scheduled preview mode.")
+        elif cadence_enabled and preview_mode in {"five_frame", "five-frame video (experimental)"}:
+            warning(
+                "minimax_h3_training_preview_mode",
+                "Five-frame scheduled MiniMax previews are slower and may temporarily use more VRAM. Start with a conservative sample cadence.",
+            )
     if cadence_enabled and "sample_prompts_data" in settings and not enabled_sample_prompts(settings):
         warning(
             "sample_prompts_data",

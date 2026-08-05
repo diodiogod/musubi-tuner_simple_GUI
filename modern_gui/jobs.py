@@ -447,9 +447,14 @@ class JobSupervisor:
         sample_outputs: list[str] = []
         with self._lock:
             context = dict((self._active or {}).get("_completion_context") or {})
+            final_settings = deepcopy((self._active or {}).get("settings") or {})
+            staged = (self._active or {}).get("kind") == "staged_training"
         if return_code == 0 and context.get("kind") == "sample_test":
             sample_outputs = self._find_new_sample_outputs(context)
             captured = self._capture_sample_test_thumbnails(context)
+        if return_code == 0 and not staged:
+            for message in self._rename_final_training_artifacts(final_settings):
+                self._append_log("system", message)
         with self._lock:
             stopped = self._stop_requested
             if self._active:
@@ -469,6 +474,39 @@ class JobSupervisor:
                 history.insert(0, record)
                 _write_history(history)
             self._process = None
+
+    @staticmethod
+    def _rename_final_training_artifacts(settings: dict[str, Any]) -> list[str]:
+        """Mirror the Classic GUI's optional final epoch naming behavior."""
+
+        if not settings.get("rename_final_artifacts_to_epoch", True):
+            return []
+        output_dir = str(settings.get("output_dir") or "").strip()
+        output_name = str(settings.get("output_name") or "").strip()
+        epoch_text = str(settings.get("max_train_epochs") or "").strip()
+        if not output_dir or not output_name or not epoch_text.isdigit():
+            return []
+        run_dir = Path(output_dir) / output_name
+        if not run_dir.is_dir():
+            return []
+        suffix = f"{int(epoch_text):06d}"
+        pairs = [
+            (run_dir / f"{output_name}.safetensors", run_dir / f"{output_name}-{suffix}.safetensors"),
+            (run_dir / f"{output_name}-state", run_dir / f"{output_name}-{suffix}-state"),
+        ]
+        messages = []
+        for source, target in pairs:
+            if not source.exists():
+                continue
+            if target.exists():
+                messages.append(f"Final artifact rename skipped; target already exists: {target.name}")
+                continue
+            try:
+                source.rename(target)
+                messages.append(f"Final artifact renamed: {source.name} -> {target.name}")
+            except OSError as exc:
+                messages.append(f"Final artifact rename failed for {source.name}: {exc}")
+        return messages
 
     @staticmethod
     def _find_new_sample_outputs(context: dict[str, Any]) -> list[str]:

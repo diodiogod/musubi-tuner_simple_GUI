@@ -19,6 +19,7 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_text_encoder_load_mode": "auto",
     "minimax_h3_text_cache_dtype": "bfloat16",
     "minimax_h3_preview_decode_min_free_gb": "9.0",
+    "minimax_h3_training_preview_mode": "One frame (safe)",
     "minimax_h3_depth_vae_device": "training",
     "minimax_h3_keep_depth_vae_on_device": False,
     "minimax_h3_depth_every_n_steps": "1",
@@ -48,6 +49,8 @@ FIELD_LABELS = {
     "sample_every_n_epochs": "Sample Every N Epochs (fractions allowed)",
     "sample_every_n_steps": "Sample Every N Steps",
     "sample_at_first": "Sample At First",
+    "minimax_h3_training_preview_mode": "Scheduled MiniMax Preview",
+    "rename_final_artifacts_to_epoch": "Rename Final Save to Epoch Number",
 }
 
 SECTION_TITLES = {
@@ -84,6 +87,7 @@ CHOICES = {
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
+    "minimax_h3_training_preview_mode": ["One frame (safe)", "Five-frame video (experimental)"],
     "krea2_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
 }
@@ -184,6 +188,8 @@ def _section_for(key: str) -> str:
     if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_")):
         return "regularization"
     if key.startswith(("sample_",)):
+        return "sampling"
+    if key == "minimax_h3_training_preview_mode":
         return "sampling"
     if key.startswith(("staged_", "use_staged")):
         return "staging"
