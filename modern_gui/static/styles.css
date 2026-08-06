@@ -167,3 +167,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 .sampling-epoch-estimate{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:2px;padding-top:13px;border-top:1px solid var(--line)}.sampling-epoch-estimate strong,.sampling-epoch-estimate small{display:block}.sampling-epoch-estimate small{margin-top:3px;color:var(--muted);font-size:11px}.sampling-epoch-estimate button{flex:0 0 auto}
 @media(max-width:680px){.sampling-epoch-estimate{align-items:flex-start;flex-direction:column}.sampling-epoch-estimate button{width:100%}}
+/* First-class staged-training choice in the normal recipe workflow. */
+.training-structure-card{margin-top:24px;padding:18px;border:1px solid var(--line);border-radius:11px;background:var(--bg)}
+.training-structure-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.training-structure-head p{margin-top:4px;color:var(--muted);font-size:12px}
+.structure-choice{display:flex;gap:7px;margin-top:14px}.structure-choice button{padding:9px 12px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--muted)}.structure-choice button.active{border-color:var(--accent2);color:var(--accent)}
+.mini-stage-flow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:15px}.mini-stage-flow span{padding:6px 9px;border-radius:999px;background:var(--surface2);font-size:10px;font-weight:800}.mini-stage-flow i{color:var(--muted);font-style:normal}.stage-badge{display:inline-flex;margin-left:8px;padding:4px 7px;border-radius:999px;background:color-mix(in srgb,var(--accent2) 16%,transparent);color:var(--accent);font-size:9px;vertical-align:middle}

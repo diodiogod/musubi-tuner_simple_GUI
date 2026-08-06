@@ -49,7 +49,8 @@ remote-access mode in the launcher.
   plus Krea-only fixed Turbo evaluation and result galleries;
 - Musubi command previews through the existing backend adapters;
 - normal and typed staged process execution with bounded live logs;
-- standard-state and face-LoRA stage handoffs;
+- explicit standard-stage handoffs: preserve the complete optimizer/scheduler state, or load the prior LoRA into a fresh optimizer when a stage intentionally changes learning rate, optimizer, scheduler, warmup, or timestep sampling;
+- face-stage LoRA handoffs;
 - live step, epoch, loss, depth-anchor, DOP, GPU, and VRAM monitoring;
 - loss graph, wipe/side-by-side comparison, keyboard/touch navigation, and
   ordinary sample gallery;
@@ -68,7 +69,7 @@ their modern locations and records the invariants used by regression tests.
 - Exact recovery requires a failed/stopped normal job, a complete settings
   snapshot, nonempty model/optimizer/scheduler/RNG state files, and a numbered
   epoch or step state folder.
-- Standard staged handoff requires the preceding state directory to exist.
+- A full-state standard handoff requires the preceding state directory. A fresh-optimizer handoff requires the preceding completed LoRA; existing plans default to full-state behavior.
 - Face-stage handoff requires the preceding LoRA and verifies the expected
   refined LoRA before advancing.
 - Included sample-prompt cards are validated and atomically materialized into

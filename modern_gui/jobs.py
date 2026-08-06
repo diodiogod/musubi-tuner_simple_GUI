@@ -336,14 +336,20 @@ class JobSupervisor:
                     break
                 current_type = stage.get("type", "standard")
                 if current_type == "standard":
+                    fresh_optimizer = (
+                        previous_settings is not None and previous_type == "standard"
+                        and str(stage.get("handoff_mode", "state")) == "weights"
+                    )
                     resume_path = (
                         str(resolve_standard_state(previous_settings))
-                        if previous_settings and previous_type == "standard"
+                        if previous_settings and previous_type == "standard" and not fresh_optimizer
                         else ""
                     )
                     network_weights = (
                         str(previous_face_output)
                         if previous_type == "face_refinement"
+                        else str(resolve_stage_lora(previous_settings))
+                        if fresh_optimizer and previous_settings
                         else str(base_settings.get("network_weights") or "")
                         if index == 0
                         else ""

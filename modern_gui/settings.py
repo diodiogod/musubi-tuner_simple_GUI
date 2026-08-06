@@ -21,7 +21,8 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_preview_decode_min_free_gb": "9.0",
     "minimax_h3_training_preview_mode": "One frame (safe)",
     "minimax_h3_guidance_distillation_protection": True,
-    "minimax_h3_guidance_distillation_scale": "3.0",
+    "minimax_h3_guidance_distillation_scale": "4.0",
+    "minimax_h3_guidance_distillation_schedule": "sigma",
     "minimax_h3_depth_vae_device": "training",
     "minimax_h3_keep_depth_vae_on_device": False,
     "minimax_h3_depth_every_n_steps": "1",
@@ -54,6 +55,7 @@ FIELD_LABELS = {
     "minimax_h3_training_preview_mode": "Scheduled MiniMax Preview",
     "minimax_h3_guidance_distillation_protection": "Protect H3 Quality During Training",
     "minimax_h3_guidance_distillation_scale": "H3 Quality Protection Strength",
+    "minimax_h3_guidance_distillation_schedule": "H3 Quality Protection Schedule",
     "rename_final_artifacts_to_epoch": "Rename Final Save to Epoch Number",
 }
 
@@ -92,6 +94,7 @@ CHOICES = {
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
     "minimax_h3_training_preview_mode": ["One frame (safe)", "Five-frame video (experimental)"],
+    "minimax_h3_guidance_distillation_schedule": ["sigma", "constant"],
     "krea2_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
 }

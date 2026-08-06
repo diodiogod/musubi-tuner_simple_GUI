@@ -1359,7 +1359,8 @@ class MusubiTunerGUI:
             self.hidden_frames['minimax_h3_guidance_protection'],
             text=(
                 "Recommended for H3 LoRAs. This counters guidance-distillation breakdown that can make longer "
-                "training lose detail, structure, or concept quality. It adds one no-gradient model pass per step."
+                "training lose detail, structure, or concept quality. The recommended Sigma schedule applies strong "
+                "protection to noisy steps and fades it near the clean result. It adds one no-gradient model pass per step."
             ),
             wraplength=850,
             style="PageHelp.TLabel",
@@ -1380,10 +1381,20 @@ class MusubiTunerGUI:
             self.hidden_frames['minimax_h3_guidance_protection'],
             "minimax_h3_guidance_distillation_scale",
             "Protection Strength:",
-            "Use 3.0 for the recommended Ostris AI Toolkit-inspired starting point. 1.0 reduces to the ordinary target; "
-            "higher values push captioned behavior farther from the empty-prompt behavior and should be treated as experimental.",
+            "Use 4.0 with the Sigma schedule for the updated Ostris AI Toolkit-inspired starting point. Under Sigma, "
+            "4.0 is only the maximum at noisy timesteps and fades toward 1.0 near the clean result.",
             kind="combobox",
-            options=["3.0", "2.0", "2.5", "3.5", "4.0"],
+            options=["4.0", "3.0", "2.0", "2.5", "3.5"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_guidance_distillation_schedule",
+            "Protection Schedule:",
+            "Sigma is recommended: protection is strongest when the latent is noisy and fades toward ordinary training "
+            "near the clean result, avoiding an impossible low-noise correction. Constant reproduces the older behavior. "
+            "Ostris is preparing support for a future frozen helper LoRA, but no generally validated helper is assumed yet.",
+            kind="combobox",
+            options=["sigma", "constant"],
         )
         h3_guidance_attribution = ttk.Label(
             self.hidden_frames['minimax_h3_guidance_protection'],
@@ -4041,6 +4052,12 @@ class MusubiTunerGUI:
             dop_trigger_var = tk.StringVar(value=str(saved.get("dop_trigger_word", "")))
             dop_class_var = tk.StringVar(value=str(saved.get("dop_class_word", "")))
             depth_helpers_mode_var = tk.StringVar(value=str(saved.get("depth_helpers_mode", "inherit")))
+            handoff_mode_var = tk.StringVar(value=str(saved.get("handoff_mode", "state")))
+            learning_rate_var = tk.StringVar(value=str(saved.get("learning_rate", "")))
+            optimizer_type_var = tk.StringVar(value=str(saved.get("optimizer_type", "")))
+            lr_scheduler_var = tk.StringVar(value=str(saved.get("lr_scheduler", "")))
+            lr_warmup_steps_var = tk.StringVar(value=str(saved.get("lr_warmup_steps", "")))
+            timestep_sampling_var = tk.StringVar(value=str(saved.get("timestep_sampling", "")))
             ttk.Checkbutton(table, variable=enabled).grid(row=row_index, column=0, sticky="w", pady=4)
             ttk.Entry(table, textvariable=label_var, width=14).grid(row=row_index, column=1, sticky="ew", padx=(8, 0), pady=4)
             type_widget = ttk.Combobox(table, textvariable=type_var, width=18, state="readonly", values=["standard", "face_refinement"])
@@ -4079,6 +4096,25 @@ class MusubiTunerGUI:
                     wraplength=590,
                     style="PageHelp.TLabel",
                 ).pack(anchor="w", pady=(3, 12))
+                handoff_row = ttk.Frame(panel); handoff_row.pack(fill="x", pady=4)
+                ttk.Label(handoff_row, text="Continue from prior stage:", width=22).pack(side="left")
+                handoff_box = ttk.Combobox(
+                    handoff_row, textvariable=handoff_mode_var, state="readonly", width=36,
+                    values=["state", "weights"],
+                )
+                handoff_box.pack(side="left", fill="x", expand=True)
+                ToolTip(handoff_box, "State preserves the optimizer, scheduler, and momentum. Weights loads only the prior LoRA and starts a fresh optimizer, allowing reliable learning-rate or schedule changes. The first stage has no prior-stage handoff.")
+                optimizer_panel = ttk.LabelFrame(panel, text="Fresh optimizer overrides (weights handoff only)")
+                optimizer_panel.pack(fill="x", pady=(8, 4)); optimizer_panel.grid_columnconfigure(1, weight=1)
+                optimizer_entries = []
+                for row_num, (label, variable) in enumerate((
+                    ("Learning rate:", learning_rate_var), ("Optimizer:", optimizer_type_var),
+                    ("LR scheduler:", lr_scheduler_var), ("Warmup steps:", lr_warmup_steps_var),
+                    ("Timestep sampling:", timestep_sampling_var),
+                )):
+                    ttk.Label(optimizer_panel, text=label, width=22).grid(row=row_num, column=0, sticky="w", padx=6, pady=3)
+                    entry = ttk.Entry(optimizer_panel, textvariable=variable, width=38)
+                    entry.grid(row=row_num, column=1, sticky="ew", padx=6, pady=3); optimizer_entries.append(entry)
                 mode_row = ttk.Frame(panel); mode_row.pack(fill="x", pady=4)
                 ttk.Label(mode_row, text="Stage behavior:", width=22).pack(side="left")
                 mode_box = ttk.Combobox(
@@ -4124,7 +4160,11 @@ class MusubiTunerGUI:
                     state = "disabled" if dop_mode_var.get() == "disable" else "normal"
                     for entry in entries:
                         entry.configure(state=state)
+                    optimizer_state = "normal" if handoff_mode_var.get() == "weights" else "disabled"
+                    for entry in optimizer_entries:
+                        entry.configure(state=optimizer_state)
                 mode_var_trace = dop_mode_var.trace_add("write", refresh_fields)
+                handoff_var_trace = handoff_mode_var.trace_add("write", refresh_fields)
                 refresh_fields()
 
                 def close_dop(save=True):
@@ -4136,6 +4176,7 @@ class MusubiTunerGUI:
                             messagebox.showerror("Stage DOP", "Strength must be a number greater than zero, or blank to inherit.", parent=dop_dialog)
                             return
                     dop_mode_var.trace_remove("write", mode_var_trace)
+                    handoff_mode_var.trace_remove("write", handoff_var_trace)
                     dop_dialog.destroy()
 
                 buttons = ttk.Frame(panel); buttons.pack(fill="x", pady=(14, 0))
@@ -4182,6 +4223,12 @@ class MusubiTunerGUI:
                 "dop_trigger_word": dop_trigger_var,
                 "dop_class_word": dop_class_var,
                 "depth_helpers_mode": depth_helpers_mode_var,
+                "handoff_mode": handoff_mode_var,
+                "learning_rate": learning_rate_var,
+                "optimizer_type": optimizer_type_var,
+                "lr_scheduler": lr_scheduler_var,
+                "lr_warmup_steps": lr_warmup_steps_var,
+                "timestep_sampling": timestep_sampling_var,
                 "widgets": [],
             }
 
@@ -4265,6 +4312,12 @@ class MusubiTunerGUI:
                         "dop_trigger_word": row["dop_trigger_word"].get().strip(),
                         "dop_class_word": row["dop_class_word"].get().strip(),
                         "depth_helpers_mode": row["depth_helpers_mode"].get(),
+                        "handoff_mode": row["handoff_mode"].get(),
+                        "learning_rate": row["learning_rate"].get().strip(),
+                        "optimizer_type": row["optimizer_type"].get().strip(),
+                        "lr_scheduler": row["lr_scheduler"].get().strip(),
+                        "lr_warmup_steps": row["lr_warmup_steps"].get().strip(),
+                        "timestep_sampling": row["timestep_sampling"].get().strip(),
                     })
                     continue
                 path = path_var.get().strip()
@@ -4294,6 +4347,12 @@ class MusubiTunerGUI:
                     "dop_trigger_word": row["dop_trigger_word"].get().strip(),
                     "dop_class_word": row["dop_class_word"].get().strip(),
                     "depth_helpers_mode": row["depth_helpers_mode"].get(),
+                    "handoff_mode": row["handoff_mode"].get(),
+                    "learning_rate": row["learning_rate"].get().strip(),
+                    "optimizer_type": row["optimizer_type"].get().strip(),
+                    "lr_scheduler": row["lr_scheduler"].get().strip(),
+                    "lr_warmup_steps": row["lr_warmup_steps"].get().strip(),
+                    "timestep_sampling": row["timestep_sampling"].get().strip(),
                 })
             if not any(item["enabled"] for item in configured):
                 messagebox.showerror("Staged Run", "Enable at least one stage.", parent=dialog)
@@ -7371,7 +7430,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_text_cache_dtype": "bfloat16",
             "minimax_h3_training_preview_mode": "One frame (safe)",
             "minimax_h3_guidance_distillation_protection": True,
-            "minimax_h3_guidance_distillation_scale": "3.0",
+            "minimax_h3_guidance_distillation_scale": "4.0",
+            "minimax_h3_guidance_distillation_schedule": "sigma",
             "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
             "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",
@@ -8413,14 +8473,21 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if previous is not None and next_index < len(run["stages"]):
             previous_type = previous.get("stage_type", "standard")
             next_type = run["stages"][next_index].get("type", "standard")
+            fresh_optimizer = (
+                previous_type == "standard" and next_type == "standard"
+                and str(run["stages"][next_index].get("handoff_mode", "state")) == "weights"
+            )
             if previous_type == "face_refinement":
                 input_lora = Path(previous["face_output_path"])
             elif next_type == "face_refinement":
                 input_lora = next((path for path in self._candidate_final_model_paths(previous) if path.is_file()), None)
             else:
-                state_candidates = self._candidate_final_state_paths(previous)
-                state_path = next((path for path in state_candidates if path.is_dir()), None)
-            if (next_type == "face_refinement" and input_lora is None) or (previous_type == "face_refinement" and not input_lora.is_file()) or (next_type == "standard" and previous_type == "standard" and state_path is None):
+                if fresh_optimizer:
+                    input_lora = next((path for path in self._candidate_final_model_paths(previous) if path.is_file()), None)
+                else:
+                    state_candidates = self._candidate_final_state_paths(previous)
+                    state_path = next((path for path in state_candidates if path.is_dir()), None)
+            if (next_type == "face_refinement" and input_lora is None) or (previous_type == "face_refinement" and not input_lora.is_file()) or (next_type == "standard" and previous_type == "standard" and state_path is None and input_lora is None):
                 self.output_text.insert(
                     tk.END,
                     "\n--- Expected staged handoff artifact was not created. ---\n",
@@ -8460,6 +8527,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if stage_type == "standard":
             self._apply_stage_dop_settings(settings, stage)
             self._apply_stage_depth_memory_settings(settings, stage)
+            if str(stage.get("handoff_mode", "state")) == "weights":
+                for key in ("learning_rate", "optimizer_type", "lr_scheduler", "lr_warmup_steps", "timestep_sampling"):
+                    value = str(stage.get(key, "")).strip()
+                    if value:
+                        settings[key] = value
         else:
             settings["dop_enabled"] = False
         settings["save_state"] = stage_type == "standard"

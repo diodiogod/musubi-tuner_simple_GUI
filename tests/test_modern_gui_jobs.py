@@ -291,6 +291,24 @@ def test_supervisor_runs_standard_stages_with_additive_state_handoff(monkeypatch
     assert history["final_stage_artifacts"]["state"] == str(tmp_path / "complete-state")
 
 
+def test_supervisor_can_handoff_lora_to_fresh_optimizer_stage(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    dataset = tmp_path / "data.toml"; dataset.write_text("[[datasets]]", encoding="utf-8")
+    prior_lora = tmp_path / "prior.safetensors"; prior_lora.write_bytes(b"lora")
+    seen = []
+    monkeypatch.setattr(jobs, "build_command_plan", lambda settings: (seen.append(dict(settings)) or {"cache": [], "train": [[sys.executable, "-c", "print('ok')"]]}))
+    monkeypatch.setattr(jobs, "resolve_stage_lora", lambda settings: prior_lora)
+    supervisor = jobs.JobSupervisor()
+    supervisor.start({"training_mode":"Krea 2","output_name":"run","output_dir":str(tmp_path),"use_staged_training":True,
+        "staged_training_config":[{"label":"base","dataset_config":str(dataset),"epochs":"1"},
+        {"label":"polish","dataset_config":str(dataset),"epochs":"1","handoff_mode":"weights","learning_rate":"2e-5"}]})
+    snapshot = wait_until_finished(supervisor)
+    assert snapshot["active"]["status"] == "completed"
+    assert seen[1]["resume_path"] == ""
+    assert seen[1]["network_weights"] == str(prior_lora)
+    assert seen[1]["learning_rate"] == "2e-5"
+
+
 def test_supervisor_hands_standard_lora_to_face_and_refined_lora_back_to_standard(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
     monkeypatch.setattr(jobs, "validate_face_environment", lambda config: None)

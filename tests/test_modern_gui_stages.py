@@ -75,6 +75,22 @@ def test_first_standard_stage_preserves_base_lora_continuation(tmp_path: Path):
     assert prepared["network_weights"] == str(weights)
 
 
+def test_fresh_optimizer_stage_applies_only_safe_schedule_overrides(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]", encoding="utf-8")
+    prepared = prepare_standard_stage(
+        {"training_mode": "Krea 2", "output_name": "run", "output_dir": str(tmp_path),
+         "learning_rate": "1e-4", "optimizer_type": "adamw8bit"},
+        {"label": "polish", "dataset_config": str(dataset), "epochs": "1",
+         "handoff_mode": "weights", "learning_rate": "2e-5", "optimizer_type": "adafactor"},
+        1, network_weights="prior.safetensors",
+    )
+    assert prepared["resume_path"] == ""
+    assert prepared["network_weights"] == "prior.safetensors"
+    assert prepared["learning_rate"] == "2e-5"
+    assert prepared["optimizer_type"] == "adafactor"
+
+
 def test_validate_plan_rejects_separate_wan_runs(tmp_path: Path):
     dataset = tmp_path / "dataset.toml"
     dataset.write_text("[[datasets]]", encoding="utf-8")

@@ -96,14 +96,15 @@ def test_experimental_parser_uses_24gb_safe_defaults():
     assert parser.get_default("depth_anchor_vae_device") == "training"
     assert parser.get_default("depth_anchor_every_n_steps") == 1
     assert parser.get_default("h3_guidance_distillation_protection") is False
-    assert parser.get_default("h3_guidance_distillation_scale") == 3.0
+    assert parser.get_default("h3_guidance_distillation_scale") == 4.0
+    assert parser.get_default("h3_guidance_distillation_schedule") == "sigma"
 
 
 def test_h3_guidance_protection_amplifies_target_away_from_unconditional_prediction():
     unconditional = torch.tensor([1.0, 2.0])
     normal_target = torch.tensor([3.0, -1.0])
 
-    protected = build_guided_target(unconditional, normal_target, 3.0)
+    protected = build_guided_target(unconditional, normal_target, 3.0, schedule="constant")
 
     torch.testing.assert_close(protected, torch.tensor([7.0, -7.0]))
     assert not protected.requires_grad
@@ -137,7 +138,8 @@ def test_h3_process_batch_uses_empty_prompt_pass_before_protected_primary_target
     monkeypatch.setattr(trainer, "compute_loss", fake_compute)
     args = SimpleNamespace(
         h3_guidance_distillation_protection=True,
-        h3_guidance_distillation_scale=3.0,
+        h3_guidance_distillation_scale=4.0,
+        h3_guidance_distillation_schedule="sigma",
         depth_anchor_weight=0.0,
         depth_anchor_every_n_steps=1,
         dop_loss_weight=0.0,
@@ -162,9 +164,18 @@ def test_h3_process_batch_uses_empty_prompt_pass_before_protected_primary_target
     )
 
     assert calls == [unconditional, caption]
-    torch.testing.assert_close(captured["target"], torch.full_like(latents, 7.0))
-    assert loss.item() == pytest.approx(49.0)
-    assert metrics["loss/h3_guidance_target_delta"].item() == pytest.approx(16.0)
+    torch.testing.assert_close(captured["target"], torch.full_like(latents, 6.0))
+    assert loss.item() == pytest.approx(36.0)
+    assert metrics["loss/h3_guidance_target_delta"].item() == pytest.approx(9.0)
+
+
+def test_h3_sigma_schedule_fades_protection_toward_clean_timesteps():
+    unconditional = torch.zeros(2, 1)
+    target = torch.ones(2, 1)
+    protected = build_guided_target(
+        unconditional, target, 4.0, sigma=torch.tensor([1.0, 0.0]), schedule="sigma"
+    )
+    torch.testing.assert_close(protected, torch.tensor([[4.0], [1.0]]))
 
 
 def test_five_frame_training_preview_uses_video_sampler_and_returns_video_grid(monkeypatch):

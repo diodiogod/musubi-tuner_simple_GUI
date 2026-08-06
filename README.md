@@ -311,6 +311,8 @@ The GUI supports both:
 
 This is useful for staged training such as `256 -> 512 -> 1024`.
 
+At each standard-to-standard boundary, choose **Full training state** to preserve optimizer momentum and the scheduler exactly, or **LoRA weights + fresh optimizer** when the next stage should deliberately use a different learning rate, optimizer, scheduler, warmup, or timestep-sampling recipe. Existing saved plans continue to use full-state handoff by default. Rank, alpha, and network type remain shared because changing adapter tensor shapes at a handoff is unsafe.
+
 ## Documentation
 
 This fork rides on top of upstream musubi-tuner, so the backend documentation is still important.

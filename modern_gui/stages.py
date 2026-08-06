@@ -4,6 +4,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+STAGE_OPTIMIZER_OVERRIDE_KEYS = (
+    "learning_rate", "optimizer_type", "lr_scheduler", "lr_warmup_steps", "timestep_sampling",
+)
+
 
 def stage_label(stage: dict[str, Any], index: int = 0) -> str:
     label = str(stage.get("label", "")).strip() or f"stage-{index + 1}"
@@ -59,6 +63,22 @@ def validate_stage_plan(settings: dict[str, Any]) -> list[dict[str, Any]]:
         if not limit.isdigit() or int(limit) < 1:
             raise ValueError(f"{stage_label(stage, index)} needs a positive epoch or step limit.")
         if stage_type == "standard":
+            handoff_mode = str(stage.get("handoff_mode", "state"))
+            if handoff_mode not in {"state", "weights"}:
+                raise ValueError(f"{stage_label(stage, index)} has an unsupported handoff mode: {handoff_mode}")
+            has_standard_predecessor = index > 0 and stages[index - 1].get("type", "standard") == "standard"
+            if has_standard_predecessor and handoff_mode == "state" and any(str(stage.get(key, "")).strip() for key in STAGE_OPTIMIZER_OVERRIDE_KEYS):
+                raise ValueError(
+                    f"{stage_label(stage, index)} has optimizer overrides but preserves the previous optimizer. "
+                    "Choose LoRA weights + fresh optimizer for this stage."
+                )
+            learning_rate = str(stage.get("learning_rate", "")).strip()
+            if learning_rate:
+                try:
+                    if float(learning_rate) <= 0:
+                        raise ValueError
+                except ValueError as exc:
+                    raise ValueError(f"{stage_label(stage, index)} learning rate must be greater than zero.") from exc
             dataset = Path(str(stage.get("dataset_config", ""))).expanduser()
             if not dataset.is_file():
                 raise ValueError(f"{stage_label(stage, index)} has no valid dataset TOML: {dataset}")
@@ -135,6 +155,15 @@ def apply_depth_memory_override(settings: dict[str, Any], stage: dict[str, Any])
         settings["krea2_keep_depth_helpers_on_gpu"] = False
 
 
+def apply_fresh_optimizer_overrides(settings: dict[str, Any], stage: dict[str, Any]) -> None:
+    if str(stage.get("handoff_mode", "state")) != "weights":
+        return
+    for key in STAGE_OPTIMIZER_OVERRIDE_KEYS:
+        value = str(stage.get(key, "")).strip()
+        if value:
+            settings[key] = value
+
+
 def prepare_standard_stage(
     base_settings: dict[str, Any],
     stage: dict[str, Any],
@@ -157,6 +186,7 @@ def prepare_standard_stage(
     settings["stage_type"] = "standard"
     apply_dop_overrides(settings, stage)
     apply_depth_memory_override(settings, stage)
+    apply_fresh_optimizer_overrides(settings, stage)
     settings["save_state"] = True
     settings["recache_latents"] = bool(base_settings.get("staged_recache_latents", True))
     explicit_first_text_recache = index == 0 and bool(base_settings.get("recache_text"))

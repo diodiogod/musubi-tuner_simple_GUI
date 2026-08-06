@@ -95,7 +95,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             try:
                 from musubi_tuner.training.h3_guidance_protection import validate as validate_h3_guidance_scale
 
-                validate_h3_guidance_scale(settings.get("minimax_h3_guidance_distillation_scale") or 3.0)
+                validate_h3_guidance_scale(settings.get("minimax_h3_guidance_distillation_scale") or 4.0)
             except (TypeError, ValueError) as exc:
                 error("minimax_h3_guidance_distillation_scale", str(exc))
             if not settings.get("recache_text"):

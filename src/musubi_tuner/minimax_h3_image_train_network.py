@@ -405,6 +405,8 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 unconditional_prediction,
                 normal_target,
                 args.h3_guidance_distillation_scale,
+                sigma=timesteps.float() / 1000.0,
+                schedule=args.h3_guidance_distillation_schedule,
             )
         diffusion_loss, metrics = self.compute_loss(
             args,
@@ -566,6 +568,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             "ss_dop_class_word": args.dop_class_word if dop_enabled(args) else "",
             "ss_minimax_h3_guidance_distillation_protection": guidance_protection_enabled(args),
             "ss_minimax_h3_guidance_distillation_scale": args.h3_guidance_distillation_scale,
+            "ss_minimax_h3_guidance_distillation_schedule": args.h3_guidance_distillation_schedule,
         }
 
 
@@ -582,7 +585,8 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
     weight_noise.add_argument("--weight_noise_bound_norm", action="store_true")
     guidance = parser.add_argument_group("MiniMax-H3 guidance-distillation protection")
     guidance.add_argument("--h3_guidance_distillation_protection", action="store_true")
-    guidance.add_argument("--h3_guidance_distillation_scale", type=float, default=3.0)
+    guidance.add_argument("--h3_guidance_distillation_scale", type=float, default=4.0)
+    guidance.add_argument("--h3_guidance_distillation_schedule", choices=("sigma", "constant"), default="sigma")
     depth_anchor = parser.add_argument_group("MiniMax-H3 perceptual depth anchor (experimental)")
     depth_anchor.add_argument("--depth_anchor_weight", type=float, default=0.0)
     depth_anchor.add_argument("--depth_anchor_model", default="depth-anything/Depth-Anything-V2-Small-hf")
