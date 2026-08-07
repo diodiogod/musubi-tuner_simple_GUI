@@ -184,3 +184,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .compare-image .compare-media,.wipe-layer .compare-media{width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important}
 .compare-image video.compare-media,.wipe-layer video.compare-media{width:auto!important;height:auto!important;max-width:100%!important;max-height:100%!important}
 .compare-main{min-width:0}.compare-main>.compare-image{min-width:0;min-height:0}.compare-media{transform-origin:var(--compare-origin-x,50%) var(--compare-origin-y,50%)}
+.compare-main .compare-image{min-height:180px}.wipe-stage{min-height:180px}
+.compare-image .compare-media,.wipe-layer .compare-media{width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
+.wipe-layer video.compare-media,.compare-image video.compare-media{width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
