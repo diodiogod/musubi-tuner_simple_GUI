@@ -128,7 +128,7 @@ def test_minimax_h3_dop_and_training_samples_are_accepted(tmp_path: Path):
     assert any("multiples of 32" in message for message in messages)
 
 
-def test_minimax_video_prompt_is_allowed_and_scheduled_as_a_safe_still(tmp_path: Path):
+def test_minimax_video_prompt_is_allowed_and_scheduled_as_five_frames_by_default(tmp_path: Path):
     dataset = tmp_path / "dataset.toml"
     dataset.write_text("[[datasets]]", encoding="utf-8")
     settings = {
@@ -145,7 +145,7 @@ def test_minimax_video_prompt_is_allowed_and_scheduled_as_a_safe_still(tmp_path:
     result = validate_training_settings(settings)
 
     assert result["errors"] == []
-    assert any("scheduled training samples use one frame" in item["message"] for item in result["warnings"])
+    assert any("scheduled training samples use five frames" in item["message"] for item in result["warnings"])
 
     settings["sample_prompts_data"][0]["frames"] = 12
     assert any("frames must be 1" in item["message"] for item in validate_training_settings(settings)["errors"])

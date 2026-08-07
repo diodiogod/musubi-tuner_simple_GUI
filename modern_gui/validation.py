@@ -302,8 +302,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 error("sample_prompts_data", f"{label} frames must be 1 or MiniMax H3 video lengths 5, 22, 39, ...")
             elif frames != 1:
                 five_frame_scheduled = (
-                    str(settings.get("minimax_h3_training_preview_mode") or "").strip().lower()
-                    in {"five_frame", "five-frame video (experimental)"}
+                    str(settings.get("minimax_h3_training_preview_mode") or "Five-frame video (recommended)").strip().lower()
+                    in {"five_frame", "five-frame video (experimental)", "five-frame video (recommended)"}
                 )
                 scheduled_description = "five frames" if five_frame_scheduled else "one frame"
                 warning(
@@ -320,13 +320,14 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         )
     )
     if mode == "MiniMax H3 (Experimental)":
-        preview_mode = str(settings.get("minimax_h3_training_preview_mode") or "One frame (safe)").strip().lower()
+        preview_mode = str(settings.get("minimax_h3_training_preview_mode") or "Five-frame video (recommended)").strip().lower()
         valid_preview_modes = {
-            "one_frame", "five_frame", "one frame (safe)", "five-frame video (experimental)",
+            "one_frame", "five_frame", "one frame (safe)", "one frame (low memory)",
+            "five-frame video (experimental)", "five-frame video (recommended)",
         }
         if preview_mode not in valid_preview_modes:
-            error("minimax_h3_training_preview_mode", "Choose the safe one-frame or experimental five-frame scheduled preview mode.")
-        elif cadence_enabled and preview_mode in {"five_frame", "five-frame video (experimental)"}:
+            error("minimax_h3_training_preview_mode", "Choose the recommended five-frame preview or the lower-memory one-frame diagnostic.")
+        elif cadence_enabled and preview_mode in {"five_frame", "five-frame video (experimental)", "five-frame video (recommended)"}:
             warning(
                 "minimax_h3_training_preview_mode",
                 "Five-frame scheduled MiniMax previews are slower and may temporarily use more VRAM. Start with a conservative sample cadence.",

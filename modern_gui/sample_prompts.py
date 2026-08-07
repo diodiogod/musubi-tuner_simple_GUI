@@ -8,12 +8,12 @@ from typing import Any
 
 
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
-MINIMAX_H3_FIVE_FRAME_PREVIEW = "Five-frame video (experimental)"
+MINIMAX_H3_FIVE_FRAME_PREVIEW = "Five-frame video (recommended)"
 
 
 def minimax_h3_scheduled_preview_frames(settings: dict[str, Any]) -> int:
-    value = str(settings.get("minimax_h3_training_preview_mode") or "").strip().lower()
-    return 5 if value in {"five_frame", MINIMAX_H3_FIVE_FRAME_PREVIEW.lower()} else 1
+    value = str(settings.get("minimax_h3_training_preview_mode") or MINIMAX_H3_FIVE_FRAME_PREVIEW).strip().lower()
+    return 1 if value in {"one_frame", "one frame (safe)", "one frame (low memory)"} else 5
 
 
 def enabled_sample_prompts(settings: dict[str, Any]) -> list[dict[str, Any]]:

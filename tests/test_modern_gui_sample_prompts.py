@@ -1,7 +1,7 @@
 from modern_gui.sample_prompts import prepare_sample_prompt_settings
 
 
-def test_minimax_video_card_writes_one_frame_for_scheduled_training(tmp_path):
+def test_minimax_video_card_defaults_to_five_frames_for_scheduled_training(tmp_path):
     settings = {
         "training_mode": "MiniMax H3 (Experimental)",
         "dataset_config": str(tmp_path / "dataset.toml"),
@@ -16,7 +16,7 @@ def test_minimax_video_card_writes_one_frame_for_scheduled_training(tmp_path):
 
     serialized = (tmp_path / "h3_sample_prompts.txt").read_text(encoding="utf-8")
     assert prepared["sample_prompts"].endswith("h3_sample_prompts.txt")
-    assert "--f 1" in serialized
+    assert "--f 5" in serialized
     assert settings["sample_prompts_data"][0]["frames"] == 5
 
 

@@ -19,7 +19,7 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_text_encoder_load_mode": "auto",
     "minimax_h3_text_cache_dtype": "bfloat16",
     "minimax_h3_preview_decode_min_free_gb": "9.0",
-    "minimax_h3_training_preview_mode": "One frame (safe)",
+    "minimax_h3_training_preview_mode": "Five-frame video (recommended)",
     "minimax_h3_guidance_distillation_protection": True,
     "minimax_h3_quality_protection_method": "Dynamic Sigma (recommended)",
     "minimax_h3_quality_protection_preset": "Proven Quality",
@@ -111,7 +111,7 @@ CHOICES = {
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
-    "minimax_h3_training_preview_mode": ["One frame (safe)", "Five-frame video (experimental)"],
+    "minimax_h3_training_preview_mode": ["Five-frame video (recommended)", "One frame (low memory)"],
     "minimax_h3_quality_protection_preset": [
         "Proven Quality",
         "Experimental Balanced",

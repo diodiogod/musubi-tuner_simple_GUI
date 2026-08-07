@@ -1971,18 +1971,19 @@ class MusubiTunerGUI:
         ttk.Label(self._minimax_training_preview_frame, text="MiniMax scheduled preview:").pack(side="left", padx=(0, 8))
         preview_mode = ttk.Combobox(
             self._minimax_training_preview_frame,
-            values=("One frame (safe)", "Five-frame video (experimental)"),
+            values=("Five-frame video (recommended)", "One frame (low memory)"),
             state="readonly",
             width=31,
         )
-        preview_mode.set("One frame (safe)")
+        preview_mode.set("Five-frame video (recommended)")
         preview_mode.pack(side="left")
         preview_mode.is_required = False; preview_mode.is_path = False
         self.entries["minimax_h3_training_preview_mode"] = preview_mode
         ToolTip(
             preview_mode,
-            "Controls samples generated automatically during MiniMax training. One frame is safer and faster. "
-            "Five frames saves a short MP4, but is slower and can temporarily use more VRAM. This does not change "
+            "Controls samples generated automatically during MiniMax training. Five frames is recommended because "
+            "it represents MiniMax H3 video output better. One frame is a faster, lower-memory diagnostic. Five "
+            "frames saves a short MP4 and can temporarily use more VRAM. This does not change "
             "the frame count used by each prompt card's standalone Preview button.",
         )
         if self.training_mode_var.get() == "MiniMax H3 (Experimental)":
@@ -2699,7 +2700,7 @@ class MusubiTunerGUI:
             if mode == "MiniMax H3 (Experimental)" and output_name_override is None:
                 preview_mode = self.entries["minimax_h3_training_preview_mode"].get().strip().lower()
                 serialized_prompt["frames"] = 5 if preview_mode in {
-                    "five_frame", "five-frame video (experimental)"
+                    "five_frame", "five-frame video (experimental)", "five-frame video (recommended)"
                 } else 1
             lines.append(self._serialize_sample_prompt_line(serialized_prompt, is_krea2))
         if not lines:
@@ -7512,7 +7513,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
             "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
             "minimax_h3_text_cache_dtype": "bfloat16",
-            "minimax_h3_training_preview_mode": "One frame (safe)",
+            "minimax_h3_training_preview_mode": "Five-frame video (recommended)",
             "minimax_h3_guidance_distillation_protection": True,
             "minimax_h3_quality_protection_method": "Dynamic Sigma (recommended)",
             "minimax_h3_quality_protection_preset": "Proven Quality",
