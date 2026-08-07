@@ -131,7 +131,18 @@ cd musubi-tuner_simple_GUI
 
 ```bash
 python -m venv venv
+```
+
+Activate it on Windows:
+
+```text
 venv\\Scripts\\activate
+```
+
+Or on Linux:
+
+```bash
+source venv/bin/activate
 ```
 
 3. Install PyTorch for your CUDA version.
@@ -156,11 +167,110 @@ pip install matplotlib pynvml tensorboard wandb
 
 ## Launching
 
-On Windows, use:
+On Windows, double-click the interface you want:
 
 ```text
-LAUNCH_GUI.bat
+LAUNCH_MODERN_GUI.bat  (recommended browser interface)
+LAUNCH_GUI.bat         (Classic desktop interface)
 ```
+
+Both launchers use the same environment setup. On first launch they create
+`venv`, select a compatible PyTorch build, install the project dependencies,
+verify the environment, and then open the selected interface. Later launches
+perform a quick check and skip installation while the environment is healthy
+and `pyproject.toml` is unchanged. Setup details and errors are written to
+`logs/setup.log`.
+
+Python 3.10, 3.11, or 3.12 must already be installed. To explicitly repair an
+environment, run `venv\Scripts\python.exe tools\bootstrap_environment.py
+--force-repair`. To reinstall PyTorch, add `--refresh-torch`; set
+`MUSUBI_CUDA=cu124`, `cu128`, `cu130`, or `cu132` first when automatic driver
+detection needs to be overridden.
+
+### Experimental Linux launcher
+
+The browser-based Modern UI has an experimental Linux launcher. Python 3.10,
+3.11, or 3.12 and the NVIDIA driver must already be installed; the launcher
+creates `venv` and installs or verifies the Python, PyTorch, and project
+dependencies automatically.
+
+```bash
+chmod +x LAUNCH_MODERN_GUI_LINUX.sh
+./LAUNCH_MODERN_GUI_LINUX.sh
+```
+
+It uses `venv/bin/python` when present and otherwise discovers a supported
+`python3`. Set `MUSUBI_PYTHON=/path/to/python` to select another environment.
+On a headless machine it automatically avoids opening a browser. Additional
+server arguments are passed through, for example:
+
+```bash
+./LAUNCH_MODERN_GUI_LINUX.sh --host 127.0.0.1 --port 8675
+```
+
+Linux support is currently experimental. The Modern UI is the supported Linux
+interface; the Classic desktop GUI remains Windows-focused. Binding the server
+to a public interface is not recommended because it does not yet provide user
+authentication. Use an SSH tunnel or another authenticated proxy for remote
+access.
+
+<details>
+<summary><strong>Experimental RunPod guide (untested — testers wanted)</strong></summary>
+
+> This project has not yet been tested by the maintainer on RunPod. Treat this
+> as a community test procedure, keep backups of datasets and outputs, and
+> please report the Pod image, GPU, setup log, and full error when something
+> fails.
+
+1. Create a **Pod** (not a Serverless endpoint) using a current Ubuntu/PyTorch
+   image. Choose an NVIDIA GPU appropriate for the model; MiniMax H3 training is
+   currently aimed at 24 GB cards. Allocate enough persistent `/workspace`
+   storage for the repository, model files, caches, datasets, and checkpoints.
+   RunPod documents which data survives stops and termination in its
+   [storage guide](https://docs.runpod.io/pods/storage/types).
+
+2. Open the Pod terminal and clone the project inside `/workspace`:
+
+   ```bash
+   cd /workspace
+   git clone https://github.com/diodiogod/musubi-tuner_Wan2.2_GUI.git
+   cd musubi-tuner_Wan2.2_GUI
+   chmod +x LAUNCH_MODERN_GUI_LINUX.sh
+   ./LAUNCH_MODERN_GUI_LINUX.sh
+   ```
+
+   The first launch creates `venv` and installs the Python dependencies. It can
+   take several minutes. If setup fails, inspect `/workspace/musubi-tuner_Wan2.2_GUI/logs/setup.log`.
+
+3. For the initial experiment, keep the GUI bound to `127.0.0.1` and reach it
+   through an SSH tunnel. In a terminal on your own computer, use the public IP
+   and mapped SSH port shown by RunPod's **Connect** panel:
+
+   ```bash
+   ssh -L 8675:127.0.0.1:8675 root@RUNPOD_PUBLIC_IP -p RUNPOD_SSH_PORT
+   ```
+
+   Then open `http://127.0.0.1:8675` locally. RunPod documents SSH and port
+   access in its [connection guide](https://docs.runpod.io/pods/configuration/connect-to-ide).
+
+4. Store models, datasets, caches, and outputs under `/workspace`, not temporary
+   container paths. Download completed checkpoints before terminating the Pod;
+   ordinary volume storage survives a stop but not Pod termination.
+
+Do **not** start the GUI with `--host 0.0.0.0` or expose port 8675 publicly yet.
+The current GUI has no login system. RunPod's HTTP proxy can publish an exposed
+web port, and its own documentation recommends application authentication for
+public services: [exposing HTTP ports](https://docs.runpod.io/pods/configuration/expose-ports).
+
+When reporting a test, please include:
+
+- RunPod image/template name and Python version
+- GPU model and VRAM
+- whether first-time setup completed
+- `logs/setup.log` when installation failed
+- the job log and generated command when training failed
+
+</details>
 
 The launcher now closes automatically when the GUI exits normally, and only stays open if startup fails or Python returns an error.
 
