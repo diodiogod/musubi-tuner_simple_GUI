@@ -123,8 +123,8 @@ This GUI is only a front-end. Model requirements and training memory use still d
 1. Clone or download the repository.
 
 ```bash
-git clone https://github.com/diodiogod/musubi-tuner_Wan2.2_GUI.git
-cd musubi-tuner_Wan2.2_GUI
+git clone https://github.com/diodiogod/musubi-tuner_simple_GUI.git
+cd musubi-tuner_simple_GUI
 ```
 
 2. Start the interface you want. **You do not need to create or activate a
