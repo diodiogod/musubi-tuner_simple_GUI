@@ -1,4 +1,4 @@
-const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
+const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleSources: [], sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
 let loadedFaceResult = null;
 let controlSequence = 0;
 const $ = selector => document.querySelector(selector);
@@ -1726,9 +1726,17 @@ async function pollGpu() {
   try { const p=await api("/api/gpu"); if(!p.available||!p.devices.length)return $("#metric-vram").textContent="—"; const d=p.devices.reduce((a,b)=>b.memory_used>a.memory_used?b:a);$("#metric-vram").textContent=`${(d.memory_used/1073741824).toFixed(1)} / ${(d.memory_total/1073741824).toFixed(1)} GB`; } catch(_){}
 }
 
+function renderSampleSources(){
+  const current=state.settings.output_name||"Current run",sources=state.sampleSources||[],summary=$("#sample-source-summary"),chips=$("#sample-source-chips");
+  if(summary)summary.textContent=sources.length?`${current} + ${sources.length} earlier version${sources.length===1?"":"s"}`:`${current} only`;
+  if(chips)chips.innerHTML=[`<span class="sample-source-chip current">${esc(current)}</span>`,...sources.map(source=>`<span class="sample-source-chip">${esc(source.label||source.path)}</span>`)].join("");
+  const list=$("#sample-source-list");if(!list)return;
+  list.innerHTML=sources.length?sources.map(source=>`<div class="sample-source-row ${source.exists===false?"missing":""}"><div><strong>${esc(source.label||source.path)}</strong><small>${esc(source.path)} · ${source.exists===false?"Folder not found":`${source.count||0} sample files`}</small></div><button class="text-action" data-remove-sample-source="${esc(source.path)}">Remove</button></div>`).join(""):"<p class=\"sample-source-empty\">No earlier folders added yet. The current run is always included.</p>";
+  list.querySelectorAll("[data-remove-sample-source]").forEach(button=>button.addEventListener("click",()=>removeSampleSource(button.dataset.removeSampleSource)));
+}
 async function loadSamples() {
-  const p=await api(`/api/samples?output_dir=${encodeURIComponent(state.settings.output_dir||"")}&output_name=${encodeURIComponent(state.settings.output_name||"")}`); state.samples=p; $("#sample-count").textContent=p.groups.length;
-  const host=$("#sample-groups");host.classList.toggle("empty",!p.groups.length);host.innerHTML=p.groups.length?p.groups.map((g,i)=>`<button class="sample-series" data-index="${i}"><strong>${esc(g.items[0]?.prefix||`Prompt ${i+1}`)} · Prompt ${esc(String(g.items[0]?.prompt_index??i).padStart(2,"0"))}</strong><small>${g.items.length} checkpoint${g.items.length===1?"":"s"}${g.items[0]?.seed!=null?` · seed ${esc(g.items[0].seed)}`:""}</small></button>`).join(""):"No sample series found.";
+  const [p,sourcePayload]=await Promise.all([api(`/api/samples?output_dir=${encodeURIComponent(state.settings.output_dir||"")}&output_name=${encodeURIComponent(state.settings.output_name||"")}`),api("/api/samples/sources")]); state.samples=p;state.sampleSources=sourcePayload.sources||[];renderSampleSources(); $("#sample-count").textContent=p.groups.length;
+  const host=$("#sample-groups");host.classList.toggle("empty",!p.groups.length);host.innerHTML=p.groups.length?p.groups.map((g,i)=>{const versions=new Set(g.items.map(item=>item.source_label||"Current run")).size;return `<button class="sample-series" data-index="${i}"><strong>Prompt ${esc(String(g.prompt_index??g.items[0]?.prompt_index??i).padStart(2,"0"))}</strong><small>${versions>1?`${versions} versions · `:""}${g.items.length} checkpoint${g.items.length===1?"":"s"}${g.items[0]?.seed!=null?` · seed ${esc(g.items[0].seed)}`:""}</small></button>`}).join(""):"No sample series found.";
   host.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>renderComparison(Number(b.dataset.index))));
   if(state.sampleMode==="gallery")renderSampleGallery();else if(p.groups.length)renderComparison(Math.min(compareState.group,p.groups.length-1));
 }
@@ -1737,6 +1745,27 @@ function renderSampleGallery(){
   const media=item=>item.media_kind==="video"?`<video src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" loading="lazy" alt="">`;
   $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} output${items.length===1?"":"s"}</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}">${media(item)}<strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
   $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>openSamplePreview(items[Number(button.dataset.index)])));
+}
+function openSampleSources(){renderSampleSources();$("#sample-sources-dialog").showModal()}
+async function addSampleSourceFromDialog(){
+  const path=$("#sample-source-path").value.trim(),label=$("#sample-source-label").value.trim(),button=$("#add-sample-source");
+  if(!path)return toast("Choose a sample folder first.","error");
+  await withBusy(button,"Adding…",async()=>{const payload=await api("/api/samples/sources",{method:"POST",body:JSON.stringify({path,label})});state.sampleSources=payload.sources||[];renderSampleSources();$("#sample-source-path").value="";$("#sample-source-label").value="";compareState.leftSequence=null;compareState.rightSequence=null;await loadSamples();toast("Sample folder added to comparisons.")}).catch(error=>toast(error.message,"error"));
+}
+async function findAndAddNearbySources(){
+  const button=$("#find-nearby-sources");
+  await withBusy(button,"Scanning…",async()=>{
+    const query=`/api/samples/sources/nearby?output_dir=${encodeURIComponent(state.settings.output_dir||"")}&output_name=${encodeURIComponent(state.settings.output_name||"")}`;
+    const found=(await api(query)).sources||[];
+    if(!found.length)return toast("No neighboring folders with generated samples were found.");
+    const names=found.map(source=>`${source.label} (${source.count})`).join(", ");
+    if(!confirm(`Found ${found.length} neighboring sample folder${found.length===1?"":"s"}: ${names}.\n\nAdd them to Samples comparisons?`))return;
+    for(const source of found)await api("/api/samples/sources",{method:"POST",body:JSON.stringify({path:source.path,label:source.label})});
+    compareState.leftSequence=null;compareState.rightSequence=null;await loadSamples();toast(`${found.length} nearby sample folder${found.length===1?"":"s"} added.`);
+  }).catch(error=>toast(error.message,"error"));
+}
+async function removeSampleSource(path){
+  try{const payload=await api("/api/samples/sources",{method:"POST",body:JSON.stringify({path,remove:true})});state.sampleSources=payload.sources||[];renderSampleSources();compareState.leftSequence=null;compareState.rightSequence=null;await loadSamples();toast("Sample folder removed from comparisons.")}catch(error){toast(error.message,"error")}
 }
 function openSamplePreview(item){
   const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
@@ -1749,26 +1778,28 @@ const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,r
 function renderComparison(index) {
   compareState.group=index;
   $$(".sample-series").forEach((b,i)=>b.classList.toggle("active",i===index));
-  const group=state.samples.groups[index],items=group.items;
-  const restored=(sequence,fallback)=>{const found=sequence?items.findIndex(x=>x.sequence_kind===sequence[0]&&x.sequence===sequence[1]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
-  compareState.leftIndex=restored(compareState.leftSequence,Math.max(0,items.length-2));
-  compareState.rightIndex=restored(compareState.rightSequence,items.length-1);
+  const group=state.samples.groups[index],items=group.items,sourceLabels=[...new Set(items.map(item=>item.source_label||"Current run"))];
+  const restored=(selection,fallback)=>{const found=selection?items.findIndex(x=>x.source_label===selection[0]&&x.sequence_kind===selection[1]&&x.sequence===selection[2]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
+  const latestForSource=label=>{const matches=items.map((item,itemIndex)=>({item,itemIndex})).filter(entry=>(entry.item.source_label||"Current run")===label);return matches.sort((a,b)=>b.item.sequence-a.item.sequence||b.item.modified-a.item.modified)[0]?.itemIndex??0};
+  const defaultLeft=sourceLabels.length>1?latestForSource(sourceLabels[0]):Math.max(0,items.length-2),defaultRight=sourceLabels.length>1?latestForSource(sourceLabels[1]):items.length-1;
+  compareState.leftIndex=restored(compareState.leftSequence,defaultLeft);
+  compareState.rightIndex=restored(compareState.rightSequence,defaultRight);
   const isVideo=items[0]?.media_kind==="video";
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">${esc(items[0]?.prefix||"TRAINING SAMPLE")} · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} versions</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>${isVideo?"Synchronized video comparison":"Keyboard and touch navigation enabled"}</span></div><div id="compare-viewport"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B"></select></div>`;
-  const options=items.map((item,i)=>`<option value="${i}">${esc(item.sequence_label||`${item.sequence_kind} ${item.sequence}`)} · ${esc(item.name)}</option>`).join("");
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">TRAINING SAMPLE · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} checkpoints</span><span>${sourceLabels.length} source${sourceLabels.length===1?"":"s"}: ${sourceLabels.map(label=>`<b class="sample-source-chip">${esc(label)}</b>`).join(" ")}</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>${isVideo?"Synchronized video comparison":"Keyboard and touch navigation enabled"}</span></div><div id="compare-viewport"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B timeline"></select></div>`;
+  const options=items.map((item,i)=>`<option value="${i}">${esc(item.source_label||"Current run")} · ${esc(item.sequence_label||`${item.sequence_kind} ${item.sequence}`)} · ${esc(item.name)}</option>`).join("");
   $("#select-a").innerHTML=options;$("#select-b").innerHTML=options;$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;
   const renderMode=()=>{
     const a=items[compareState.leftIndex],b=items[compareState.rightIndex],host=$("#compare-viewport");
     const previousMaster=host.querySelector('video[data-video-role="b"]');
     if(previousMaster&&Number.isFinite(previousMaster.duration)&&previousMaster.duration>0)compareState.videoProgress=previousMaster.currentTime/previousMaster.duration;
-    compareState.leftSequence=[a.sequence_kind,a.sequence];compareState.rightSequence=[b.sequence_kind,b.sequence];
+    compareState.leftSequence=[a.source_label||"Current run",a.sequence_kind,a.sequence];compareState.rightSequence=[b.source_label||"Current run",b.sequence_kind,b.sequence];
     $$("#compare-stage .compare-tools button").forEach(x=>x.classList.toggle("active",x.dataset.mode===compareState.mode));
     $("#wipe-lock").style.display=compareState.mode==="wipe"?"":"none";
     const media=(item,role)=>isVideo?`<video class="sync-video" data-video-role="${role}" src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" alt="Version ${role.toUpperCase()}">`;
     if(compareState.mode==="side"){
-      host.innerHTML=`<div class="compare-main"><div class="compare-image">${media(a,"a")}<label>A · ${esc(a.sequence_label)}</label></div><div class="compare-image">${media(b,"b")}<label>B · ${esc(b.sequence_label)}</label></div></div>`;
+      host.innerHTML=`<div class="compare-main"><div class="compare-image">${media(a,"a")}<label>A · ${esc(a.source_label||"Current run")} · ${esc(a.sequence_label)}</label></div><div class="compare-image">${media(b,"b")}<label>B · ${esc(b.source_label||"Current run")} · ${esc(b.sequence_label)}</label></div></div>`;
     }else{
-      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer">${media(b,"b")}</div><div class="wipe-layer a" id="wipe-a">${media(a,"a")}</div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.sequence_label)}</span></div>`;
+      host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer">${media(b,"b")}</div><div class="wipe-layer a" id="wipe-a">${media(a,"a")}</div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.source_label||"Current run")} · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.source_label||"Current run")} · ${esc(b.sequence_label)}</span></div>`;
       setWipe(compareState.wipe);bindWipe();
     }
     if(isVideo)bindVideoSync(host);
@@ -1913,7 +1944,7 @@ $("#save-dataset-caption").addEventListener("click",()=>saveDatasetCaption().cat
 $("#add-image-dataset").addEventListener("click",()=>{state.datasetTab="settings";mutateDataset("/api/dataset/add",{kind:"image"},state.dataset?.datasets?.length||0)});
 $("#add-video-dataset").addEventListener("click",()=>{state.datasetTab="settings";mutateDataset("/api/dataset/add",{kind:"video"},state.dataset?.datasets?.length||0)});
 $("#save-dataset").addEventListener("click",()=>withBusy($("#save-dataset"),"Saving…",saveDatasetDocument).catch(error=>{if(error.status===409){$("#dataset-document-state").textContent="Disk changed";$("#dataset-document-state").classList.add("dirty")}toast(error.message,"error")}));
-$("#refresh-samples").addEventListener("click",()=>loadSamples().catch(e=>toast(e.message)));$("#refresh-jobs").addEventListener("click",()=>loadJobs().catch(e=>toast(e.message)));
+$("#refresh-samples").addEventListener("click",()=>loadSamples().catch(e=>toast(e.message)));$("#manage-sample-sources").addEventListener("click",openSampleSources);$("#find-nearby-sources").addEventListener("click",()=>findAndAddNearbySources());$("#browse-sample-source").addEventListener("click",()=>withBusy($("#browse-sample-source"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"directory",initial:$("#sample-source-path").value})});if(result.path)$("#sample-source-path").value=result.path}).catch(e=>toast(e.message,"error")));$("#add-sample-source").addEventListener("click",()=>addSampleSourceFromDialog());$("#refresh-jobs").addEventListener("click",()=>loadJobs().catch(e=>toast(e.message)));
 $("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$("#job-status-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});
 $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{method:"POST",body:"{}"}).then(p=>{toast(`${p.added} job folder${p.added===1?"":"s"} imported.`);loadJobs()}).catch(e=>toast(e.message)));
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});

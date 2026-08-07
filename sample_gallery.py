@@ -36,4 +36,5 @@ def parse_training_sample_path(fpath):
         "sequence": sequence,
         "sequence_kind": "epoch" if is_epoch else "step",
         "sequence_label": f"Epoch {sequence}" if is_epoch else f"Step {sequence}",
+        "tail": tail,
     }

@@ -51,7 +51,16 @@ from modern_gui.recovery import (
     prepare_face_refinement,
 )
 from modern_gui.monitor import gpu_snapshot
-from modern_gui.samples import allowed_sample_roots, discover_samples, resolve_sample_file
+from modern_gui.samples import (
+    add_sample_source,
+    allowed_sample_roots,
+    discover_samples,
+    find_nearby_sample_sources,
+    load_sample_sources,
+    remove_sample_source,
+    resolve_sample_file,
+    sample_source_status,
+)
 from modern_gui.sampling import estimate_steps_per_epoch
 from modern_gui.validation import require_valid_training_settings, validate_training_settings
 from modern_gui.settings import load_settings, save_settings, settings_schema
@@ -86,6 +95,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/jobs/import-found",
         "/api/jobs/clear",
         "/api/legacy/start",
+        "/api/samples/sources",
     }
 )
 
@@ -238,7 +248,19 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 output_dir = unquote(query.get("output_dir", [""])[0])
                 output_name = unquote(query.get("output_name", [""])[0])
-                return self._json(discover_samples(output_dir, output_name))
+                return self._json(discover_samples(output_dir, output_name, source_paths=load_sample_sources()))
+            if parsed.path == "/api/samples/sources":
+                return self._json({"sources": sample_source_status()})
+            if parsed.path == "/api/samples/sources/nearby":
+                query = parse_qs(parsed.query)
+                return self._json(
+                    {
+                        "sources": find_nearby_sample_sources(
+                            unquote(query.get("output_dir", [""])[0]),
+                            unquote(query.get("output_name", [""])[0]),
+                        )
+                    }
+                )
             if parsed.path == "/api/prompt-library":
                 from prompt_library import PromptLibraryStore
 
@@ -316,6 +338,12 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
             body = self._body()
             if self.path == "/api/settings":
                 return self._json({"settings": save_settings(body.get("settings", {}))})
+            if self.path == "/api/samples/sources":
+                if body.get("remove"):
+                    sources = remove_sample_source(body.get("path", ""))
+                else:
+                    sources = add_sample_source(body.get("path", ""), body.get("label", ""))
+                return self._json({"sources": sample_source_status()})
             if self.path == "/api/commands/preview":
                 settings = body.get("settings", {})
                 return self._json(

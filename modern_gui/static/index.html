@@ -226,6 +226,7 @@
 
       <section class="view" id="samples">
         <header class="page-header compact"><div><p class="kicker">TRAINING SAMPLES</p><h1>Compare progress</h1><p>Choose a prompt, then move through epochs or steps without losing your place.</p></div><div class="header-actions"><div class="compare-tools"><button class="active" data-sample-mode="compare">Compare</button><button data-sample-mode="gallery">Gallery</button></div><button class="quiet" id="refresh-samples">Refresh</button></div></header>
+        <div class="sample-source-bar" id="sample-source-bar"><div><p class="kicker">COMPARISON SOURCES</p><strong id="sample-source-summary">Current run only</strong><small>Match the same prompt across this run and earlier LoRA versions.</small></div><div id="sample-source-chips" class="sample-source-chips"></div><button class="quiet" id="manage-sample-sources">Manage folders</button></div>
         <div class="sample-workspace">
           <aside class="sample-rail"><div class="rail-heading"><strong>Prompts</strong><span id="sample-count">0</span></div><div id="sample-groups" class="sample-list empty">No samples found.</div></aside>
           <div class="compare-stage" id="compare-stage">
@@ -276,6 +277,15 @@
     <div class="plan-editor-actions"><span id="stage-editor-state">Included in staged training</span><button class="primary" data-close="stage-editor-dialog">Done</button></div>
   </dialog>
   <dialog id="sample-preview-dialog"><button class="dialog-close" data-close="sample-preview-dialog" aria-label="Close sample preview">×</button><img id="sample-preview-image" alt="Sample preview"><video id="sample-preview-video" controls playsinline hidden></video><p id="sample-preview-name"></p></dialog>
+  <dialog id="sample-sources-dialog" class="sample-sources-dialog" aria-labelledby="sample-sources-title">
+    <button class="dialog-close" data-close="sample-sources-dialog" aria-label="Close comparison folder manager">×</button>
+    <p class="kicker">SAMPLE COMPARISON</p><h2 id="sample-sources-title">Add earlier sample folders</h2>
+    <p class="dialog-subtitle">Add a previous run's sample folder once. It stays available for future comparisons, but it is never used for training or copied anywhere.</p>
+    <div class="sample-source-auto"><span><strong>Have versions beside the current output?</strong><small>Scan the current output location and add matching sample folders in one step.</small></span><button class="quiet" id="find-nearby-sources" type="button">Find and add nearby versions</button></div>
+    <div class="sample-source-form"><div class="path-control"><input id="sample-source-path" placeholder="Choose a folder containing generated samples"><button class="quiet" id="browse-sample-source" type="button">Browse</button></div><input id="sample-source-label" placeholder="Label, e.g. Version 1 or 1024 pass"><button class="primary" id="add-sample-source" type="button">Add folder</button></div>
+    <div id="sample-source-list" class="sample-source-list"></div>
+    <div class="review-actions"><button class="primary" data-close="sample-sources-dialog">Done</button></div>
+  </dialog>
   <dialog id="dataset-media-dialog" class="dataset-media-dialog">
     <button class="dialog-close" data-close="dataset-media-dialog" aria-label="Close media inspector">×</button>
     <div class="dataset-inspector-layout">

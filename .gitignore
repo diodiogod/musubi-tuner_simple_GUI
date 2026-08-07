@@ -10,6 +10,7 @@ main.obj
 last_settings.json
 job_history_local.json
 modern_gui_jobs.json
+modern_gui_sample_sources.json
 CLAUDE.md
 GEMINI.md
 AGENTS.md
