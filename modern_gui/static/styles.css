@@ -187,3 +187,5 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .compare-main .compare-image{min-height:180px}.wipe-stage{min-height:180px}
 .compare-image .compare-media,.wipe-layer .compare-media{width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
 .wipe-layer video.compare-media,.compare-image video.compare-media{width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:contain!important}
+.compare-main .compare-image,.wipe-stage{height:420px;min-height:420px;max-height:none}
+@media(max-width:680px){.compare-main .compare-image,.wipe-stage{height:300px;min-height:300px}}
