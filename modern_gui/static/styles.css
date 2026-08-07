@@ -181,3 +181,4 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .compare-media{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
 .compare-image .compare-media,.wipe-layer .compare-media{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
 .compare-image video.compare-media,.wipe-layer video.compare-media{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
+.compare-main{min-width:0}.compare-main>.compare-image{min-width:0;min-height:0}.compare-media{transform-origin:var(--compare-origin-x,50%) var(--compare-origin-y,50%)}

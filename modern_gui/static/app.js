@@ -1774,13 +1774,13 @@ function openSamplePreview(item){
   if(isVideo){video.src=item.url;video.load()}else image.src=item.url;
   $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
 }
-const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,zoom:1,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
+const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,zoom:1,zoomOriginX:50,zoomOriginY:50,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
 function renderComparison(index) {
   const previousGroup=compareState.group;
   compareState.group=index;
   $$(".sample-series").forEach((b,i)=>b.classList.toggle("active",i===index));
   const group=state.samples.groups[index],items=group.items,sourceLabels=[...new Set(items.map(item=>item.source_label||"Current run"))];
-  if(previousGroup!==index)compareState.zoom=1;
+  if(previousGroup!==index){compareState.zoom=1;compareState.zoomOriginX=50;compareState.zoomOriginY=50}
   const restored=(selection,fallback)=>{const found=selection?items.findIndex(x=>x.source_label===selection[0]&&x.sequence_kind===selection[1]&&x.sequence===selection[2]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
   const latestForSource=label=>{const matches=items.map((item,itemIndex)=>({item,itemIndex})).filter(entry=>(entry.item.source_label||"Current run")===label);return matches.sort((a,b)=>b.item.sequence-a.item.sequence||b.item.modified-a.item.modified)[0]?.itemIndex??0};
   const defaultLeft=sourceLabels.length>1?latestForSource(sourceLabels[0]):Math.max(0,items.length-2),defaultRight=sourceLabels.length>1?latestForSource(sourceLabels[1]):items.length-1;
@@ -1798,7 +1798,7 @@ function renderComparison(index) {
     $$("#compare-stage .compare-tools button").forEach(x=>x.classList.toggle("active",x.dataset.mode===compareState.mode));
     $("#wipe-lock").style.display=compareState.mode==="wipe"?"":"none";
     const media=(item,role)=>isVideo?`<video class="sync-video compare-media" data-video-role="${role}" src="${item.url}" preload="metadata" muted playsinline></video>`:`<img class="compare-media" src="${item.url}" alt="Version ${role.toUpperCase()}">`;
-    host.style.setProperty("--compare-zoom",String(compareState.zoom));host.onwheel=event=>{event.preventDefault();setZoom(compareState.zoom+(event.deltaY<0?.1:-.1))};
+    host.style.setProperty("--compare-zoom",String(compareState.zoom));host.style.setProperty("--compare-origin-x",`${compareState.zoomOriginX}%`);host.style.setProperty("--compare-origin-y",`${compareState.zoomOriginY}%`);host.onwheel=event=>{event.preventDefault();zoomAt(event)};
     if(compareState.mode==="side"){
       host.innerHTML=`<div class="compare-main"><div class="compare-image">${media(a,"a")}<label>A · ${esc(a.source_label||"Current run")} · ${esc(a.sequence_label)}</label></div><div class="compare-image">${media(b,"b")}<label>B · ${esc(b.source_label||"Current run")} · ${esc(b.sequence_label)}</label></div></div>`;
     }else{
@@ -1809,7 +1809,9 @@ function renderComparison(index) {
     $("#sample-range").value=compareState.rightIndex;
   };
   const setVersion=idx=>{compareState.rightIndex=Math.max(0,Math.min(items.length-1,idx));compareState.leftIndex=Math.max(0,compareState.rightIndex-1);$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;renderMode()};
-  const setZoom=value=>{compareState.zoom=Math.max(.5,Math.min(2.5,Number(value)||1));$("#compare-viewport")?.style.setProperty("--compare-zoom",String(compareState.zoom))};
+  const setZoom=value=>{compareState.zoom=Math.max(.5,Math.min(2.5,Number(value)||1));const host=$("#compare-viewport");if(host)host.style.setProperty("--compare-zoom",String(compareState.zoom))};
+  const setZoomOrigin=(x,y)=>{compareState.zoomOriginX=Math.max(0,Math.min(100,x));compareState.zoomOriginY=Math.max(0,Math.min(100,y));const host=$("#compare-viewport");if(host){host.style.setProperty("--compare-origin-x",`${compareState.zoomOriginX}%`);host.style.setProperty("--compare-origin-y",`${compareState.zoomOriginY}%`)}};
+  const zoomAt=event=>{const pane=event.target?.closest?.(".compare-image,.wipe-stage")||$("#compare-viewport"),box=pane.getBoundingClientRect();if(!box.width||!box.height)return;setZoomOrigin((event.clientX-box.left)/box.width*100,(event.clientY-box.top)/box.height*100);setZoom(compareState.zoom+(event.deltaY<0?.1:-.1))};
   const movePrompt=delta=>renderComparison((index+delta+state.samples.groups.length)%state.samples.groups.length);
   const setWipe=value=>{compareState.wipe=Math.max(0,Math.min(100,value));const layer=$("#wipe-a"),line=$("#wipe-divider"),stage=$("#wipe-stage");if(layer)layer.style.clipPath=`inset(0 ${100-compareState.wipe}% 0 0)`;if(line)line.style.left=`${compareState.wipe}%`;stage?.setAttribute("aria-valuenow",String(Math.round(compareState.wipe)))};
   function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",move);stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
