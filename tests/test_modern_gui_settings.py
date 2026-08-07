@@ -67,6 +67,18 @@ def test_cache_controls_have_plain_language_labels():
     assert fields["recache_text"]["label"] == "Rebuild Caption/Text Cache"
 
 
+def test_h3_quality_layers_are_independent_and_section_opens_by_default():
+    schema = settings.settings_schema(settings.MINIMAX_H3_DEFAULTS)
+    fields = {field["key"]: field for section in schema["sections"] for field in section["fields"]}
+    html = (Path(__file__).parents[1] / "modern_gui" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert fields["minimax_h3_quality_protection_preset"]["options"][0] == "Proven Quality"
+    assert fields["minimax_h3_training_assistant_enabled"]["type"] == "boolean"
+    assert fields["minimax_h3_dynamic_sigma_enabled"]["type"] == "boolean"
+    assert fields["minimax_h3_base_preservation_enabled"]["type"] == "boolean"
+    assert '<details class="raw-settings" id="minimax-guidance-protection" open hidden>' in html
+
+
 def test_normal_cache_controls_are_in_guided_dataset_step_not_stages_panel():
     html = (Path(__file__).parents[1] / "modern_gui" / "static" / "index.html").read_text(encoding="utf-8")
     dataset_step = html.index('data-pane="data"')

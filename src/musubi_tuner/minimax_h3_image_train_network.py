@@ -21,6 +21,12 @@ from musubi_tuner.training.sampling_prompts import load_prompts
 from musubi_tuner.training.trainer_base import DiTOutput, NetworkTrainer
 from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
 from musubi_tuner.training.h3_guidance_protection import build_guided_target, enabled as guidance_protection_enabled, validate as validate_guidance_scale
+from musubi_tuner.training.h3_training_assistant import (
+    DEFAULT_ASSISTANT,
+    base_preservation_loss,
+    load_live_assistant,
+    should_preserve_base,
+)
 from musubi_tuner.perceptual.depth_devices import resolve_depth_vae_device
 from musubi_tuner.utils.device_utils import clean_memory_on_device
 
@@ -39,6 +45,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         self._weight_noise_logs = {}
         self._depth_anchor = None
         self._depth_vae_device = None
+        self._training_assistant = None
 
     @property
     def architecture(self) -> str:
@@ -54,6 +61,24 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         self._control_training = False
         self.default_guidance_scale = 1.0
         self.default_discrete_flow_shift = 12.0
+        legacy_method = args.h3_quality_protection_method
+        if legacy_method == "dynamic":
+            args.h3_guidance_distillation_protection = True
+        elif legacy_method == "assistant":
+            args.h3_training_assistant_enabled = True
+        elif legacy_method == "assistant_preservation":
+            args.h3_training_assistant_enabled = True
+            args.h3_base_preservation_enabled = True
+        elif legacy_method == "off":
+            args.h3_guidance_distillation_protection = False
+        active_protection = []
+        if args.h3_training_assistant_enabled:
+            active_protection.append("assistant")
+        if args.h3_guidance_distillation_protection:
+            active_protection.append("dynamic")
+        if args.h3_base_preservation_enabled:
+            active_protection.append("base")
+        args.h3_quality_protection_method = "+".join(active_protection) or "off"
         if args.mixed_precision != "bf16":
             raise ValueError("Experimental MiniMax-H3 image training requires --mixed_precision bf16")
         if args.fp8_base or args.fp8_scaled:
@@ -100,9 +125,42 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         if guidance_protection_enabled(args):
             validate_guidance_scale(args.h3_guidance_distillation_scale)
             logger.info(
-                "MiniMax-H3 guidance-distillation protection enabled: contrastive target scale=%g",
+                "MiniMax-H3 Dynamic Sigma enabled: scale=%g, every %d step(s)",
                 args.h3_guidance_distillation_scale,
+                args.h3_dynamic_sigma_every_n_steps,
             )
+        if args.h3_dynamic_sigma_every_n_steps < 1:
+            raise ValueError("H3 Dynamic Sigma cadence must be at least 1")
+        if args.h3_training_assistant_enabled and not str(args.h3_training_assistant or "").strip():
+            raise ValueError("The selected H3 assistant method requires --h3_training_assistant")
+        if args.h3_base_preservation_loss_weight < 0:
+            raise ValueError("H3 base-preservation strength must be non-negative")
+        if args.h3_base_preservation_every_n_steps < 1:
+            raise ValueError("H3 base-preservation cadence must be at least 1")
+        if args.h3_base_preservation_enabled and args.h3_base_preservation_loss_weight <= 0:
+            raise ValueError("Enabled H3 base preservation requires a strength greater than zero")
+        if args.h3_base_preservation_reference == "assistant" and not args.h3_training_assistant_enabled:
+            raise ValueError("Base + assistant reference requires the Ostris training assistant to be enabled")
+
+    def on_transformer_loaded(self, args, accelerator, transformer) -> None:
+        if not args.h3_training_assistant_enabled:
+            return
+        logger.info("Loading frozen MiniMax-H3 training assistant: %s", args.h3_training_assistant)
+        self._training_assistant = load_live_assistant(
+            transformer,
+            args.h3_training_assistant,
+            accelerator.device,
+            torch.bfloat16,
+        )
+        logger.info("MiniMax-H3 training assistant active from %s", self._training_assistant.assistant_source)
+
+    def on_before_sample_images(self, *args, **kwargs) -> None:
+        if self._training_assistant is not None:
+            self._training_assistant.set_enabled(False)
+
+    def on_after_sample_images(self, *args, **kwargs) -> None:
+        if self._training_assistant is not None:
+            self._training_assistant.set_enabled(True)
 
     def _build_dataset(self, args):
         group, collator, current_epoch = super()._build_dataset(args)
@@ -367,7 +425,10 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             dit_dtype,
         )
         unconditional_prediction = None
-        if guidance_protection_enabled(args):
+        run_dynamic_sigma = guidance_protection_enabled(args) and should_preserve_base(
+            global_step, getattr(args, "h3_dynamic_sigma_every_n_steps", 1)
+        )
+        if run_dynamic_sigma:
             unconditional_rows = batch.get("mmh3_unconditional_hidden_states")
             if not isinstance(unconditional_rows, list) or len(unconditional_rows) != 1:
                 raise ValueError(
@@ -388,6 +449,38 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                     timesteps,
                     network_dtype,
                 ).pred.detach()
+        reference_prediction = None
+        run_base_preservation = (
+            getattr(args, "h3_base_preservation_enabled", False)
+            and should_preserve_base(global_step, getattr(args, "h3_base_preservation_every_n_steps", 10))
+        )
+        if run_base_preservation:
+            unwrapped_network = accelerator.unwrap_model(network)
+            original_multiplier = float(getattr(unwrapped_network, "multiplier", 1.0))
+            unwrapped_network.set_multiplier(0.0)
+            disable_assistant = (
+                self._training_assistant is not None
+                and getattr(args, "h3_base_preservation_reference", "assistant") == "base"
+            )
+            if disable_assistant:
+                self._training_assistant.set_enabled(False)
+            try:
+                with torch.no_grad():
+                    reference_prediction = self.call_dit(
+                        args,
+                        accelerator,
+                        transformer,
+                        latents,
+                        batch,
+                        noise,
+                        noisy_input,
+                        timesteps,
+                        network_dtype,
+                    ).pred.detach()
+            finally:
+                if disable_assistant:
+                    self._training_assistant.set_enabled(True)
+                unwrapped_network.set_multiplier(original_multiplier)
         output = self.call_dit(
             args,
             accelerator,
@@ -418,6 +511,10 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             global_step,
         )
         total = diffusion_loss
+        if reference_prediction is not None:
+            preservation = base_preservation_loss(output.pred, reference_prediction)
+            total = total + getattr(args, "h3_base_preservation_loss_weight", 0.0) * preservation
+            metrics["loss/h3_base_preservation"] = preservation.detach()
         if unconditional_prediction is not None:
             metrics.update(
                 {
@@ -569,6 +666,14 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             "ss_minimax_h3_guidance_distillation_protection": guidance_protection_enabled(args),
             "ss_minimax_h3_guidance_distillation_scale": args.h3_guidance_distillation_scale,
             "ss_minimax_h3_guidance_distillation_schedule": args.h3_guidance_distillation_schedule,
+            "ss_minimax_h3_quality_protection_method": getattr(args, "h3_quality_protection_method", None) or "legacy",
+            "ss_minimax_h3_training_assistant": str(getattr(args, "h3_training_assistant", "") or ""),
+            "ss_minimax_h3_base_preservation_loss_weight": getattr(args, "h3_base_preservation_loss_weight", 0.0),
+            "ss_minimax_h3_base_preservation_every_n_steps": getattr(args, "h3_base_preservation_every_n_steps", 10),
+            "ss_minimax_h3_training_assistant_enabled": getattr(args, "h3_training_assistant_enabled", False),
+            "ss_minimax_h3_dynamic_sigma_every_n_steps": getattr(args, "h3_dynamic_sigma_every_n_steps", 1),
+            "ss_minimax_h3_base_preservation_enabled": getattr(args, "h3_base_preservation_enabled", False),
+            "ss_minimax_h3_base_preservation_reference": getattr(args, "h3_base_preservation_reference", "assistant"),
         }
 
 
@@ -585,8 +690,20 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
     weight_noise.add_argument("--weight_noise_bound_norm", action="store_true")
     guidance = parser.add_argument_group("MiniMax-H3 guidance-distillation protection")
     guidance.add_argument("--h3_guidance_distillation_protection", action="store_true")
+    guidance.add_argument("--h3_dynamic_sigma_every_n_steps", type=int, default=1)
     guidance.add_argument("--h3_guidance_distillation_scale", type=float, default=4.0)
     guidance.add_argument("--h3_guidance_distillation_schedule", choices=("sigma", "constant"), default="sigma")
+    guidance.add_argument(
+        "--h3_quality_protection_method",
+        choices=("dynamic", "assistant", "assistant_preservation", "off"),
+        default=None,
+    )
+    guidance.add_argument("--h3_training_assistant", default=DEFAULT_ASSISTANT)
+    guidance.add_argument("--h3_training_assistant_enabled", action="store_true")
+    guidance.add_argument("--h3_base_preservation_enabled", action="store_true")
+    guidance.add_argument("--h3_base_preservation_loss_weight", type=float, default=0.0)
+    guidance.add_argument("--h3_base_preservation_every_n_steps", type=int, default=10)
+    guidance.add_argument("--h3_base_preservation_reference", choices=("base", "assistant"), default="assistant")
     depth_anchor = parser.add_argument_group("MiniMax-H3 perceptual depth anchor (experimental)")
     depth_anchor.add_argument("--depth_anchor_weight", type=float, default=0.0)
     depth_anchor.add_argument("--depth_anchor_model", default="depth-anything/Depth-Anything-V2-Small-hf")

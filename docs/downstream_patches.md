@@ -180,3 +180,21 @@ not contain the GUI files.
 - GUI integration and bounded loss-history restoration remain in `musubi_tuner_gui.py` and
   `backends/_common.py`.
 - Tests: `tests/test_true_resume_position.py` and `tests/test_gui_job_history.py`.
+
+### MiniMax H3 training quality protection
+
+- `training/h3_training_assistant.py` converts Ostris AI Toolkit's published
+  `diffusion_model.*.lora_A/B` adapter keys into native Musubi live-LoRA keys.
+- The frozen helper is attached in `minimax_h3_image_train_network.py` after the
+  ConvRot transformer loads, disabled around previews, excluded from the optimizer,
+  and never merged into user checkpoints.
+- Assistant loading, Dynamic Sigma, and drift/base preservation are independent.
+  Dynamic Sigma and the drift reference each have their own positive step cadence.
+- Drift preservation temporarily sets only the user's trainable LoRA multiplier to
+  zero for a sparse no-gradient reference pass. The reference can retain the frozen
+  helper or temporarily disable it as well.
+- Dynamic Sigma remains the backward-compatible default and keeps its unconditional
+  caption-cache contract. Helper modes do not request or require that cache entry.
+- Keep old method-selector recipes migrated by `backends/minimax_h3.py`; new recipes
+  pass independent component flags and editable cadence values.
+  Tests: `tests/test_h3_training_assistant.py`, `tests/test_minimax_h3_backend.py`.

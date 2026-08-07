@@ -385,8 +385,10 @@ def prepare_continuation(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_exact_recovery(job: dict[str, Any]) -> dict[str, Any]:
-    if job.get("kind") != "training" or job.get("status") not in {"failed", "stopped"}:
-        raise ValueError("True recovery is available only for failed or stopped normal training jobs.")
+    if job.get("kind") != "training" or job.get("status") not in {"failed", "stopped", "completed"}:
+        raise ValueError(
+            "Exact resume is available only for completed, failed, or stopped normal training jobs."
+        )
     snapshot = effective_history_settings(job)
     state, rejected = resolve_exact_recovery_state(job)
     if state is None:

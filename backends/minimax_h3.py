@@ -1,5 +1,41 @@
 """Command construction for experimental MiniMax-H3 still-image LoRA training."""
 
+DEFAULT_H3_TRAINING_ASSISTANT = (
+    "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_alpha.safetensors"
+)
+
+
+def quality_protection_method(settings):
+    """Return the CLI value while accepting old saved boolean recipes."""
+    value = str(settings.get("minimax_h3_quality_protection_method") or "").strip().lower()
+    aliases = {
+        "dynamic sigma (recommended)": "dynamic",
+        "ostris assistant (alpha)": "assistant",
+        "assistant + base preservation (alpha)": "assistant_preservation",
+        "off": "off",
+    }
+    if value in {"dynamic", "assistant", "assistant_preservation", "off"}:
+        return value
+    if value in aliases:
+        return aliases[value]
+    return "dynamic" if settings.get("minimax_h3_guidance_distillation_protection", True) else "off"
+
+
+def quality_protection_components(settings):
+    """Resolve independent controls, migrating recipes from the old method selector."""
+    if "minimax_h3_training_assistant_enabled" in settings:
+        return {
+            "assistant": bool(settings.get("minimax_h3_training_assistant_enabled")),
+            "dynamic": bool(settings.get("minimax_h3_dynamic_sigma_enabled")),
+            "base": bool(settings.get("minimax_h3_base_preservation_enabled")),
+        }
+    method = quality_protection_method(settings)
+    return {
+        "assistant": method in {"assistant", "assistant_preservation"},
+        "dynamic": method == "dynamic",
+        "base": method == "assistant_preservation",
+    }
+
 from backends._common import (
     add_arg,
     build_attention_arg,
@@ -43,9 +79,32 @@ def build_commands(settings):
     add_arg(cmd, "--block_swap_ring_size", settings.get("block_swap_ring_size"))
     add_arg(cmd, "--use_pinned_memory_for_block_swap", settings.get("use_pinned_memory_for_block_swap"))
     add_arg(cmd, "--convrot_bwd_mode", settings.get("minimax_h3_convrot_bwd_mode") or "bf16")
-    add_arg(cmd, "--h3_guidance_distillation_protection", settings.get("minimax_h3_guidance_distillation_protection"))
+    protection = quality_protection_components(settings)
+    add_arg(cmd, "--h3_training_assistant_enabled", protection["assistant"])
+    add_arg(cmd, "--h3_guidance_distillation_protection", protection["dynamic"])
+    add_arg(cmd, "--h3_dynamic_sigma_every_n_steps", settings.get("minimax_h3_dynamic_sigma_every_n_steps") or "1")
     add_arg(cmd, "--h3_guidance_distillation_scale", settings.get("minimax_h3_guidance_distillation_scale") or "4.0")
     add_arg(cmd, "--h3_guidance_distillation_schedule", settings.get("minimax_h3_guidance_distillation_schedule") or "sigma")
+    if protection["assistant"]:
+        add_arg(
+            cmd,
+            "--h3_training_assistant",
+            settings.get("minimax_h3_training_assistant") or DEFAULT_H3_TRAINING_ASSISTANT,
+        )
+    add_arg(cmd, "--h3_base_preservation_enabled", protection["base"])
+    if protection["base"]:
+        add_arg(
+            cmd,
+            "--h3_base_preservation_loss_weight",
+            settings.get("minimax_h3_base_preservation_loss_weight") or "0.05",
+        )
+        add_arg(
+            cmd,
+            "--h3_base_preservation_every_n_steps",
+            settings.get("minimax_h3_base_preservation_every_n_steps") or "10",
+        )
+        reference = str(settings.get("minimax_h3_base_preservation_reference") or "Base + assistant").lower()
+        add_arg(cmd, "--h3_base_preservation_reference", "base" if reference == "base only" else "assistant")
     add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
     add_arg(cmd, "--weight_noise_mode", settings.get("krea2_weight_noise_mode"))
     add_arg(cmd, "--weight_noise_bound_norm", settings.get("krea2_weight_noise_bound_norm"))
@@ -99,7 +158,7 @@ def build_cache_commands(settings, python_executable):
             command.extend(["--tokenizer", tokenizer])
         add_arg(command, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
         add_arg(command, "--cache_dtype", settings.get("minimax_h3_text_cache_dtype") or "bfloat16")
-        add_arg(command, "--cache_h3_unconditional", settings.get("minimax_h3_guidance_distillation_protection"))
+        add_arg(command, "--cache_h3_unconditional", quality_protection_components(settings)["dynamic"])
         build_dop_cache_args(command, settings)
         commands.append(command)
     return commands

@@ -33,6 +33,10 @@ class _CPUAccelerator:
     def autocast():
         return nullcontext()
 
+    @staticmethod
+    def unwrap_model(model):
+        return model
+
 
 class _RecordingImageModel:
     def __init__(self):
@@ -176,6 +180,59 @@ def test_h3_sigma_schedule_fades_protection_toward_clean_timesteps():
         unconditional, target, 4.0, sigma=torch.tensor([1.0, 0.0]), schedule="sigma"
     )
     torch.testing.assert_close(protected, torch.tensor([[4.0], [1.0]]))
+
+
+def test_hybrid_protection_bypasses_only_user_lora_for_sparse_reference(monkeypatch):
+    trainer = MiniMaxH3ImageNetworkTrainer()
+    latents = torch.zeros(1, 24, 1, 2, 2)
+    multipliers = []
+
+    class Network:
+        multiplier = 1.0
+
+        def set_multiplier(self, value):
+            self.multiplier = value
+
+    network = Network()
+    monkeypatch.setattr(
+        trainer,
+        "get_noisy_model_input_and_timesteps",
+        lambda *args, **kwargs: (torch.zeros_like(latents), torch.tensor([500.0])),
+    )
+
+    def fake_call(*_args, **_kwargs):
+        multipliers.append(network.multiplier)
+        prediction = torch.full_like(latents, network.multiplier, requires_grad=network.multiplier != 0)
+        return DiTOutput(pred=prediction, target=torch.zeros_like(latents))
+
+    monkeypatch.setattr(trainer, "call_dit", fake_call)
+    monkeypatch.setattr(
+        trainer,
+        "compute_loss",
+        lambda _args, output, *_rest, **_kwargs: (output.pred.square().mean(), {}),
+    )
+    args = SimpleNamespace(
+        h3_quality_protection_method="assistant_preservation",
+        h3_base_preservation_enabled=True,
+        h3_base_preservation_reference="assistant",
+        h3_base_preservation_loss_weight=0.05,
+        h3_base_preservation_every_n_steps=10,
+        h3_guidance_distillation_protection=False,
+        depth_anchor_weight=0.0,
+        depth_anchor_every_n_steps=1,
+        dop_loss_weight=0.0,
+    )
+
+    loss, metrics = trainer.process_batch(
+        args, _CPUAccelerator(), object(), network,
+        {"timesteps": torch.tensor([0.5]), "mmh3_hidden_states": [torch.zeros(1, 5120)]},
+        latents, torch.zeros_like(latents), object(), torch.bfloat16, torch.bfloat16, None, 9,
+    )
+
+    assert multipliers == [0.0, 1.0]
+    assert network.multiplier == 1.0
+    assert loss.item() == pytest.approx(1.05)
+    assert metrics["loss/h3_base_preservation"].item() == pytest.approx(1.0)
 
 
 def test_five_frame_training_preview_uses_video_sampler_and_returns_video_grid(monkeypatch):

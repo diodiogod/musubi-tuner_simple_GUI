@@ -118,6 +118,20 @@ def test_true_recovery_preserves_identity_and_enables_exact_position(tmp_path: P
     assert settings["use_staged_training"] is False
 
 
+def test_completed_run_can_be_extended_from_its_final_positional_state(tmp_path: Path):
+    state = complete_state(tmp_path / "portrait-000005-state")
+    job = job_for(tmp_path, state, status="completed")
+    job["current_epoch"] = 5
+    job["settings_snapshot"]["max_train_epochs"] = "5"
+
+    settings = prepare_exact_recovery(job)
+
+    assert settings["output_name"] == "portrait"
+    assert settings["resume_path"] == str(state)
+    assert settings["resume_exact_position"] is True
+    assert settings["recovery_mode"] is True
+
+
 def test_additive_continuation_branches_name_and_never_claims_exact_position(tmp_path: Path):
     state = complete_state(tmp_path / "portrait-000004-state")
 

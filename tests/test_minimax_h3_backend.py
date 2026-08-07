@@ -35,6 +35,30 @@ def test_training_command_enforces_direct_int8_safe_path(tmp_path):
     assert command[command.index("--minimax_h3_preview_decode_min_free_gb") + 1] == "9.0"
     assert command[command.index("--depth_anchor_vae_device") + 1] == "training"
     assert command[command.index("--depth_anchor_every_n_steps") + 1] == "1"
+    assert "--h3_guidance_distillation_protection" in command
+    assert command[command.index("--h3_dynamic_sigma_every_n_steps") + 1] == "1"
+
+
+def test_hybrid_assistant_command_forwards_helper_and_sparse_preservation(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_assistant_enabled": True,
+        "minimax_h3_dynamic_sigma_enabled": True,
+        "minimax_h3_dynamic_sigma_every_n_steps": "10",
+        "minimax_h3_base_preservation_enabled": True,
+        "minimax_h3_training_assistant": "ostris/repo/helper.safetensors",
+        "minimax_h3_base_preservation_loss_weight": "0.05",
+        "minimax_h3_base_preservation_every_n_steps": "10",
+    }
+
+    (command,) = minimax_h3.build_commands(settings)
+
+    assert "--h3_training_assistant_enabled" in command
+    assert "--h3_base_preservation_enabled" in command
+    assert "--h3_guidance_distillation_protection" in command
+    assert command[command.index("--h3_dynamic_sigma_every_n_steps") + 1] == "10"
+    assert command[command.index("--h3_training_assistant") + 1] == "ostris/repo/helper.safetensors"
+    assert command[command.index("--h3_base_preservation_loss_weight") + 1] == "0.05"
+    assert command[command.index("--h3_base_preservation_every_n_steps") + 1] == "10"
 
 
 def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
@@ -47,6 +71,20 @@ def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
     assert commands[1][commands[1].index("--text_encoder") + 1].endswith("te.safetensors")
     assert commands[1][commands[1].index("--text_encoder_load_mode") + 1] == "auto"
     assert commands[1][commands[1].index("--cache_dtype") + 1] == "bfloat16"
+
+
+def test_combined_assistant_and_periodic_dynamic_sigma_still_cache_unconditional_text(tmp_path):
+    settings = _settings(tmp_path) | {
+        "recache_text": True,
+        "minimax_h3_training_assistant_enabled": True,
+        "minimax_h3_dynamic_sigma_enabled": True,
+        "minimax_h3_dynamic_sigma_every_n_steps": "10",
+        "minimax_h3_base_preservation_enabled": False,
+    }
+
+    command = minimax_h3.build_cache_commands(settings, "python")[0]
+
+    assert "--cache_h3_unconditional" in command
 
 
 def test_training_command_exposes_h3_regularization_and_samples(tmp_path):

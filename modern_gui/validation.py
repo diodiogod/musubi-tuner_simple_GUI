@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 from typing import Any
 
-from modern_gui.recovery import validate_accelerate_state
+from modern_gui.recovery import state_epoch, validate_accelerate_state
 from modern_gui.sample_prompts import enabled_sample_prompts, validate_sample_prompts
 
 
@@ -91,18 +93,47 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("mixed_precision", "Experimental MiniMax H3 requires BF16 mixed precision.")
         if not settings.get("gradient_checkpointing"):
             error("gradient_checkpointing", "MiniMax H3 H2D-only block swapping requires gradient checkpointing.")
-        if settings.get("minimax_h3_guidance_distillation_protection"):
+        from backends.minimax_h3 import quality_protection_components
+
+        h3_protection = quality_protection_components(settings)
+        if h3_protection["dynamic"]:
             try:
                 from musubi_tuner.training.h3_guidance_protection import validate as validate_h3_guidance_scale
 
                 validate_h3_guidance_scale(settings.get("minimax_h3_guidance_distillation_scale") or 4.0)
             except (TypeError, ValueError) as exc:
                 error("minimax_h3_guidance_distillation_scale", str(exc))
+            if not _positive_integer(str(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or "1")):
+                error("minimax_h3_dynamic_sigma_every_n_steps", "Dynamic Sigma cadence must be a positive whole number.")
             if not settings.get("recache_text"):
                 warning(
                     "recache_text",
                     "H3 quality protection needs an empty-prompt embedding in the Caption/Text Cache. Rebuild that cache once after enabling it; image latents do not need rebuilding.",
                 )
+        if h3_protection["assistant"]:
+            assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()
+            assistant_path = Path(assistant).expanduser() if assistant else None
+            is_hf_file = bool(re.fullmatch(r"[^/\\]+/[^/\\]+/[^/\\]+\.safetensors", assistant))
+            if not assistant or not ((assistant_path and assistant_path.is_file()) or is_hf_file):
+                error(
+                    "minimax_h3_training_assistant",
+                    "Choose a local .safetensors helper or use owner/repository/file.safetensors. The Ostris alpha helper is filled in by default.",
+                )
+            warning(
+                "minimax_h3_quality_protection_method",
+                "The Ostris MiniMax H3 training assistant is an alpha release. It is frozen during training and excluded from previews and saved LoRAs; validate it with a short run first.",
+            )
+        if h3_protection["base"]:
+            try:
+                weight = float(str(settings.get("minimax_h3_base_preservation_loss_weight") or ""))
+                if weight <= 0:
+                    raise ValueError
+            except ValueError:
+                error("minimax_h3_base_preservation_loss_weight", "Base preservation strength must be greater than zero.")
+            if not _positive_integer(str(settings.get("minimax_h3_base_preservation_every_n_steps") or "")):
+                error("minimax_h3_base_preservation_every_n_steps", "Base comparison cadence must be a positive whole number.")
+            if settings.get("minimax_h3_base_preservation_reference") == "Base + assistant" and not h3_protection["assistant"]:
+                error("minimax_h3_base_preservation_reference", "Base + assistant reference requires the Ostris assistant to be enabled.")
         try:
             blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
         except ValueError:
@@ -202,6 +233,21 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         valid, missing = validate_accelerate_state(resume, exact_position=True)
         if not valid:
             error("resume_path", "Exact recovery state is incomplete: " + ", ".join(missing))
+        else:
+            # A numbered positional state already represents completed work.
+            # Require a larger total so an exact extension cannot silently do
+            # zero iterations when the old epoch limit is left unchanged.
+            completed_epoch = state_epoch(resume)
+            if completed_epoch:
+                try:
+                    requested_epochs = int(epochs) if epochs else 0
+                except ValueError:
+                    requested_epochs = 0
+                if requested_epochs and requested_epochs <= completed_epoch:
+                    error(
+                        "max_train_epochs",
+                        f"Exact resume state is at epoch {completed_epoch}; set Max Train Epochs higher than {completed_epoch} to continue.",
+                    )
 
     if settings.get("use_staged_training"):
         try:

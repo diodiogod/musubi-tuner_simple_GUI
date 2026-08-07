@@ -195,6 +195,21 @@ def test_exact_resume_is_revalidated_even_when_loaded_from_json(tmp_path: Path):
     assert any("Exact recovery state is incomplete" in item["message"] for item in result["errors"])
 
 
+def test_exact_resume_requires_a_larger_epoch_limit_than_state(tmp_path: Path):
+    settings = valid_krea_settings(tmp_path)
+    state = tmp_path / "portrait-000005-state"
+    state.mkdir()
+    for name in ("model.safetensors", "optimizer.bin", "scheduler.bin", "random_states_0.pkl"):
+        (state / name).write_bytes(b"state")
+    settings.update({"resume_path": str(state), "resume_exact_position": True, "max_train_epochs": "5"})
+
+    result = validate_training_settings(settings)
+
+    assert any("set Max Train Epochs higher than 5" in item["message"] for item in result["errors"])
+    settings["max_train_epochs"] = "10"
+    assert not any("set Max Train Epochs higher than 5" in item["message"] for item in validate_training_settings(settings)["errors"])
+
+
 def test_resume_and_weight_continuation_are_mutually_exclusive(tmp_path: Path):
     settings = valid_krea_settings(tmp_path)
     state = tmp_path / "state"

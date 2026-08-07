@@ -21,8 +21,18 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_preview_decode_min_free_gb": "9.0",
     "minimax_h3_training_preview_mode": "One frame (safe)",
     "minimax_h3_guidance_distillation_protection": True,
+    "minimax_h3_quality_protection_method": "Dynamic Sigma (recommended)",
+    "minimax_h3_quality_protection_preset": "Proven Quality",
+    "minimax_h3_training_assistant_enabled": False,
+    "minimax_h3_dynamic_sigma_enabled": True,
+    "minimax_h3_dynamic_sigma_every_n_steps": "1",
     "minimax_h3_guidance_distillation_scale": "4.0",
     "minimax_h3_guidance_distillation_schedule": "sigma",
+    "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_alpha.safetensors",
+    "minimax_h3_base_preservation_loss_weight": "0.05",
+    "minimax_h3_base_preservation_every_n_steps": "10",
+    "minimax_h3_base_preservation_enabled": False,
+    "minimax_h3_base_preservation_reference": "Base + assistant",
     "minimax_h3_depth_vae_device": "training",
     "minimax_h3_keep_depth_vae_on_device": False,
     "minimax_h3_depth_every_n_steps": "1",
@@ -53,9 +63,17 @@ FIELD_LABELS = {
     "sample_every_n_steps": "Sample Every N Steps",
     "sample_at_first": "Sample At First",
     "minimax_h3_training_preview_mode": "Scheduled MiniMax Preview",
-    "minimax_h3_guidance_distillation_protection": "Protect H3 Quality During Training",
+    "minimax_h3_quality_protection_preset": "Quality Protection Preset",
+    "minimax_h3_training_assistant_enabled": "Use Ostris Training Assistant",
+    "minimax_h3_dynamic_sigma_enabled": "Use Dynamic Sigma Protection",
+    "minimax_h3_dynamic_sigma_every_n_steps": "Dynamic Sigma Every N Steps",
     "minimax_h3_guidance_distillation_scale": "H3 Quality Protection Strength",
     "minimax_h3_guidance_distillation_schedule": "H3 Quality Protection Schedule",
+    "minimax_h3_training_assistant": "Ostris Training Assistant",
+    "minimax_h3_base_preservation_loss_weight": "Base Preservation Strength",
+    "minimax_h3_base_preservation_every_n_steps": "Compare With Base Every N Steps",
+    "minimax_h3_base_preservation_enabled": "Use Drift/Base Preservation",
+    "minimax_h3_base_preservation_reference": "Drift Reference",
     "rename_final_artifacts_to_epoch": "Rename Final Save to Epoch Number",
 }
 
@@ -94,6 +112,14 @@ CHOICES = {
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
     "minimax_h3_training_preview_mode": ["One frame (safe)", "Five-frame video (experimental)"],
+    "minimax_h3_quality_protection_preset": [
+        "Proven Quality",
+        "Experimental Balanced",
+        "Experimental Strong",
+        "Maximum Protection",
+        "Custom",
+    ],
+    "minimax_h3_base_preservation_reference": ["Base + assistant", "Base only"],
     "minimax_h3_guidance_distillation_schedule": ["sigma", "constant"],
     "krea2_depth_vae_device": ["training", "secondary"],
     "appearance_mode": ["Dark", "Light"],
@@ -150,6 +176,20 @@ def load_settings() -> dict[str, Any]:
     payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         return {}
+    if "minimax_h3_quality_protection_method" not in payload:
+        payload["minimax_h3_quality_protection_method"] = (
+            "Dynamic Sigma (recommended)"
+            if payload.get("minimax_h3_guidance_distillation_protection", True)
+            else "Off"
+        )
+    if "minimax_h3_training_assistant_enabled" not in payload:
+        legacy = str(payload.get("minimax_h3_quality_protection_method") or "").lower()
+        payload["minimax_h3_training_assistant_enabled"] = "assistant" in legacy
+        payload["minimax_h3_dynamic_sigma_enabled"] = legacy.startswith("dynamic")
+        payload["minimax_h3_base_preservation_enabled"] = "preservation" in legacy
+        payload["minimax_h3_quality_protection_preset"] = (
+            "Proven Quality" if legacy.startswith("dynamic") else "Custom"
+        )
     for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS).items():
         payload.setdefault(key, value)
     return payload
@@ -192,7 +232,7 @@ def _section_for(key: str) -> str:
         return "optimization"
     if "timestep" in key or key in {"discrete_flow_shift", "preserve_distribution_shape", "train_high_noise", "train_low_noise"}:
         return "timesteps"
-    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_", "minimax_h3_guidance_")):
+    if key.startswith(("dop_", "krea2_weight_", "krea2_depth_", "krea2_generalization", "krea2_keep_", "minimax_h3_depth_", "minimax_h3_keep_depth_", "minimax_h3_guidance_", "minimax_h3_quality_", "minimax_h3_training_assistant", "minimax_h3_base_preservation_")):
         return "regularization"
     if key.startswith(("sample_",)):
         return "sampling"

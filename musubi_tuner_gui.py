@@ -1358,24 +1358,42 @@ class MusubiTunerGUI:
         ttk.Label(
             self.hidden_frames['minimax_h3_guidance_protection'],
             text=(
-                "Recommended for H3 LoRAs. This counters guidance-distillation breakdown that can make longer "
-                "training lose detail, structure, or concept quality. The recommended Sigma schedule applies strong "
-                "protection to noisy steps and fades it near the clean result. It adds one no-gradient model pass per step."
+                "Important H3 controls. Ostris's frozen assistant, proven Dynamic Sigma target, and optional drift check "
+                "can be enabled together and scheduled independently. Presets provide editable starting points."
             ),
             wraplength=850,
             style="PageHelp.TLabel",
         ).pack(anchor="w", padx=10, pady=(8, 4))
         self._add_widget(
             self.hidden_frames['minimax_h3_guidance_protection'],
-            "minimax_h3_guidance_distillation_protection",
-            "Protect H3 Quality During Training",
-            "Recommended. MiniMax H3 already contains distilled guidance behavior. Ordinary LoRA training can weaken "
-            "it, especially on longer concept runs. This performs one extra empty-prompt prediction without gradients "
-            "and teaches the captioned prediction a protected target. It is slower, but does not create a second backward graph. "
-            "Rebuild only the Caption/Text Cache once after enabling it.",
-            kind="checkbox",
-            default_val=True,
-            command=self._on_h3_guidance_protection_toggle,
+            "minimax_h3_quality_protection_preset",
+            "Quality Protection Preset:",
+            "Presets apply editable starting values. Proven Quality uses Dynamic Sigma every step. Balanced and Strong "
+            "combine Ostris's assistant with Dynamic Sigma every 10 or 4 steps. Maximum also enables the drift check.",
+            kind="combobox",
+            options=["Proven Quality", "Experimental Balanced", "Experimental Strong", "Maximum Protection", "Custom"],
+            command=self._on_h3_quality_preset_changed,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_training_assistant_enabled",
+            "Use Ostris Training Assistant",
+            "Frozen alpha helper active during training steps. It is disabled for previews and is never saved into your LoRA.",
+            kind="checkbox", default_val=False, command=self._on_h3_quality_controls_changed,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_dynamic_sigma_enabled",
+            "Use Dynamic Sigma Protection",
+            "The proven empty-prompt quality target. It can run every step or periodically together with the assistant.",
+            kind="checkbox", default_val=True, command=self._on_h3_quality_controls_changed,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_dynamic_sigma_every_n_steps",
+            "Dynamic Sigma Every N Steps:",
+            "1 means every step, 4 means 25% of steps, and 10 means 10% of steps.",
+            validate_num=True,
         )
         self._add_widget(
             self.hidden_frames['minimax_h3_guidance_protection'],
@@ -1392,21 +1410,56 @@ class MusubiTunerGUI:
             "Protection Schedule:",
             "Sigma is recommended: protection is strongest when the latent is noisy and fades toward ordinary training "
             "near the clean result, avoiding an impossible low-noise correction. Constant reproduces the older behavior. "
-            "Ostris is preparing support for a future frozen helper LoRA, but no generally validated helper is assumed yet.",
+            "This setting is used only by Dynamic Sigma.",
             kind="combobox",
             options=["sigma", "constant"],
         )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_training_assistant",
+            "Ostris Training Assistant:",
+            "The default owner/repository/file downloads automatically from Hugging Face once and is reused from cache. "
+            "You may instead paste a local .safetensors path. This is an alpha helper, so validate it with a short run.",
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_base_preservation_enabled",
+            "Use Drift/Base Preservation",
+            "Optional third mechanism. On scheduled steps it discourages the trainable LoRA from drifting too far from a chosen frozen reference.",
+            kind="checkbox", default_val=False, command=self._on_h3_quality_controls_changed,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_base_preservation_loss_weight",
+            "Base Preservation Strength:",
+            "Used only by the hybrid. Start at 0.05. Higher values resist model drift more strongly but can weaken concept learning.",
+            validate_num=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_base_preservation_reference",
+            "Drift Reference:",
+            "Base + assistant keeps Ostris's helper active in the frozen reference. Base only temporarily disables both LoRAs.",
+            kind="combobox", options=["Base + assistant", "Base only"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_base_preservation_every_n_steps",
+            "Compare With Base Every N Steps:",
+            "Used only by the hybrid. 10 makes the expensive no-gradient comparison on one in ten steps. 1 runs it every step.",
+            validate_num=True,
+        )
         h3_guidance_attribution = ttk.Label(
             self.hidden_frames['minimax_h3_guidance_protection'],
-            text="Technique reference: Ostris AI Toolkit contrastive guidance loss · independent cached-text Musubi adaptation",
+            text="Dynamic Sigma: independent cached-text adaptation · Assistant file/format: Ostris AI Toolkit (alpha)",
             wraplength=820,
             style="PageHelp.TLabel",
         )
         h3_guidance_attribution.pack(anchor="w", padx=10, pady=(2, 8))
         ToolTip(
             h3_guidance_attribution,
-            "Reference: github.com/ostris/ai-toolkit commit 183433ae. This implementation was written independently "
-            "for the image-only MiniMax H3 trainer and its cached Qwen3-VL states.",
+            "The dynamic method was adapted independently for Musubi. Assistant modes consume Ostris's published "
+            "minimax_h3_training_adapter_alpha.safetensors as a frozen live helper and do not merge it into user outputs.",
         )
 
         self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(self.regularization_frame, text="Krea 2 · Generalization (Experimental)")
@@ -7159,11 +7212,42 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except (KeyError, AttributeError):
             pass
 
-    def _on_h3_guidance_protection_toggle(self):
-        """A newly enabled protected target requires one empty-prompt cache entry."""
-        try:
-            if self.entries["minimax_h3_guidance_distillation_protection"].var.get():
+    def _on_h3_quality_preset_changed(self, _event=None):
+        preset = self.entries["minimax_h3_quality_protection_preset"].get()
+        values = {
+            "Proven Quality": (False, True, "1", False),
+            "Experimental Balanced": (True, True, "10", False),
+            "Experimental Strong": (True, True, "4", False),
+            "Maximum Protection": (True, True, "1", True),
+        }.get(preset)
+        if values:
+            assistant, dynamic, cadence, base = values
+            self.entries["minimax_h3_training_assistant_enabled"].var.set(assistant)
+            self.entries["minimax_h3_dynamic_sigma_enabled"].var.set(dynamic)
+            self.entries["minimax_h3_base_preservation_enabled"].var.set(base)
+            self.entries["minimax_h3_dynamic_sigma_every_n_steps"].delete(0, tk.END)
+            self.entries["minimax_h3_dynamic_sigma_every_n_steps"].insert(0, cadence)
+            if dynamic:
                 self.entries["recache_text"].var.set(True)
+        self._on_h3_quality_controls_changed(mark_custom=False)
+
+    def _on_h3_quality_controls_changed(self, mark_custom=True):
+        """Enable each independent H3 quality layer without hiding the others."""
+        try:
+            assistant = self.entries["minimax_h3_training_assistant_enabled"].var.get()
+            dynamic = self.entries["minimax_h3_dynamic_sigma_enabled"].var.get()
+            base = self.entries["minimax_h3_base_preservation_enabled"].var.get()
+            if dynamic:
+                self.entries["recache_text"].var.set(True)
+            self.entries["minimax_h3_dynamic_sigma_every_n_steps"].configure(state="normal" if dynamic else "disabled")
+            self.entries["minimax_h3_guidance_distillation_scale"].configure(state="readonly" if dynamic else "disabled")
+            self.entries["minimax_h3_guidance_distillation_schedule"].configure(state="readonly" if dynamic else "disabled")
+            self.entries["minimax_h3_training_assistant"].configure(state="normal" if assistant else "disabled")
+            for key in ("minimax_h3_base_preservation_loss_weight", "minimax_h3_base_preservation_every_n_steps"):
+                self.entries[key].configure(state="normal" if base else "disabled")
+            self.entries["minimax_h3_base_preservation_reference"].configure(state="readonly" if base else "disabled")
+            if mark_custom:
+                self.entries["minimax_h3_quality_protection_preset"].set("Custom")
         except (AttributeError, KeyError):
             pass
         self.update_button_states()
@@ -7430,8 +7514,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_text_cache_dtype": "bfloat16",
             "minimax_h3_training_preview_mode": "One frame (safe)",
             "minimax_h3_guidance_distillation_protection": True,
+            "minimax_h3_quality_protection_method": "Dynamic Sigma (recommended)",
+            "minimax_h3_quality_protection_preset": "Proven Quality",
+            "minimax_h3_training_assistant_enabled": False,
+            "minimax_h3_dynamic_sigma_enabled": True,
+            "minimax_h3_dynamic_sigma_every_n_steps": "1",
             "minimax_h3_guidance_distillation_scale": "4.0",
             "minimax_h3_guidance_distillation_schedule": "sigma",
+            "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_alpha.safetensors",
+            "minimax_h3_base_preservation_loss_weight": "0.05",
+            "minimax_h3_base_preservation_every_n_steps": "10",
+            "minimax_h3_base_preservation_enabled": False,
+            "minimax_h3_base_preservation_reference": "Base + assistant",
             "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
             "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",
@@ -8740,6 +8834,39 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     "MiniMax H3 on a 24 GB card requires block swapping. Choose 1–48 blocks; 30 is the conservative default.",
                 )
                 return
+            h3_protection = minimax_h3_backend.quality_protection_components(settings)
+            if h3_protection["dynamic"]:
+                try:
+                    if int(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or 0) <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    messagebox.showerror("Validation Error", "Dynamic Sigma cadence must be a positive whole number.")
+                    return
+            if h3_protection["assistant"]:
+                assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()
+                is_hf_file = bool(re.fullmatch(r"[^/\\]+/[^/\\]+/[^/\\]+\.safetensors", assistant))
+                if not assistant or not (os.path.isfile(assistant) or is_hf_file):
+                    messagebox.showerror(
+                        "Validation Error",
+                        "Ostris Assistant must be a local .safetensors file or an "
+                        "owner/repository/file.safetensors Hugging Face value.",
+                    )
+                    return
+            if h3_protection["base"]:
+                try:
+                    preservation_weight = float(settings.get("minimax_h3_base_preservation_loss_weight") or 0)
+                    preservation_cadence = int(settings.get("minimax_h3_base_preservation_every_n_steps") or 0)
+                    if preservation_weight <= 0 or preservation_cadence <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    messagebox.showerror(
+                        "Validation Error",
+                        "Drift/Base Preservation needs a strength above 0 and a positive whole-number cadence.",
+                    )
+                    return
+                if settings.get("minimax_h3_base_preservation_reference") == "Base + assistant" and not h3_protection["assistant"]:
+                    messagebox.showerror("Validation Error", "Base + assistant drift reference requires the Ostris assistant.")
+                    return
             try:
                 noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
                 depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
