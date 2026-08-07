@@ -11,7 +11,9 @@ def quality_protection_method(settings):
     aliases = {
         "dynamic sigma (recommended)": "dynamic",
         "ostris assistant (alpha)": "assistant",
+        "ostris assistant (v1)": "assistant",
         "assistant + base preservation (alpha)": "assistant_preservation",
+        "assistant + base preservation (v1)": "assistant_preservation",
         "off": "off",
     }
     if value in {"dynamic", "assistant", "assistant_preservation", "off"}:

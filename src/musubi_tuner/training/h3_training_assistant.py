@@ -1,7 +1,7 @@
 """Frozen MiniMax-H3 training-assistant and sparse base-preservation helpers.
 
 The assistant mechanism follows Ostris AI Toolkit's live, unmerged training
-adapter design.  The published alpha adapter remains active while the user's
+adapter design. The published v1 adapter remains active while the user's
 LoRA trains, is disabled for samples, and is never written into user outputs.
 """
 

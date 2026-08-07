@@ -1378,7 +1378,7 @@ class MusubiTunerGUI:
             self.hidden_frames['minimax_h3_guidance_protection'],
             "minimax_h3_training_assistant_enabled",
             "Use Ostris Training Assistant",
-            "Frozen alpha helper active during training steps. It is disabled for previews and is never saved into your LoRA.",
+            "Frozen v1 helper active during training steps. It is disabled for previews and is never saved into your LoRA.",
             kind="checkbox", default_val=False, command=self._on_h3_quality_controls_changed,
         )
         self._add_widget(
@@ -1419,7 +1419,7 @@ class MusubiTunerGUI:
             "minimax_h3_training_assistant",
             "Ostris Training Assistant:",
             "The default owner/repository/file downloads automatically from Hugging Face once and is reused from cache. "
-            "You may instead paste a local .safetensors path. This is an alpha helper, so validate it with a short run.",
+            "You may instead paste a local .safetensors path. The v1 helper is still experimental, so validate it with a short run.",
         )
         self._add_widget(
             self.hidden_frames['minimax_h3_guidance_protection'],
@@ -1451,7 +1451,7 @@ class MusubiTunerGUI:
         )
         h3_guidance_attribution = ttk.Label(
             self.hidden_frames['minimax_h3_guidance_protection'],
-            text="Dynamic Sigma: independent cached-text adaptation · Assistant file/format: Ostris AI Toolkit (alpha)",
+            text="Dynamic Sigma: independent cached-text adaptation · Assistant file/format: Ostris AI Toolkit (v1)",
             wraplength=820,
             style="PageHelp.TLabel",
         )
