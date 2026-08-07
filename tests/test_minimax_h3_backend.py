@@ -61,6 +61,22 @@ def test_hybrid_assistant_command_forwards_helper_and_sparse_preservation(tmp_pa
     assert command[command.index("--h3_base_preservation_every_n_steps") + 1] == "10"
 
 
+def test_base_preservation_falls_back_to_base_reference_without_assistant(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_assistant_enabled": False,
+        "minimax_h3_dynamic_sigma_enabled": True,
+        "minimax_h3_base_preservation_enabled": True,
+        "minimax_h3_base_preservation_reference": "Base + assistant",
+        "minimax_h3_base_preservation_loss_weight": "0.05",
+        "minimax_h3_base_preservation_every_n_steps": "10",
+    }
+
+    (command,) = minimax_h3.build_commands(settings)
+
+    assert "--h3_training_assistant_enabled" not in command
+    assert command[command.index("--h3_base_preservation_reference") + 1] == "base"
+
+
 def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
     settings = _settings(tmp_path)
     settings.update(recache_latents=True, recache_text=True)

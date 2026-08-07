@@ -264,6 +264,10 @@ function fieldControl(field, {wide = false} = {}) {
   const commit = () => {
     if(customInput){customInput.hidden=input.value!=="__custom__";if(input.value==="__custom__")customInput.focus()}
     state.settings[field.key] = field.type === "boolean" ? input.checked : input.value==="__custom__" ? customInput.value : input.value;
+    if(field.key==="minimax_h3_training_assistant_enabled"&&!input.checked&&state.settings.minimax_h3_base_preservation_enabled){
+      state.settings.minimax_h3_base_preservation_reference="Base only";
+      toast("Drift Reference changed to Base only because the Ostris assistant is off.");
+    }
     if(field.key==="minimax_h3_guidance_distillation_protection"&&input.checked){
       state.settings.recache_text=true;
       toast("Caption/Text Cache rebuilding was enabled once for the H3 quality-protection embedding.");

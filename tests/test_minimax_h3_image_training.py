@@ -104,6 +104,16 @@ def test_experimental_parser_uses_24gb_safe_defaults():
     assert parser.get_default("h3_guidance_distillation_schedule") == "sigma"
 
 
+def test_disabled_base_preservation_allows_unused_assistant_reference_default():
+    parser = minimax_h3_image_setup_parser(setup_parser_common())
+    args = parser.parse_args(["--mixed_precision", "bf16"])
+
+    MiniMaxH3ImageNetworkTrainer().handle_model_specific_args(args)
+
+    assert args.h3_base_preservation_enabled is False
+    assert args.h3_base_preservation_reference == "assistant"
+
+
 def test_h3_guidance_protection_amplifies_target_away_from_unconditional_prediction():
     unconditional = torch.tensor([1.0, 2.0])
     normal_target = torch.tensor([3.0, -1.0])

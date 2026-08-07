@@ -106,6 +106,8 @@ def build_commands(settings):
             settings.get("minimax_h3_base_preservation_every_n_steps") or "10",
         )
         reference = str(settings.get("minimax_h3_base_preservation_reference") or "Base + assistant").lower()
+        if not protection["assistant"]:
+            reference = "base only"
         add_arg(cmd, "--h3_base_preservation_reference", "base" if reference == "base only" else "assistant")
     add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
     add_arg(cmd, "--weight_noise_mode", settings.get("krea2_weight_noise_mode"))

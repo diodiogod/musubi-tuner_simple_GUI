@@ -7238,6 +7238,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             assistant = self.entries["minimax_h3_training_assistant_enabled"].var.get()
             dynamic = self.entries["minimax_h3_dynamic_sigma_enabled"].var.get()
             base = self.entries["minimax_h3_base_preservation_enabled"].var.get()
+            if base and not assistant:
+                self.entries["minimax_h3_base_preservation_reference"].set("Base only")
             if dynamic:
                 self.entries["recache_text"].var.set(True)
             self.entries["minimax_h3_dynamic_sigma_every_n_steps"].configure(state="normal" if dynamic else "disabled")

@@ -139,7 +139,11 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             raise ValueError("H3 base-preservation cadence must be at least 1")
         if args.h3_base_preservation_enabled and args.h3_base_preservation_loss_weight <= 0:
             raise ValueError("Enabled H3 base preservation requires a strength greater than zero")
-        if args.h3_base_preservation_reference == "assistant" and not args.h3_training_assistant_enabled:
+        if (
+            args.h3_base_preservation_enabled
+            and args.h3_base_preservation_reference == "assistant"
+            and not args.h3_training_assistant_enabled
+        ):
             raise ValueError("Base + assistant reference requires the Ostris training assistant to be enabled")
 
     def on_transformer_loaded(self, args, accelerator, transformer) -> None:
