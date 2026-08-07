@@ -28,7 +28,7 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_dynamic_sigma_every_n_steps": "1",
     "minimax_h3_guidance_distillation_scale": "4.0",
     "minimax_h3_guidance_distillation_schedule": "sigma",
-    "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_alpha.safetensors",
+    "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors",
     "minimax_h3_base_preservation_loss_weight": "0.05",
     "minimax_h3_base_preservation_every_n_steps": "10",
     "minimax_h3_base_preservation_enabled": False,

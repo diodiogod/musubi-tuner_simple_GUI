@@ -16,7 +16,7 @@ from safetensors.torch import load_file
 
 DEFAULT_ASSISTANT = (
     "ostris/minimax_h3_training_adapter/"
-    "minimax_h3_training_adapter_alpha.safetensors"
+    "minimax_h3_training_adapter_v1.safetensors"
 )
 
 

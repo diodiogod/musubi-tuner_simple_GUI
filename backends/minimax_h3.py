@@ -1,7 +1,7 @@
 """Command construction for experimental MiniMax-H3 still-image LoRA training."""
 
 DEFAULT_H3_TRAINING_ASSISTANT = (
-    "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_alpha.safetensors"
+    "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors"
 )
 
 
