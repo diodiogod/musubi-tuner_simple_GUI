@@ -112,69 +112,75 @@ Docs: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
 ### Requirements
 
 - Windows is the primary target
-- Python `3.10+`
+- Python 3.10, 3.11, or 3.12
 - NVIDIA GPU recommended
 - Enough VRAM for the model family you plan to train
 
 This GUI is only a front-end. Model requirements and training memory use still depend on musubi-tuner and the selected backend.
 
-### Setup
+### Quick setup
 
-1. Clone your fork.
-
-```bash
-git clone https://github.com/diodiogod/musubi-tuner_simple_GUI.git
-cd musubi-tuner_simple_GUI
-```
-
-2. Create and activate a virtual environment.
+1. Clone or download the repository.
 
 ```bash
-python -m venv venv
+git clone https://github.com/diodiogod/musubi-tuner_Wan2.2_GUI.git
+cd musubi-tuner_Wan2.2_GUI
 ```
 
-Activate it on Windows:
+2. Start the interface you want. **You do not need to create or activate a
+   virtual environment manually.** The launcher handles that automatically.
 
-```text
-venv\\Scripts\\activate
-```
-
-Or on Linux:
-
-```bash
-source venv/bin/activate
-```
-
-3. Install PyTorch for your CUDA version.
-
-Example for CUDA 12.4:
-
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-```
-
-4. Install the project.
-
-```bash
-pip install -e .
-```
-
-5. Install optional monitor/logging extras if you want them.
-
-```bash
-pip install matplotlib pynvml tensorboard wandb
-```
-
-## Launching
-
-On Windows, double-click the interface you want:
+On Windows, double-click:
 
 ```text
 LAUNCH_MODERN_GUI.bat  (recommended browser interface)
 LAUNCH_GUI.bat         (Classic desktop interface)
 ```
 
-Both launchers use the same environment setup. On first launch they create
+On Linux:
+
+```bash
+chmod +x LAUNCH_MODERN_GUI_LINUX.sh
+./LAUNCH_MODERN_GUI_LINUX.sh
+```
+
+<details>
+<summary>Manual/developer installation</summary>
+
+Use these commands only when you deliberately want to manage the environment
+yourself or troubleshoot the automatic setup.
+
+Create and activate a virtual environment:
+
+```bash
+python -m venv venv
+# Windows: venv\Scripts\activate
+# Linux:   source venv/bin/activate
+```
+
+Install PyTorch for your CUDA version. Example for CUDA 12.4:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+```
+
+Install the project:
+
+```bash
+pip install -e .
+```
+
+Optional monitor/logging extras:
+
+```bash
+pip install matplotlib pynvml tensorboard wandb
+```
+
+</details>
+
+## Automatic launcher setup
+
+Both Windows launchers use the same environment setup. On first launch they create
 `venv`, select a compatible PyTorch build, install the project dependencies,
 verify the environment, and then open the selected interface. Later launches
 perform a quick check and skip installation while the environment is healthy
