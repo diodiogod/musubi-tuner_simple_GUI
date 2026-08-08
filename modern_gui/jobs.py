@@ -31,6 +31,7 @@ from modern_gui.stages import (
 from modern_gui.monitor import is_training_progress_line, parse_training_line
 from modern_gui.face_stages import prepare_face_stage, validate_face_environment
 from modern_gui.stages import resolve_stage_lora
+from process_lifecycle import ProcessTreeScope
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,7 @@ class JobSupervisor:
         self._lock = threading.RLock()
         self._active: dict[str, Any] | None = None
         self._process: subprocess.Popen[str] | None = None
+        self._process_scope: ProcessTreeScope | None = None
         self._log: deque[dict[str, Any]] = deque(maxlen=5000)
         self._next_log_id = 1
         self._stop_requested = False
@@ -276,6 +278,8 @@ class JobSupervisor:
             self._stop_requested = True
             self._active["status"] = "stopping"
             process = self._process
+            if self._process_scope:
+                self._process_scope.close()
             if process and process.poll() is None:
                 try:
                     if os.name == "nt":
@@ -417,7 +421,9 @@ class JobSupervisor:
                     bufsize=1,
                     env=environment,
                     creationflags=creationflags,
+                    start_new_session=os.name != "nt",
                 )
+                self._process_scope = ProcessTreeScope(self._process)
                 output_reader = threading.Thread(
                     target=self._read_process_output,
                     args=(self._process, job_id),
@@ -426,16 +432,22 @@ class JobSupervisor:
                 )
                 output_reader.start()
                 return_code = self._process.wait()
+                self._process_scope.close()
                 # W&B and similar helpers may inherit stdout and keep the pipe
                 # open after Accelerate exits. Do not leave the job stuck in
                 # "stopping" while waiting for those unrelated handles.
                 output_reader.join(timeout=0.5)
                 self._process = None
+                self._process_scope = None
                 if return_code != 0:
                     break
         except Exception as exc:
             return_code = -1
             self._append_log("error", f"{type(exc).__name__}: {exc}")
+            if self._process_scope:
+                self._process_scope.close()
+            self._process = None
+            self._process_scope = None
         return return_code
 
     def _run_staged(self, base_settings: dict[str, Any], stages: list[dict[str, Any]]) -> None:

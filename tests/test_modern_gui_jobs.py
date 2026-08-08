@@ -2,6 +2,7 @@ import sys
 import time
 
 import pytest
+import psutil
 
 from modern_gui import jobs
 
@@ -102,12 +103,14 @@ def test_supervisor_forces_utf8_for_musubi_bilingual_output(monkeypatch, tmp_pat
     assert message in "\n".join(entry["message"] for entry in snapshot["log"])
 
 
-def test_supervisor_finishes_when_helper_keeps_stdout_pipe_open(monkeypatch, tmp_path):
+def test_supervisor_finishes_and_reaps_helper_that_keeps_stdout_open(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    child_pid_path = tmp_path / "child.pid"
     command = (
         "import subprocess,sys; "
-        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(3)'], "
-        "stdout=sys.stdout, stderr=sys.stderr); print('trainer-exited')"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'], "
+        "stdout=sys.stdout, stderr=sys.stderr); "
+        f"open({str(child_pid_path)!r},'w').write(str(p.pid)); print('trainer-exited')"
     )
     monkeypatch.setattr(
         jobs,
@@ -123,6 +126,11 @@ def test_supervisor_finishes_when_helper_keeps_stdout_pipe_open(monkeypatch, tmp
     assert snapshot["active"]["status"] == "completed"
     assert time.monotonic() - started_at < 2
     assert "trainer-exited" in "\n".join(entry["message"] for entry in snapshot["log"])
+    child_pid = int(child_pid_path.read_text())
+    deadline = time.time() + 2
+    while time.time() < deadline and psutil.pid_exists(child_pid):
+        time.sleep(0.02)
+    assert not psutil.pid_exists(child_pid)
 
 
 def test_supervisor_rejects_parallel_active_jobs(monkeypatch, tmp_path):

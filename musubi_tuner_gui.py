@@ -33,6 +33,7 @@ from job_performance import (
     read_job_log,
 )
 from modern_gui.recovery import effective_history_settings
+from process_lifecycle import ProcessTreeScope
 
 # --- Dependency Check ---
 try:
@@ -146,6 +147,7 @@ class MusubiTunerGUI:
         self.setup_styles()
 
         self.current_process = None
+        self._current_process_scope = None
         self.monitoring_active = False
         self.vram_thread = None
         self._vram_gpu_index = None
@@ -8090,6 +8092,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 process_options["start_new_session"] = True
 
             self.current_process = subprocess.Popen(command, **process_options)
+            self._current_process_scope = ProcessTreeScope(self.current_process)
             # Popen's text mode applies universal-newline conversion, changing the
             # carriage returns used by tqdm into newlines. Preserve them so the
             # console can update one progress line in place.
@@ -8111,7 +8114,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self._finalize_active_job("failed", -1)
             self.stop_all_activity(); return
 
-        threading.Thread(target=self.read_output, args=(on_complete, output_widget), daemon=True).start()
+        process = self.current_process
+        scope = self._current_process_scope
+        threading.Thread(target=self._watch_process_exit, args=(process, scope), daemon=True).start()
+        threading.Thread(target=self.read_output, args=(process, on_complete, output_widget), daemon=True).start()
+
+    @staticmethod
+    def _watch_process_exit(process, scope):
+        """Reclaim descendants even when one inherited and holds stdout open."""
+        process.wait()
+        scope.close()
 
     def stop_all_activity(self):
         self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
@@ -8181,14 +8193,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "dop_weighted": metric("loss/dop_weighted"),
         }
 
-    def read_output(self, on_complete, output_widget):
-        if not self.current_process:
+    def read_output(self, process, on_complete, output_widget):
+        if not process:
             if on_complete: self.root.after(0, on_complete, -1); return
         try:
             buffer = ""
             while True:
-                char = self.current_process.stdout.read(1)
-                if not char and self.current_process.poll() is not None: break
+                char = process.stdout.read(1)
+                if not char and process.poll() is not None: break
                 if not char: continue
                 buffer += char
                 chunk = None
@@ -8313,8 +8325,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except Exception as e:
             self.root.after(0, output_widget.insert, tk.END, f"\n[Read error] {e}\n")
         finally:
-            return_code = self.current_process.wait() if self.current_process else -1
-            self.current_process = None
+            return_code = process.wait()
+            if self.current_process is process:
+                self.current_process = None
+                self._current_process_scope = None
             if on_complete: self.root.after(0, on_complete, return_code)
 
     def _run_next_command_in_sequence(self, return_code):
@@ -8985,6 +8999,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.progress_label_var.set("Stopping current process...")
             self.stop_btn.config(state="disabled")
             process = self.current_process
+            if self._current_process_scope:
+                self._current_process_scope.close()
             threading.Thread(target=self._terminate_process_tree, args=(process,), daemon=True).start()
 
     def _terminate_process_tree(self, process):
