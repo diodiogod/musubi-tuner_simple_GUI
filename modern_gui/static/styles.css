@@ -203,3 +203,11 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .job-lineage-graph::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--accent2) 58%,var(--line));border:2px solid transparent;border-radius:999px;background-clip:padding-box}
 .job-lineage-graph::-webkit-scrollbar-thumb:hover{background:var(--accent2);background-clip:padding-box}
 .job-lineage-node-wrap{flex:0 0 clamp(185px,22vw,240px);max-width:none}
+
+/* Gallery cards show a decoded still frame instead of a live video surface. */
+.gallery-card video.gallery-video-source{visibility:hidden}
+.gallery-card img.gallery-video-thumbnail{width:100%;height:220px;object-fit:contain;border-radius:6px;background:#050608}
+
+/* Media in the wipe stage is display-only; the stage owns pointer gestures. */
+.compare-media{user-select:none;-webkit-user-drag:none;pointer-events:none}
+.wipe-stage{user-select:none;-webkit-user-select:none}

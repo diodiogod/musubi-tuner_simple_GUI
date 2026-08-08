@@ -203,7 +203,19 @@ def discover_samples(
         groups.setdefault(key, []).append(item)
     grouped = []
     for key, items in groups.items():
-        items.sort(key=lambda item: (item["sequence_kind"] != "epoch", item["sequence"], item["source_index"], item["modified"]))
+        # The comparison selectors should read like a history: newest output
+        # first, then a stable source/sequence tie-breaker.  Sorting by epoch
+        # first used to interleave old checkpoints from another source with
+        # newer checkpoints from the current run.
+        items.sort(
+            key=lambda item: (
+                -float(item["modified"]),
+                item["source_index"],
+                item["sequence_kind"] != "epoch",
+                -int(item["sequence"]),
+                item["name"].casefold(),
+            )
+        )
         grouped.append(
             {
                 "key": str(key),

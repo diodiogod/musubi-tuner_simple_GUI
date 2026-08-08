@@ -1749,15 +1749,42 @@ function renderSampleSources(){
   list.querySelectorAll("[data-remove-sample-source]").forEach(button=>button.addEventListener("click",()=>removeSampleSource(button.dataset.removeSampleSource)));
 }
 async function loadSamples() {
-  const [p,sourcePayload]=await Promise.all([api(`/api/samples?output_dir=${encodeURIComponent(state.settings.output_dir||"")}&output_name=${encodeURIComponent(state.settings.output_name||"")}`),api("/api/samples/sources")]); state.samples=p;state.sampleSources=sourcePayload.sources||[];renderSampleSources(); $("#sample-count").textContent=p.groups.length;
+  const [p,sourcePayload]=await Promise.all([api(`/api/samples?output_dir=${encodeURIComponent(state.settings.output_dir||"")}&output_name=${encodeURIComponent(state.settings.output_name||"")}`),api("/api/samples/sources")]);
+  const previousSignature=state.samples?JSON.stringify(state.samples):"",nextSignature=JSON.stringify(p),changed=previousSignature!==nextSignature,selectFocused=["select-a","select-b"].includes(document.activeElement?.id);
+  // Do not replace the comparison DOM while a native selector is open. Keep
+  // the old snapshot until blur, then the deferred poll applies the update.
+  if(selectFocused&&changed){samplesRefreshPending=true;return}
+  state.samples=p;state.sampleSources=sourcePayload.sources||[];renderSampleSources(); $("#sample-count").textContent=p.groups.length;
+  if(!changed)return;
   const host=$("#sample-groups");host.classList.toggle("empty",!p.groups.length);host.innerHTML=p.groups.length?p.groups.map((g,i)=>{const versions=new Set(g.items.map(item=>item.source_label||"Current run")).size;return `<button class="sample-series" data-index="${i}"><strong>Prompt ${esc(String(g.prompt_index??g.items[0]?.prompt_index??i).padStart(2,"0"))}</strong><small>${versions>1?`${versions} versions · `:""}${g.items.length} checkpoint${g.items.length===1?"":"s"}${g.items[0]?.seed!=null?` · seed ${esc(g.items[0].seed)}`:""}</small></button>`}).join(""):"No sample series found.";
   host.querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>renderComparison(Number(b.dataset.index))));
   if(state.sampleMode==="gallery")renderSampleGallery();else if(p.groups.length)renderComparison(Math.min(compareState.group,p.groups.length-1));
 }
 function renderSampleGallery(){
   const items=[...state.samples.groups.flatMap(group=>group.items),...(state.samples.ungrouped||[])].sort((a,b)=>b.modified-a.modified);
-  const media=item=>item.media_kind==="video"?`<video src="${item.url}" preload="metadata" muted playsinline></video>`:`<img src="${item.url}" loading="lazy" alt="">`;
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} output${items.length===1?"":"s"}</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}">${media(item)}<strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
+  const media=(item,index)=>item.media_kind==="video"?`<video class="gallery-video-source" data-gallery-video="${index}" src="${item.url}" preload="metadata" muted playsinline aria-hidden="true"></video>`:`<img src="${item.url}" loading="lazy" alt="">`;
+  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">ALL OUTPUTS</p><h2>Sample gallery</h2></div><span>${items.length} output${items.length===1?"":"s"}</span></div><div class="sample-gallery">${items.map((item,index)=>`<button class="gallery-card" data-index="${index}">${media(item,index)}<strong>${esc(item.sequence_label||item.name)}</strong><small>${esc(item.name)}</small></button>`).join("")}</div>`;
+  $$(".gallery-video-source").forEach(video=>{
+    let captureRequested=false;
+    const capture=()=>{
+      if(!video.videoWidth||!video.videoHeight)return;
+      try{
+        const canvas=document.createElement("canvas");canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+        canvas.getContext("2d").drawImage(video,0,0,canvas.width,canvas.height);
+        const image=document.createElement("img");image.className="gallery-video-thumbnail";image.loading="lazy";image.alt="Video sample thumbnail";image.src=canvas.toDataURL("image/jpeg",.86);video.replaceWith(image);
+      }catch(_){video.style.visibility="visible"}
+    };
+    const seekToPreviewFrame=()=>{
+      if(captureRequested)return;
+      captureRequested=true;
+      const target=Number.isFinite(video.duration)&&video.duration>0?Math.min(.08,video.duration/2):0;
+      if(target>0&&Math.abs(video.currentTime-target)>.005){video.addEventListener("seeked",()=>requestAnimationFrame(()=>requestAnimationFrame(capture)),{once:true});video.currentTime=target}
+      else requestAnimationFrame(()=>requestAnimationFrame(capture));
+    };
+    video.addEventListener("loadeddata",seekToPreviewFrame,{once:true});
+    video.addEventListener("error",()=>{video.style.visibility="visible"},{once:true});
+    video.load();
+  });
   $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>openSamplePreview(items[Number(button.dataset.index)])));
 }
 function openSampleSources(){renderSampleSources();$("#sample-sources-dialog").showModal()}
@@ -1785,7 +1812,7 @@ function openSamplePreview(item){
   const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
   video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
   image.hidden=isVideo;video.hidden=!isVideo;
-  if(isVideo){video.src=item.url;video.load();bindHoverVideoControls(video)}else image.src=item.url;
+  if(isVideo){video.src=item.url;video.autoplay=false;video.loop=false;video.muted=true;video.controls=true;video.load()}else image.src=item.url;
   $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
 }
 function bindHoverVideoControls(video){
@@ -1794,6 +1821,7 @@ function bindHoverVideoControls(video){
   const show=()=>{video.controls=true},hide=()=>{video.controls=false};
   video.addEventListener("pointerenter",show);video.addEventListener("pointerleave",hide);video.addEventListener("focus",show);video.addEventListener("blur",hide);
 }
+let samplesRefreshPending=false;
 const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,zoom:1,zoomOriginX:50,zoomOriginY:50,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
 function renderComparison(index) {
   const previousGroup=compareState.group;
@@ -1802,8 +1830,8 @@ function renderComparison(index) {
   const group=state.samples.groups[index],items=group.items,sourceLabels=[...new Set(items.map(item=>item.source_label||"Current run"))];
   if(previousGroup!==index){compareState.zoom=1;compareState.zoomOriginX=50;compareState.zoomOriginY=50}
   const restored=(selection,fallback)=>{const found=selection?items.findIndex(x=>x.source_label===selection[0]&&x.sequence_kind===selection[1]&&x.sequence===selection[2]):-1;return found>=0?found:Math.max(0,Math.min(items.length-1,fallback))};
-  const latestForSource=label=>{const matches=items.map((item,itemIndex)=>({item,itemIndex})).filter(entry=>(entry.item.source_label||"Current run")===label);return matches.sort((a,b)=>b.item.sequence-a.item.sequence||b.item.modified-a.item.modified)[0]?.itemIndex??0};
-  const defaultLeft=sourceLabels.length>1?latestForSource(sourceLabels[0]):Math.max(0,items.length-2),defaultRight=sourceLabels.length>1?latestForSource(sourceLabels[1]):items.length-1;
+  const latestForSource=label=>{const matches=items.map((item,itemIndex)=>({item,itemIndex})).filter(entry=>(entry.item.source_label||"Current run")===label);return matches.sort((a,b)=>b.item.modified-a.item.modified||b.item.sequence-a.item.sequence)[0]?.itemIndex??0};
+  const defaultLeft=sourceLabels.length>1?latestForSource(sourceLabels[0]):(items.length>1?1:0),defaultRight=sourceLabels.length>1?latestForSource(sourceLabels[1]):0;
   compareState.leftIndex=restored(compareState.leftSequence,defaultLeft);
   compareState.rightIndex=restored(compareState.rightSequence,defaultRight);
   const isVideo=items[0]?.media_kind==="video";
@@ -1836,7 +1864,7 @@ function renderComparison(index) {
   const fitComparisonHeight=()=>{const host=$("#compare-viewport");if(!host)return;const media=[...host.querySelectorAll(".compare-media")],dimensions=media.map(item=>{const width=item.naturalWidth||item.videoWidth,height=item.naturalHeight||item.videoHeight;return width>0&&height>0?{width,height,ratio:width/height}:null}).filter(Boolean),fitTarget=compareState.mode==="side"?host.querySelector(".compare-image"):host.querySelector(".wipe-stage");if(!dimensions.length||!host.clientWidth||!fitTarget)return;const availableWidth=compareState.mode==="side"?Math.max(1,(host.clientWidth-12)/2):host.clientWidth,target=fitTarget.clientHeight;if(!target)return;dimensions.forEach((item,index)=>{const fitWidth=Math.min(availableWidth,target*item.ratio),fitHeight=fitWidth/item.ratio,element=media[index];element.style.setProperty("width",`${fitWidth}px`,`important`);element.style.setProperty("height",`${fitHeight}px`,`important`);element.style.setProperty("max-width",`${availableWidth}px`,`important`);element.style.setProperty("max-height",`${target}px`,`important`)})};
   const movePrompt=delta=>renderComparison((index+delta+state.samples.groups.length)%state.samples.groups.length);
   const setWipe=value=>{compareState.wipe=Math.max(0,Math.min(100,value));const layer=$("#wipe-a"),line=$("#wipe-divider"),stage=$("#wipe-stage");if(layer)layer.style.clipPath=`inset(0 ${100-compareState.wipe}% 0 0)`;if(line)line.style.left=`${compareState.wipe}%`;stage?.setAttribute("aria-valuenow",String(Math.round(compareState.wipe)))};
-  function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",move);stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
+  function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",e=>{e.preventDefault();move(e)});stage.addEventListener("dragstart",e=>e.preventDefault());stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
   function bindVideoSync(host){
     const master=host.querySelector('video[data-video-role="b"]'),slave=host.querySelector('video[data-video-role="a"]'),play=$("#video-play"),progress=$("#video-progress"),time=$("#video-time"),mute=$("#video-mute"),loop=$("#video-loop"),note=$("#video-compare-note");
     if(!master||!slave)return;
@@ -1852,7 +1880,8 @@ function renderComparison(index) {
     play.onclick=()=>compareState.videoPlaying?pauseBoth():playBoth();progress.oninput=()=>{const resume=compareState.videoPlaying;pauseBoth();setRatio(Number(progress.value)/1000);if(resume)playBoth()};mute.onclick=()=>{compareState.videoMuted=!compareState.videoMuted;applySound()};loop.onclick=()=>{compareState.videoLoop=!compareState.videoLoop;applyLoop()};
     applySound();applyLoop();setRatio(compareState.videoProgress);if(compareState.videoPlaying)playBoth();
   }
-  $("#select-a").addEventListener("change",e=>{compareState.leftIndex=Number(e.target.value);renderMode()});$("#select-b").addEventListener("change",e=>{compareState.rightIndex=Number(e.target.value);renderMode()});$("#sample-range").addEventListener("input",e=>setVersion(Number(e.target.value)));
+  const flushPendingSamples=()=>{if(samplesRefreshPending){samplesRefreshPending=false;loadSamples().catch(()=>{})}};
+  $("#select-a").addEventListener("change",e=>{compareState.leftIndex=Number(e.target.value);renderMode()});$("#select-b").addEventListener("change",e=>{compareState.rightIndex=Number(e.target.value);renderMode()});$("#select-a").addEventListener("blur",flushPendingSamples);$("#select-b").addEventListener("blur",flushPendingSamples);$("#sample-range").addEventListener("input",e=>setVersion(Number(e.target.value)));
   $$("#compare-stage .compare-tools button").forEach(x=>x.addEventListener("click",()=>{compareState.mode=x.dataset.mode;renderMode()}));
   $("#prev-prompt").addEventListener("click",()=>movePrompt(-1));$("#next-prompt").addEventListener("click",()=>movePrompt(1));$("#prev-version").addEventListener("click",()=>setVersion(compareState.rightIndex-1));$("#next-version").addEventListener("click",()=>setVersion(compareState.rightIndex+1));
   $("#wipe-lock").addEventListener("click",()=>{compareState.locked=!compareState.locked;$("#wipe-lock").textContent=compareState.locked?"🔒 Locked":"🔓 Follow pointer";renderMode()});

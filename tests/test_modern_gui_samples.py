@@ -17,8 +17,8 @@ def test_sample_discovery_groups_epoch_variants(tmp_path: Path):
 
     assert result["count"] == 3
     assert len(result["groups"]) == 1
-    assert [item["sequence"] for item in result["groups"][0]["items"]] == [1, 2]
-    assert result["groups"][0]["items"][0]["sequence_label"] == "Epoch 1"
+    assert [item["sequence"] for item in result["groups"][0]["items"]] == [2, 1]
+    assert result["groups"][0]["items"][0]["sequence_label"] == "Epoch 2"
     assert result["groups"][0]["items"][0]["prefix"] == "portrait"
     assert result["groups"][0]["items"][0]["seed"] == "42"
     assert [item["name"] for item in result["ungrouped"]] == ["notes.png"]
@@ -34,7 +34,7 @@ def test_sample_discovery_includes_video_series(tmp_path: Path):
 
     assert result["count"] == 2
     assert len(result["groups"]) == 1
-    assert [item["sequence"] for item in result["groups"][0]["items"]] == [1, 2]
+    assert [item["sequence"] for item in result["groups"][0]["items"]] == [2, 1]
     assert all(item["media_kind"] == "video" for item in result["groups"][0]["items"])
 
 
@@ -57,6 +57,31 @@ def test_sample_discovery_merges_matching_prompt_across_version_folders(tmp_path
     matching = next(group for group in result["groups"] if len(group["items"]) == 2)
     assert {item["source_label"] for item in matching["items"]} == {"portrait-v2", "Version 1"}
     assert matching["prompt_index"] == 0
+
+
+def test_sample_comparison_orders_matching_versions_by_last_modified(tmp_path: Path):
+    current = tmp_path / "portrait-v2"
+    previous = tmp_path / "portrait-v1"
+    current.mkdir()
+    previous.mkdir()
+    newer = current / "portrait-v2_e000002_00_20260724120000_42.png"
+    older = previous / "portrait-v1_e000009_00_20260724130000_42.png"
+    newer.write_bytes(b"newer")
+    older.write_bytes(b"older")
+    import os
+
+    os.utime(newer, (200, 200))
+    os.utime(older, (100, 100))
+
+    result = discover_samples(
+        str(tmp_path),
+        "portrait-v2",
+        source_paths=[{"path": str(previous), "label": "Version 1"}],
+    )
+
+    matching = next(group for group in result["groups"] if len(group["items"]) == 2)
+    assert matching["items"][0]["source_label"] == "portrait-v2"
+    assert matching["items"][1]["source_label"] == "Version 1"
 
 
 def test_sample_discovery_keeps_different_image_sizes_separate(tmp_path: Path):
