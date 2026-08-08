@@ -1574,7 +1574,8 @@ function openDatasetMedia(index){
 function renderDatasetMediaInspector(){
   const item=state.datasetMedia?.items?.[state.openDatasetMediaIndex];if(!item)return;
   const url=`/api/dataset/media-file?token=${encodeURIComponent(item.token)}`;
-  $("#dataset-inspector-media").innerHTML=!item.token?`<div class="media-placeholder large"><span>!</span><p>This file is missing or cannot be previewed.</p></div>`:item.preview_kind==="video"?`<video src="${url}" controls preload="metadata"></video>`:`<img src="${url}" alt="${esc(item.name)}">`;
+  $("#dataset-inspector-media").innerHTML=!item.token?`<div class="media-placeholder large"><span>!</span><p>This file is missing or cannot be previewed.</p></div>`:item.preview_kind==="video"?`<video src="${url}" controls preload="metadata" tabindex="0"></video>`:`<img src="${url}" alt="${esc(item.name)}">`;
+  bindHoverVideoControls($("#dataset-inspector-media video"));
   $("#dataset-inspector-kicker").textContent=`${item.kind.toUpperCase()} · ${item.role==="target"?"LAYER TARGET":"TRAINING ITEM"}`;
   $("#dataset-inspector-name").textContent=item.name;
   $("#dataset-inspector-meta").textContent=[item.width&&item.height?`${item.width}×${item.height}`:"",formatBytes(item.bytes),item.relative_path].filter(Boolean).join(" · ");
@@ -1648,7 +1649,7 @@ async function startJob() {
   if (!await validateSettings()) return toast("Review the setup issues before starting.");
   if (!await saveSettings()) return;
   const payload = await api("/api/jobs/start",{method:"POST",body:JSON.stringify({settings:state.settings,run_cache:true})});
-  lastLogId = 0; $("#live-log").textContent = ""; renderActive(payload.job); go("run"); toast("Musubi training started.");
+  lastLogId = 0; latestProgressLine = ""; $("#live-log").textContent = ""; $("#live-progress").hidden = true; renderActive(payload.job); go("run"); toast("Musubi training started.");
 }
 
 function readLocalPreference(key,fallback){try{const value=localStorage.getItem(key);return value==null?fallback:value}catch(_){return fallback}}
@@ -1699,13 +1700,21 @@ async function pollJob() {
 function renderActive(job) {
   state.activeJob=job;
   if(job?.captured_thumbnails&&state.captureNoticeJob!==job.id){state.captureNoticeJob=job.id;toast(`${job.captured_thumbnails} tested prompt thumbnail${job.captured_thumbnails===1?"":"s"} added to the library.`)}
-  const live = job && ["starting","running","stopping"].includes(job.status);
-  $("#run-dot").classList.toggle("live", live); $("#stop-job").disabled = !live || job.status === "stopping";
+  const live = job && ["starting","running","stopping"].includes(job.status),training = live && ["training","staged_training"].includes(job.kind);
+  const stopNext=$("#stop-next-epoch"),armed=Boolean(training && job?.stop_after_epoch);
+  $("#run-dot").classList.toggle("live", live); $("#stop-job").disabled = !live || job.status === "stopping"; stopNext.disabled=!training || job.status === "stopping"; stopNext.classList.toggle("active",armed); stopNext.setAttribute("aria-pressed",String(armed)); stopNext.textContent=armed?`Stop after epoch ${job.stop_after_epoch}`:"Stop after next epoch"; stopNext.title=armed?`Armed: finish epoch ${job.stop_after_epoch}, including any scheduled samples, then stop.`:"Finish the next epoch, including any scheduled samples, then stop and leave a resumable state when configured.";
   $("#active-title").textContent = job?.name || "Training control"; $("#active-subtitle").textContent = job ? `${job.phase} · command ${job.command_index}/${job.command_count}` : "No Musubi process is running.";
   $("#active-status").textContent = (job?.status || "idle").toUpperCase();
 }
 function durationToSeconds(value){const parts=String(value||"").split(":").map(Number);return parts.every(Number.isFinite)?parts.reduce((sum,part)=>sum*60+part,0):0}
 function formatDuration(value){const seconds=Math.max(0,Math.round(Number(value)||0));if(!seconds)return "—";const h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?h+"h "+String(m).padStart(2,"0")+"m":m?m+"m "+String(s).padStart(2,"0")+"s":s+"s"}
+function secondsPerStep(metrics,progress,elapsed,step){
+  const measured=Number(metrics?.seconds_per_iteration||0);
+  if(Number.isFinite(measured)&&measured>0)return measured;
+  const rate=String(progress?.rate||"").match(/([\d.]+)\s*(s\/it|it\/s)/i);
+  if(rate){const value=Number(rate[1]);if(Number.isFinite(value)&&value>0)return rate[2].toLowerCase()==="it/s"?1/value:value}
+  return step>0&&elapsed>0?elapsed/step:0;
+}
 function renderMetrics(m,job) {
   const progress=parseProgressLine(latestProgressLine),step=Number(m.step||progress?.step||0),total=Number(m.total_steps||progress?.total||0),pct=total?Math.min(100,step/total*100):0;
   const configuredEpochs=Number(job?.settings?.max_train_epochs||0),totalEpochs=Number(m.total_epochs||configuredEpochs||0);let epoch=Number(m.epoch||0);if(!epoch&&totalEpochs&&total)epoch=Math.min(totalEpochs,Math.floor(step/Math.ceil(total/totalEpochs))+1);
@@ -1714,9 +1723,10 @@ function renderMetrics(m,job) {
   $("#progress-ring").setAttribute("aria-valuetext", total ? `${step} of ${total} steps` : "Waiting to start");
   $("#metric-progress").textContent=total?`${step.toLocaleString()} of ${total.toLocaleString()} steps`:"Waiting to start";
   $("#metric-epoch").textContent=totalEpochs?"Epoch "+(epoch||1)+" of "+totalEpochs:"Configure a recipe, then launch it from Review.";
-  if(total&&totalEpochs){const perEpoch=Math.ceil(total/totalEpochs),boundary=Math.min(total,Math.max(1,epoch)*perEpoch),remaining=Math.max(0,boundary-step);$("#metric-next-epoch").textContent=remaining?remaining.toLocaleString()+" steps · at "+boundary.toLocaleString():"Epoch boundary reached"}else $("#metric-next-epoch").textContent="Waiting for epoch data";
   const started=job?.started_at?Date.parse(job.started_at):NaN,wallElapsed=Number.isFinite(started)?Math.max(0,(Date.now()-started)/1000):0,barElapsed=durationToSeconds(progress?.elapsed),elapsed=barElapsed||wallElapsed;
-  $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&elapsed)?formatDuration(elapsed/step*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||((step&&elapsed)?(elapsed/step).toFixed(2)+"s / step":"—");
+  const pace=secondsPerStep(m,progress,elapsed,step);
+  if(total&&totalEpochs){const perEpoch=Math.max(1,Math.ceil(total/totalEpochs)),currentEpoch=Math.min(totalEpochs,Math.max(1,epoch||1)),boundary=Math.min(total,currentEpoch*perEpoch),remaining=Math.max(0,boundary-step),nextEpoch=Math.min(totalEpochs,currentEpoch+1),nextMetric=$("#metric-next-epoch");if(remaining){const nextEta=pace?formatDuration(remaining*pace):"time pending";nextMetric.textContent=`${remaining.toLocaleString()} steps · ~${nextEta}`;nextMetric.title=`About ${remaining.toLocaleString()} steps until epoch ${nextEpoch} (target step ${boundary.toLocaleString()}).`;}else{nextMetric.textContent=currentEpoch>=totalEpochs?"Final epoch · complete":"Epoch boundary reached";nextMetric.title="The next epoch boundary has been reached.";}}else{$("#metric-next-epoch").textContent="Waiting for epoch data";$("#metric-next-epoch").removeAttribute("title");}
+  $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&pace)?formatDuration(pace*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||(pace?pace.toFixed(2)+"s / step":"—");
   $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5); $("#metric-depth").textContent=m.depth_loss==null?"—":Number(m.depth_loss).toFixed(5); $("#metric-dop").textContent=m.dop_loss==null?"—":Number(m.dop_loss).toFixed(5); drawLoss(m.loss_history||[]);
 }
 function drawLoss(history) {
@@ -1775,8 +1785,14 @@ function openSamplePreview(item){
   const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
   video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
   image.hidden=isVideo;video.hidden=!isVideo;
-  if(isVideo){video.src=item.url;video.load()}else image.src=item.url;
+  if(isVideo){video.src=item.url;video.load();bindHoverVideoControls(video)}else image.src=item.url;
   $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
+}
+function bindHoverVideoControls(video){
+  if(!video||video.dataset.hoverControlsBound)return;
+  video.dataset.hoverControlsBound="true";video.controls=false;
+  const show=()=>{video.controls=true},hide=()=>{video.controls=false};
+  video.addEventListener("pointerenter",show);video.addEventListener("pointerleave",hide);video.addEventListener("focus",show);video.addEventListener("blur",hide);
 }
 const compareState = {group:0,leftSequence:null,rightSequence:null,leftIndex:0,rightIndex:1,mode:"wipe",wipe:50,locked:false,zoom:1,zoomOriginX:50,zoomOriginY:50,videoProgress:0,videoPlaying:false,videoMuted:true,videoLoop:true};
 function renderComparison(index) {
@@ -1791,7 +1807,7 @@ function renderComparison(index) {
   compareState.leftIndex=restored(compareState.leftSequence,defaultLeft);
   compareState.rightIndex=restored(compareState.rightSequence,defaultRight);
   const isVideo=items[0]?.media_kind==="video";
-  $("#compare-stage").innerHTML=`<div class="compare-head"><div><p class="kicker">TRAINING SAMPLE · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} checkpoints</span><span>${sourceLabels.length} source${sourceLabels.length===1?"":"s"}: ${sourceLabels.map(label=>`<b class="sample-source-chip">${esc(label)}</b>`).join(" ")}</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>Scroll over the image to zoom · drag the lower-right corner to resize</span></div><div id="compare-viewport" title="Scroll to zoom the comparison"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B timeline"></select></div>`;
+  const stage=$("#compare-stage");stage.innerHTML=`<div class="compare-head"><div><p class="kicker">TRAINING SAMPLE · PROMPT ${esc(String(items[0]?.prompt_index??index).padStart(2,"0"))}</p><h2>Training progression</h2></div><div class="compare-tools"><button data-mode="wipe">Wipe slider</button><button data-mode="side">Side by side</button></div></div><div class="compare-nav"><button id="prev-prompt">← Previous prompt</button><span>${index+1} / ${state.samples.groups.length}</span><button id="next-prompt">Next prompt →</button><button id="prev-version">← Previous</button><button id="next-version">Next →</button><button id="wipe-lock">${compareState.locked?"🔒 Locked":"🔓 Follow pointer"}</button></div><div class="sample-meta"><span>${items.length} checkpoints</span><span>${sourceLabels.length} source${sourceLabels.length===1?"":"s"}: ${sourceLabels.map(label=>`<b class="sample-source-chip">${esc(label)}</b>`).join(" ")}</span><span>${items[0]?.seed!=null?`Seed ${esc(items[0].seed)}`:"Seed not encoded"}</span><span>Scroll over the image to zoom · drag the lower-right corner to resize</span></div><div id="compare-viewport" tabindex="0" aria-label="Video comparison. Hover or focus to show playback controls." title="Scroll to zoom the comparison"></div>${isVideo?`<div class="video-compare-controls"><button id="video-play" type="button">▶ Play</button><input id="video-progress" type="range" min="0" max="1000" value="${Math.round(compareState.videoProgress*1000)}" aria-label="Video position"><span id="video-time">0:00 / 0:00</span><button id="video-mute" type="button">${compareState.videoMuted?"🔇 Muted":"🔊 Sound"}</button><button id="video-loop" type="button">${compareState.videoLoop?"↻ Loop on":"↻ Loop off"}</button><small id="video-compare-note" class="video-compare-note">Loading video details…</small></div>`:""}<div class="timeline"><select id="select-a" aria-label="Version A"></select><input id="sample-range" type="range" min="0" max="${items.length-1}" value="${compareState.rightIndex}" aria-label="Version B timeline"><select id="select-b" aria-label="Version B timeline"></select></div>`;
   const options=items.map((item,i)=>`<option value="${i}">${esc(item.source_label||"Current run")} · ${esc(item.sequence_label||`${item.sequence_kind} ${item.sequence}`)} · ${esc(item.name)}</option>`).join("");
   $("#select-a").innerHTML=options;$("#select-b").innerHTML=options;$("#select-a").value=compareState.leftIndex;$("#select-b").value=compareState.rightIndex;
   const renderMode=()=>{
@@ -1849,10 +1865,50 @@ async function loadJobs() {
   renderJobs();
 }
 function formatJobSpeed(value){return value==null?"—":`${Number(value).toFixed(3)} s/it`}
+function jobLineageKind(job){
+  const snapshot=job.settings_snapshot||job.settings||{},hasParent=Boolean(job.continuation_parent_id||job.continuation_prior_steps||job.continuation_prior_epochs);
+  if(snapshot.starting_point_mode==="weights"||(snapshot.network_weights&&!snapshot.resume_path))return "lora";
+  if(snapshot.starting_point_mode==="state"||snapshot.resume_path)return snapshot.resume_exact_position||snapshot.recovery_mode?"state-recovery":"state";
+  return hasParent?"state":"";
+}
+function jobLineageLabel(kind){return kind==="lora"?"LoRA continuation":kind==="state-recovery"?"Resumed state":kind==="state"?"State continuation":""}
+function jobIdentity(job){return `${job._source||"desktop"}:${job._history_index??job.id??job.job_id??job.name??"job"}`}
+function jobLineageChain(job){
+  const all=state.jobs||[],chain=[],seen=new Set(),byId=new Map();
+  all.forEach(item=>[item.id,item.job_id].filter(Boolean).forEach(id=>byId.set(String(id),item)));
+  let current=job;
+  while(current&&!seen.has(jobIdentity(current))){
+    seen.add(jobIdentity(current));chain.push(current);
+    const parentId=current.continuation_parent_id;
+    let parent=parentId?byId.get(String(parentId)):null;
+    if(!parent&&current.continuation_parent_title){
+      const title=String(current.continuation_parent_title).toLowerCase();
+      parent=all.filter(item=>item!==current&&String(item.name||item.output_name||item.title||"").toLowerCase()===title&&String(item.started_at||"")<String(current.started_at||""))
+        .sort((a,b)=>String(b.started_at||"").localeCompare(String(a.started_at||"")))[0];
+    }
+    current=parent||null;
+  }
+  return chain.reverse();
+}
+function renderJobLineage(job){
+  const panel=$("#job-lineage-panel"),graph=$("#job-lineage-graph"),caption=$("#job-lineage-caption"),chain=jobLineageChain(job);
+  panel.hidden=false;
+  caption.textContent=chain.length>1?"Oldest → newest · saved checkpoints · highlighted = selected · click a parent to open its job details":"No recorded parent was found for this job";
+  graph.innerHTML=chain.map((item,index)=>{
+    const p=item.performance||{},snapshot=item.settings_snapshot||item.settings||{},kind=jobLineageKind(item),saved=p.saved_step??p.accounted_step??p.step??0,total=p.total_steps||item.total_steps||snapshot.max_train_steps||"—",epochs=p.total_epochs||item.metrics?.total_epochs||item.total_epochs||snapshot.max_train_epochs||"—",savedEpoch=p.saved_epoch??(Number(total)&&Number(epochs)?Math.round(Number(epochs)*Number(saved)/Number(total)):0),current=item===job,key=jobIdentity(item),sourceEpoch=Number(item.continuation_source_epoch||0),sourceStep=Number(item.continuation_source_step||0),edgeLabel=sourceEpoch?`from saved epoch ${sourceEpoch}`:sourceStep?`from saved step ${sourceStep}`:"continuation";
+    const node=`<article class="job-lineage-node ${current?"current":""} ${kind}" ${current?"":"data-lineage-key=\"${esc(key)}\" tabindex=\"0\" role=\"button\""}><div class="job-lineage-node-head"><strong>${esc(item.name||item.output_name||item.title||"Unnamed job")}</strong>${kind?`<span class="job-lineage-badge ${kind}">${esc(jobLineageLabel(kind))}</span>`:""}</div><small>${esc(item.status||"")} · ${esc(item.started_at?new Date(item.started_at).toLocaleDateString():"")}</small><div class="job-lineage-metrics"><span><b>${esc(saved)}</b> saved steps</span><span><b>${esc(savedEpoch)}</b> saved epochs <em>/ ${esc(epochs)} planned</em></span></div></article>`;
+    return `${index?`<div class="job-lineage-link" aria-label="${esc(edgeLabel)}"><span class="job-lineage-arrow" aria-hidden="true">→</span><small>${esc(edgeLabel)}</small></div>`:""}<div class="job-lineage-node-wrap">${node}</div>`;
+  }).join("");
+  $$("#job-lineage-graph [data-lineage-key]").forEach(node=>{const parent=chain.find(item=>jobIdentity(item)===node.dataset.lineageKey);if(parent){const open=()=>showJobDetails(parent,{dataset:{source:parent._source||"desktop",index:parent._history_index??-1}});node.addEventListener("click",open);node.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();open()}})}});
+  // Keep the graph horizontally scrollable on narrow dialogs, but make the
+  // mouse wheel useful: vertical wheel movement pans the lineage instead of
+  // moving the page while the pointer is over the graph.
+  graph.onwheel=event=>{if(Math.abs(event.deltaY)<=Math.abs(event.deltaX))return;event.preventDefault();graph.scrollLeft+=event.deltaY};
+}
 function jobRowMarkup(j,i){
-  const key=`${j._source}:${j._history_index}`,selected=(state.jobComparison||[]).some(item=>item.key===key),perf=j.performance||{},speed=perf.median_seconds_per_iteration??perf.overall_seconds_per_iteration;
+  const key=`${j._source}:${j._history_index}`,selected=(state.jobComparison||[]).some(item=>item.key===key),perf=j.performance||{},speed=perf.median_seconds_per_iteration??perf.overall_seconds_per_iteration,lineage=jobLineageKind(j),lineageBadge=lineage?`<span class="job-lineage-badge ${lineage}">${esc(jobLineageLabel(lineage))}</span>`:"";
   const exactEligible=j.kind==="training"&&["failed","stopped","completed"].includes(j.status),exactLabel=j.status==="completed"?"Extend exact":"Resume exact",exactTitle=j.status==="completed"?"Extend this run from its final verified epoch state":"Resume the verified saved optimizer and step position";
-  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><span class="job-status ${esc(j.status)}">${esc(j.status)}</span><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)==="Krea 2"?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
+  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><div class="job-status-stack"><span class="job-status ${esc(j.status)}">${esc(j.status)}</span>${lineageBadge}</div><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)==="Krea 2"?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
 }
 function renderJobs(){
   const query=($("#job-search")?.value||"").trim().toLowerCase(),status=$("#job-status-filter")?.value||"";
@@ -1871,7 +1927,33 @@ function renderJobs(){
 }
 let detailJob=null,detailRow=null;
 function drawJobSpeedChart(canvas,jobs){const ctx=canvas.getContext("2d"),box=canvas.getBoundingClientRect(),scale=devicePixelRatio||1;canvas.width=Math.max(300,Math.round(box.width*scale));canvas.height=Math.round(220*scale);ctx.scale(scale,scale);const w=canvas.width/scale,h=canvas.height/scale,pad=36,series=jobs.map(job=>job.performance?.speed_history||[]).filter(points=>points.length);ctx.clearRect(0,0,w,h);ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--line");ctx.beginPath();ctx.moveTo(pad,10);ctx.lineTo(pad,h-pad);ctx.lineTo(w-10,h-pad);ctx.stroke();if(!series.length){ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted");ctx.font="12px sans-serif";ctx.fillText("No measured per-step timing curve was saved for this historical job.",pad+15,h/2);return}const maxX=Math.max(...series.flat().map(p=>Number(p[0])||0),1),maxY=Math.max(...series.flat().map(p=>Number(p[1])||0),1),colors=["#51d6a2","#73a9ff"];series.forEach((points,index)=>{ctx.strokeStyle=colors[index%colors.length];ctx.lineWidth=1.6;ctx.beginPath();points.forEach((p,i)=>{const x=pad+(Number(p[0])/maxX)*(w-pad-15),y=10+(1-Number(p[1])/maxY)*(h-pad-15);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y)});ctx.stroke()});ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted");ctx.font="11px sans-serif";ctx.fillText("step",w-38,h-10);ctx.save();ctx.translate(12,h/2);ctx.rotate(-Math.PI/2);ctx.fillText("s/it",0,0);ctx.restore()}
-function showJobDetails(job,row){detailJob=job;detailRow=row;$("#job-dialog-title").textContent=job.name||job.output_name||job.title||"Unnamed job";const snapshot=job.settings_snapshot||job.settings||{},metrics=job.metrics||{},p=job.performance||{},totalSteps=p.total_steps||metrics.total_steps||job.total_steps||snapshot.max_train_steps||"—",totalEpochs=metrics.total_epochs||job.total_epochs||snapshot.max_train_epochs||"—",comment=snapshot.training_comment||job.training_comment||"—";const rows=[["Status",job.status],["Source",`${job._source||"desktop"} GUI`],["Mode",job.mode||snapshot.training_mode],["Started",job.started_at?new Date(job.started_at).toLocaleString():"—"],["Total steps",totalSteps],["Total epochs",totalEpochs],["Progress",job.progress||job.phase||`${p.step||0} / ${p.total_steps||0}`],["Measured median",formatJobSpeed(p.median_seconds_per_iteration)],["Recent median",formatJobSpeed(p.recent_seconds_per_iteration)],["Whole-job estimate",formatJobSpeed(p.overall_seconds_per_iteration)],["Output",snapshot.output_name||job.output_name||"—"],["LoRA comment",comment,"job-detail-comment"],["Return code",job.return_code??"—"]];$("#job-dialog-summary").innerHTML=rows.map(([a,b,klass=""])=>`<div class="review-row ${klass}"><span>${esc(a)}</span><strong>${esc(b??"—")}</strong></div>`).join("");const note=$("#job-performance-note");note.className=`issue ${p.sample_count?"ok":"warning"}`;note.textContent=p.sample_count?`${p.sample_count} measured speed samples. Loading, cache preparation, previews, and saves are excluded from this curve.`:"This older job has no saved per-step timing curve. Its whole-job estimate includes loading, caching, previews, and checkpoint saves.";$("#job-console-log").hidden=true;$("#job-console-log").textContent="";$("#job-dialog-json").textContent=JSON.stringify(job,null,2);$("#job-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-speed-chart"),[job]))}
+function showJobDetails(job,row){
+  detailJob=job;detailRow=row;
+  $("#job-dialog-title").textContent=job.name||job.output_name||job.title||"Unnamed job";
+  const snapshot=job.settings_snapshot||job.settings||{},metrics=job.metrics||{},p=job.performance||{},
+    runSteps=p.total_steps||metrics.total_steps||job.total_steps||snapshot.max_train_steps||"—",
+    overallSteps=p.cumulative_total_steps||runSteps,
+    runEpochs=p.total_epochs||metrics.total_epochs||job.total_epochs||snapshot.max_train_epochs||"—",
+    overallEpochs=p.cumulative_total_epochs||runEpochs,
+    hasContinuation=Number(p.prior_steps||p.prior_epochs||job.continuation_prior_steps||job.continuation_prior_epochs||0)>0,
+    comment=snapshot.training_comment||job.training_comment||job.note||job.comment||"—",
+    accountedStep=p.accounted_step??p.step??0,
+    runProgress=`${accountedStep} / ${p.total_steps||0}`,
+    overallCurrent=p.cumulative_step||accountedStep,
+    overallPlan=p.cumulative_total_steps||p.total_steps||0,
+    overallProgress=`${overallCurrent} / ${overallPlan}`,
+    remaining=overallPlan?Math.max(0,overallPlan-overallCurrent):"—";
+  const sections=[
+    ["Run",[["Status",job.status],["Source",`${job._source||"desktop"} GUI`],["Mode",job.mode||snapshot.training_mode],["Started",job.started_at?new Date(job.started_at).toLocaleString():"—"]]],
+    ["Progress",(hasContinuation?[["This run plan",runSteps],["Overall plan",overallSteps],["Accumulated so far",overallProgress],["Remaining",remaining],["This run epochs",runEpochs],["Overall epochs",overallEpochs],["Continued from",job.continuation_parent_title||"previous saved state"]]:[["Planned total",runSteps],["Saved so far",`${accountedStep} / ${p.total_steps||0}`],["Remaining",remaining],["Total epochs",runEpochs]])],
+    ["Performance",[["Measured median",formatJobSpeed(p.median_seconds_per_iteration)],["Recent median",formatJobSpeed(p.recent_seconds_per_iteration)],["Whole-job estimate",formatJobSpeed(p.overall_seconds_per_iteration)],["Return code",job.return_code??"—"]]],
+    ["Files & notes",[["Output",snapshot.output_name||job.output_name||"—"],["LoRA comment",comment,"job-detail-comment"]]],
+  ];
+  $("#job-dialog-summary").innerHTML=sections.map(([title,rows])=>`<section class="job-detail-group"><h3>${esc(title)}</h3>${rows.map(([a,b,klass=""])=>`<div class="review-row ${klass}"><span>${esc(a)}</span><strong>${esc(b??"—")}</strong></div>`).join("")}</section>`).join("");
+  renderJobLineage(job);
+  const note=$("#job-performance-note");note.className=`issue ${p.sample_count?"ok":"warning"}`;note.textContent=p.sample_count?`${p.sample_count} measured speed samples. Loading, cache preparation, previews, and saves are excluded from this curve.`:"This older job has no saved per-step timing curve. Its whole-job estimate includes loading, caching, previews, and checkpoint saves.";
+  $("#job-console-log").hidden=true;$("#job-console-log").textContent="";$("#job-dialog-json").textContent=JSON.stringify(job,null,2);$("#job-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-speed-chart"),[job]));
+}
 async function loadJobConsole(){if(!detailRow)return;const host=$("#job-console-log");try{const payload=await api(`/api/jobs/log?source=${encodeURIComponent(detailRow.dataset.source)}&index=${encodeURIComponent(detailRow.dataset.index)}`);host.textContent=payload.log;host.hidden=false;host.scrollTop=host.scrollHeight}catch(error){host.textContent=`No saved console log is available for this job.\n\n${error.message}`;host.hidden=false}}
 function toggleJobComparison(job){state.jobComparison ||= [];const key=`${job._source}:${job._history_index}`,index=state.jobComparison.findIndex(item=>item.key===key);if(index>=0)state.jobComparison.splice(index,1);else{if(state.jobComparison.length>=2)state.jobComparison.shift();state.jobComparison.push({key,job})}const button=$("#compare-jobs");button.disabled=state.jobComparison.length!==2;button.textContent=`Compare selected (${state.jobComparison.length}/2)`;renderJobs()}
 function showJobComparison(){const jobs=(state.jobComparison||[]).map(item=>item.job);if(jobs.length!==2)return;$("#job-compare-summary").innerHTML=jobs.map(job=>{const p=job.performance||{};return `<article><strong>${esc(job.name||job.output_name||job.title||"Unnamed")}</strong><small>${esc(job._source)} GUI · ${esc(job.mode||job.settings?.training_mode||job.settings_snapshot?.training_mode||"")}</small><p>Median: ${formatJobSpeed(p.median_seconds_per_iteration)}<br>Recent: ${formatJobSpeed(p.recent_seconds_per_iteration)}<br>Whole-job estimate: ${formatJobSpeed(p.overall_seconds_per_iteration)}<br>Samples: ${p.sample_count||0}</p></article>`}).join("");$("#job-compare-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-compare-chart"),jobs))}
@@ -1961,7 +2043,9 @@ $("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$(
 $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{method:"POST",body:"{}"}).then(p=>{toast(`${p.added} job folder${p.added===1?"":"s"} imported.`);loadJobs()}).catch(e=>toast(e.message)));
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});
 $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{state.sampleMode=button.dataset.sampleMode;$$("[data-sample-mode]").forEach(x=>x.classList.toggle("active",x===button));if(state.samples){if(state.sampleMode==="gallery")renderSampleGallery();else if(state.samples.groups.length)renderComparison(Math.min(compareState.group,state.samples.groups.length-1))}}));
-$("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});$("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
+$("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});
+$("#stop-next-epoch").addEventListener("click",async event=>{const enabled=!event.currentTarget.classList.contains("active");try{const payload=await api("/api/jobs/stop-after-next-epoch",{method:"POST",body:JSON.stringify({enabled})});renderActive(payload.job);toast(enabled?`Armed: training will stop after epoch ${payload.job.stop_after_epoch}, including its scheduled samples.`:"Next-epoch stop cancelled.")}catch(e){toast(e.message,"error")}});
+$("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
 $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));
 function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}
 const wrapLog=readLocalPreference("musubi-log-wrap","true")==="true";$("#live-log").classList.toggle("wrap-lines",wrapLog);setTerminalToggle($("#wrap-log"),wrapLog);setTerminalToggle($("#follow-log"),followLog);

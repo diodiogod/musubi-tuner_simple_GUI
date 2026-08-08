@@ -41,6 +41,49 @@ def test_supervisor_runs_sequential_commands_and_records_bounded_log(monkeypatch
     assert supervisor.history()[0]["name"] == "web-test"
 
 
+def test_supervisor_persists_automatic_training_note(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    monkeypatch.setattr(
+        jobs,
+        "build_command_plan",
+        lambda settings: {"cache": [], "train": [[sys.executable, "-c", "print('train-ready')"]]},
+    )
+    supervisor = jobs.JobSupervisor()
+
+    supervisor.start(
+        {
+            "output_name": "automatic-note-test",
+            "training_mode": "Krea 2",
+            "auto_training_settings_summary": True,
+            "max_train_epochs": "2",
+        }
+    )
+    wait_until_finished(supervisor)
+
+    recorded = supervisor.history()[0]["settings"]["training_comment"]
+    assert recorded.startswith("Settings: ")
+    assert "2 epochs" in recorded
+
+
+def test_history_repairs_automatic_note_for_older_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
+    jobs._write_history(
+        [{
+            "name": "older-run",
+            "settings": {
+                "training_mode": "Krea 2",
+                "output_name": "older-run",
+                "auto_training_settings_summary": True,
+                "max_train_epochs": "3",
+            },
+        }]
+    )
+
+    recorded = jobs.JobSupervisor().history()[0]["settings"]["training_comment"]
+    assert recorded.startswith("Settings: ")
+    assert "3 epochs" in recorded
+
+
 def test_supervisor_forces_utf8_for_musubi_bilingual_output(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "HISTORY_PATH", tmp_path / "jobs.json")
     monkeypatch.setenv("PYTHONIOENCODING", "cp1252")

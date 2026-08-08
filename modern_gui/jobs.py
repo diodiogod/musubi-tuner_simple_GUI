@@ -12,9 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from job_performance import append_job_log, compact_speed_history, job_log_path, parse_training_speed
+from job_performance import (
+    append_job_log,
+    compact_speed_history,
+    continuation_metadata,
+    job_log_path,
+    parse_training_speed,
+)
 
 from modern_gui.commands import build_command_plan
+from modern_gui.training_notes import effective_training_comment
 from modern_gui.stages import (
     prepare_standard_stage,
     resolve_standard_state,
@@ -76,6 +83,48 @@ def _write_history(jobs: list[dict[str, Any]]) -> None:
     temporary.replace(HISTORY_PATH)
 
 
+def _lineage_history(base: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Include both modern and classic records when finding a parent run."""
+
+    history = list(base) if base is not None else _read_history()
+    try:
+        # Imported lazily to keep the recovery module independent from the
+        # supervisor's process/thread setup during application startup.
+        from modern_gui.recovery import load_desktop_history
+
+        history.extend(load_desktop_history())
+    except (ImportError, OSError, ValueError):
+        pass
+    return history
+
+
+def _history_with_lineage() -> list[dict[str, Any]]:
+    """Backfill lineage in chronological order, including older child runs."""
+
+    jobs = _read_history()
+    pool = _lineage_history(jobs)
+    for job in sorted(jobs, key=lambda item: str(item.get("started_at") or "")):
+        settings = job.get("settings") if isinstance(job.get("settings"), dict) else job.get("settings_snapshot")
+        if isinstance(settings, dict):
+            # Repair display data for runs created before the effective
+            # automatic note was copied into the history snapshot.
+            if settings.get("auto_training_settings_summary") and not str(settings.get("training_comment") or "").strip():
+                settings["training_comment"] = effective_training_comment(settings)
+            if not any(job.get(key) for key in ("continuation_prior_steps", "continuation_prior_epochs", "continuation_parent_id")):
+                job.update(continuation_metadata(settings, pool))
+    return jobs
+
+
+def _history_pool_with_lineage() -> list[dict[str, Any]]:
+    jobs = _history_with_lineage()
+    try:
+        from modern_gui.recovery import load_desktop_history
+
+        return jobs + load_desktop_history()
+    except (ImportError, OSError, ValueError):
+        return jobs
+
+
 class JobSupervisor:
     def __init__(self):
         self._lock = threading.RLock()
@@ -86,7 +135,10 @@ class JobSupervisor:
         self._stop_requested = False
 
     def history(self) -> list[dict[str, Any]]:
-        return _read_history()
+        # Older modern records predate explicit lineage fields. Derive them on
+        # read so their history cards benefit too; the original JSON is left
+        # untouched and new runs persist the metadata at start time.
+        return _history_with_lineage()
 
     def clear_history(self) -> None:
         with self._lock:
@@ -121,6 +173,13 @@ class JobSupervisor:
             job_id = str(uuid.uuid4())
             console_log = job_log_path(job_id)
             console_log.unlink(missing_ok=True)
+            lineage = continuation_metadata(settings, _history_pool_with_lineage())
+            # ``build_command_plan`` works on a private copy and injects the
+            # generated settings summary there.  Keep the same effective note
+            # in the history snapshot, otherwise Files & notes shows an empty
+            # comment even though the trainer received one.
+            history_settings = deepcopy(settings)
+            history_settings["training_comment"] = effective_training_comment(history_settings)
             self._active = {
                 "id": job_id,
                 "name": settings.get("output_name") or "unnamed",
@@ -145,9 +204,12 @@ class JobSupervisor:
                     "loss_history": [],
                     "speed_history": [],
                 },
-                "settings": settings,
+                "stop_after_epoch": None,
+                "stop_after_epoch_triggered": False,
+                "settings": history_settings,
                 "console_log_path": str(console_log),
             }
+            self._active.update(lineage)
             target = self._run_staged if staged else self._run
             arguments = (settings, stages) if staged else (commands,)
             thread = threading.Thread(target=target, args=arguments, daemon=True, name="musubi-web-job")
@@ -176,6 +238,9 @@ class JobSupervisor:
             job_id = str(uuid.uuid4())
             console_log = job_log_path(job_id)
             console_log.unlink(missing_ok=True)
+            lineage = continuation_metadata(settings, _history_pool_with_lineage()) if kind in {"training", "staged_training"} else {}
+            history_settings = deepcopy(settings)
+            history_settings["training_comment"] = effective_training_comment(history_settings)
             self._active = {
                 "id": job_id,
                 "name": name,
@@ -193,10 +258,13 @@ class JobSupervisor:
                     "loss": None, "depth_loss": None, "dop_loss": None,
                     "dop_weighted": None, "loss_history": [], "speed_history": [],
                 },
-                "settings": dict(settings),
+                "stop_after_epoch": None,
+                "stop_after_epoch_triggered": False,
+                "settings": history_settings,
                 "console_log_path": str(console_log),
                 "_completion_context": dict(completion_context or {}),
             }
+            self._active.update(lineage)
             thread = threading.Thread(target=self._run, args=(commands,), daemon=True, name="musubi-web-utility")
             thread.start()
             return dict(self._active)
@@ -216,6 +284,33 @@ class JobSupervisor:
                         process.terminate()
                 except (OSError, ValueError):
                     process.terminate()
+            return dict(self._active)
+
+    def stop_after_next_epoch(self, enabled: bool = True) -> dict[str, Any]:
+        """Arm or disarm a graceful stop after the next completed epoch.
+
+        The trainer emits the next epoch header only after its previous epoch's
+        checkpoint and scheduled samples have finished. Watching that boundary
+        lets the GUI stop without interrupting an in-progress sample.
+        """
+
+        with self._lock:
+            if not self._active or self._active.get("status") not in {"starting", "running"}:
+                raise RuntimeError("No web GUI training job is currently running.")
+            if self._active.get("kind") not in {"training", "staged_training"}:
+                raise RuntimeError("Stop-after-next-epoch is available only for training jobs.")
+            if enabled:
+                metrics = self._active.get("metrics") or {}
+                current_epoch = int(metrics.get("epoch") or 0)
+                total_epochs = int(metrics.get("total_epochs") or self._active.get("settings", {}).get("max_train_epochs") or 0)
+                target = max(1, current_epoch + 1)
+                if total_epochs and target > total_epochs:
+                    raise RuntimeError("The run is already in its final epoch and will finish naturally.")
+                self._active["stop_after_epoch"] = target
+                self._active["stop_after_epoch_triggered"] = False
+            else:
+                self._active["stop_after_epoch"] = None
+                self._active["stop_after_epoch_triggered"] = False
             return dict(self._active)
 
     def _append_log(self, stream: str, message: str) -> None:
@@ -242,6 +337,24 @@ class JobSupervisor:
                 update = parse_training_line(message)
                 metrics = self._active.get("metrics", {})
                 metrics.update(update)
+                stop_after_epoch = self._active.get("stop_after_epoch")
+                if stop_after_epoch and "epoch" in update and int(update["epoch"]) > int(stop_after_epoch):
+                    # An epoch header is printed after the prior epoch's
+                    # checkpoint and scheduled sample generation. Stop here,
+                    # before the first optimization step of the following
+                    # epoch, so the saved state is resumable.
+                    self._active["stop_after_epoch_triggered"] = True
+                    self._stop_requested = True
+                    self._active["status"] = "stopping"
+                    process = self._process
+                    if process and process.poll() is None:
+                        try:
+                            if os.name == "nt":
+                                process.send_signal(signal.CTRL_BREAK_EVENT)
+                            else:
+                                process.terminate()
+                        except (OSError, ValueError):
+                            process.terminate()
                 speed = parse_training_speed(message)
                 if speed:
                     history = metrics.setdefault("speed_history", [])

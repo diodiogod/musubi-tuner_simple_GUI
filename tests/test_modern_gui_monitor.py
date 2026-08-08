@@ -62,3 +62,40 @@ def test_job_monitor_discards_empty_carriage_return_output():
     supervisor._append_log("output", "useful output")
 
     assert [entry["message"] for entry in supervisor.snapshot()["log"]] == ["useful output"]
+
+
+def test_stop_after_next_epoch_waits_for_the_following_epoch_header():
+    class Process:
+        def __init__(self):
+            self.signals = []
+
+        def poll(self):
+            return None
+
+        def send_signal(self, signal):
+            self.signals.append(signal)
+
+    supervisor = JobSupervisor()
+    process = Process()
+    supervisor._active = {
+        "status": "running",
+        "kind": "training",
+        "metrics": {"epoch": 1, "total_epochs": 4},
+        "settings": {"max_train_epochs": "4"},
+    }
+    supervisor._process = process
+
+    armed = supervisor.stop_after_next_epoch(True)
+    assert armed["stop_after_epoch"] == 2
+
+    supervisor._append_log("output", "epoch 2/4")
+    assert supervisor._active["status"] == "running"
+    assert not supervisor._active["stop_after_epoch_triggered"]
+    assert process.signals == []
+
+    supervisor._append_log("output", "generating sample images at step / sample: 20")
+    supervisor._append_log("output", "epoch 3/4")
+    assert supervisor._active["status"] == "stopping"
+    assert supervisor._active["stop_after_epoch_triggered"]
+    assert supervisor._stop_requested
+    assert process.signals

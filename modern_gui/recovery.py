@@ -296,7 +296,14 @@ def resolve_continuation_lora(
     job: dict[str, Any],
     final_settings: dict[str, Any],
 ) -> Path:
-    """Resolve the completed LoRA produced by a final Face Refinement stage."""
+    """Resolve adapter weights for an additive continuation.
+
+    A normal run may have a standalone ``.safetensors`` export, while runs
+    configured to save only Accelerate state keep the adapter model in
+    ``*-state/model.safetensors``.  The latter is still a valid network-weight
+    source for a fresh optimizer continuation; it must not be confused with
+    ``resume_path`` (which is reserved for positional state recovery).
+    """
 
     candidates = []
 
@@ -315,9 +322,39 @@ def resolve_continuation_lora(
             add(path)
     except (KeyError, TypeError, ValueError, OSError):
         pass
+    # Prefer any checkpoint exports belonging to this run before looking at a
+    # parent path recorded in ``resume_path``.  A continuation can have fewer
+    # epochs than its parent, so a global newest-state sort would otherwise
+    # accidentally select the parent's adapter.
+    try:
+        run_dir = Path(final_settings["output_dir"]).expanduser() / effective_run_name(final_settings)
+        output_loras = [path for path in run_dir.glob("*.safetensors") if _usable_file(path)]
+        output_loras.sort(key=lambda path: (state_epoch(path), state_step(path), path.stat().st_mtime), reverse=True)
+        for path in output_loras:
+            add(path)
+        output_states = [path for path in run_dir.glob("*-state") if path.is_dir()]
+        output_states.sort(key=lambda path: (state_epoch(path), state_step(path), path.stat().st_mtime), reverse=True)
+        for state in output_states:
+            add(state / "model.safetensors")
+    except (KeyError, TypeError, ValueError, OSError):
+        pass
+    # Save-state-only runs do not always have a top-level LoRA export.  Their
+    # model.safetensors contains the adapter weights; use the newest saved
+    # checkpoint as an additive source instead of switching the UI to state
+    # recovery and silently clearing the network-weight field.
+    recorded_state = _recorded_final_stage_artifacts(job)["state"].strip()
+    if recorded_state:
+        add(Path(recorded_state).expanduser() / "model.safetensors")
+    state_paths = state_candidates(job)
+    state_paths.sort(
+        key=lambda path: (state_epoch(path), state_step(path), path.stat().st_mtime),
+        reverse=True,
+    )
+    for state in state_paths:
+        add(state / "model.safetensors")
     if not candidates:
         raise FileNotFoundError(
-            "No completed LoRA could be found for this job's final Face Refinement stage."
+            "No completed LoRA or saved adapter weights could be found for this job."
         )
     return candidates[0]
 
@@ -352,16 +389,16 @@ def prepare_continuation(job: dict[str, Any]) -> dict[str, Any]:
     settings = copy.deepcopy(snapshot)
     if final_settings:
         settings.update(copy.deepcopy(final_settings))
-    final_face_stage = bool(
-        final_settings
-        and final_settings.get("stage_type") == "face_refinement"
-    )
-    if final_face_stage:
-        lora = resolve_continuation_lora(job, final_settings)
+    try:
+        lora = resolve_continuation_lora(job, final_settings or settings)
         settings["resume_path"] = ""
         settings["network_weights"] = str(lora)
         settings["starting_point_mode"] = "weights"
-    else:
+    except FileNotFoundError:
+        # Keep a useful fallback for legacy output folders that contain only a
+        # positional state directory.  New runs normally take the branch
+        # above, so Continue as new is visibly a LoRA continuation whenever
+        # adapter weights can be resolved.
         state = resolve_continuation_state(job)
         settings["resume_path"] = str(state)
         settings["network_weights"] = ""

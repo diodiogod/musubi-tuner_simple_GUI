@@ -132,19 +132,20 @@ def test_completed_run_can_be_extended_from_its_final_positional_state(tmp_path:
     assert settings["recovery_mode"] is True
 
 
-def test_additive_continuation_branches_name_and_never_claims_exact_position(tmp_path: Path):
+def test_additive_continuation_uses_saved_adapter_weights_and_never_claims_exact_position(tmp_path: Path):
     state = complete_state(tmp_path / "portrait-000004-state")
 
     settings = prepare_continuation(job_for(tmp_path, state, status="completed"))
 
     assert settings["output_name"] == "portrait-cont"
-    assert settings["resume_path"] == str(state)
-    assert settings["starting_point_mode"] == "state"
+    assert settings["resume_path"] == ""
+    assert settings["network_weights"] == str(state / "model.safetensors")
+    assert settings["starting_point_mode"] == "weights"
     assert settings["resume_exact_position"] is False
     assert settings["recovery_mode"] is False
 
 
-def test_staged_continuation_uses_final_stage_recipe_and_state(tmp_path: Path):
+def test_staged_continuation_uses_final_stage_recipe_and_saved_adapter_weights(tmp_path: Path):
     base_state = complete_state(tmp_path / "portrait" / "portrait-000010-state")
     final_state = complete_state(
         tmp_path / "portrait-1024px" / "portrait-1024px-000002-state"
@@ -191,8 +192,9 @@ def test_staged_continuation_uses_final_stage_recipe_and_state(tmp_path: Path):
     assert settings["dataset_config"] == "final.toml"
     assert settings["max_train_epochs"] == "2"
     assert settings["sample_prompts_data"] == [{"prompt": "portrait of subject", "seed": 7}]
-    assert settings["resume_path"] == str(final_state)
-    assert settings["starting_point_mode"] == "state"
+    assert settings["resume_path"] == ""
+    assert settings["network_weights"] == str(final_state / "model.safetensors")
+    assert settings["starting_point_mode"] == "weights"
     assert settings["use_staged_training"] is False
     assert settings["resume_exact_position"] is False
     assert settings["recache_latents"] is False
