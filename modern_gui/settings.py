@@ -171,9 +171,15 @@ MODE_RULES = {
 
 
 def load_settings() -> dict[str, Any]:
-    if not LAST_SETTINGS.exists():
-        return {}
-    payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
+    if LAST_SETTINGS.exists():
+        payload = json.loads(LAST_SETTINGS.read_text(encoding="utf-8"))
+    else:
+        # A clean checkout has no user-owned last_settings.json because it is
+        # intentionally gitignored.  Bootstrap from the checked-in template so
+        # the Modern UI can build its schema (including model path fields)
+        # before the user has saved anything locally.
+        defaults_path = ROOT / "Base_SETTINGS.json"
+        payload = json.loads(defaults_path.read_text(encoding="utf-8")) if defaults_path.is_file() else {}
     if not isinstance(payload, dict):
         return {}
     if "minimax_h3_quality_protection_method" not in payload:

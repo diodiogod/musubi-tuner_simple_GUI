@@ -1192,6 +1192,25 @@ const DATASET_HELP = {
 const datasetValueText=value=>Array.isArray(value)?value.join(", "):(value??"");
 const datasetBasename=value=>String(value||"").replaceAll("\\","/").split("/").filter(Boolean).pop()||"Untitled source";
 const formatBytes=value=>{const n=Number(value||0);if(n<1024)return `${n} B`;if(n<1024**2)return `${(n/1024).toFixed(1)} KB`;if(n<1024**3)return `${(n/1024**2).toFixed(1)} MB`;return `${(n/1024**3).toFixed(1)} GB`};
+const DATASET_AUDIT_CACHE_KEY="musubi-dataset-audit-v1",DATASET_AUDIT_CACHE_TTL=7*24*60*60*1000;
+function datasetAuditCacheId(path,text){
+  const normalized=String(path||"").replaceAll("\\","/").trim().toLowerCase();let hash=2166136261;
+  for(const character of String(text||"")){hash^=character.charCodeAt(0);hash=Math.imul(hash,16777619)}
+  return `${normalized}|${hash>>>0}`;
+}
+function readDatasetAuditCache(path,text){
+  try{
+    const entries=JSON.parse(localStorage.getItem(DATASET_AUDIT_CACHE_KEY)||"{}"),entry=entries[datasetAuditCacheId(path,text)];
+    return entry&&Date.now()-Number(entry.saved_at||0)<=DATASET_AUDIT_CACHE_TTL&&entry.payload?.datasets?entry.payload:null;
+  }catch(_){return null}
+}
+function writeDatasetAuditCache(path,text,payload){
+  try{
+    const entries=JSON.parse(localStorage.getItem(DATASET_AUDIT_CACHE_KEY)||"{}"),id=datasetAuditCacheId(path,text);entries[id]={saved_at:Date.now(),payload};
+    const kept=Object.entries(entries).sort((a,b)=>Number(b[1]?.saved_at||0)-Number(a[1]?.saved_at||0)).slice(0,8);
+    localStorage.setItem(DATASET_AUDIT_CACHE_KEY,JSON.stringify(Object.fromEntries(kept)));
+  }catch(_){}
+}
 
 async function loadDatasetDocument({quiet = false} = {}) {
   const path = $("#dataset-path").value.trim();
@@ -1217,8 +1236,10 @@ async function loadDatasetDocument({quiet = false} = {}) {
       const payload = await api(`/api/dataset?path=${encodeURIComponent(path)}`);
       state.datasetFormDirty=false;state.datasetRawDirty=false;state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;state.samplingEstimate=null;
       state.selectedDataset=payload.datasets.length?0:-1;state.datasetTab=payload.datasets.length?"media":"settings";
-      renderDataset(payload,state.selectedDataset);
       const linkedPath=payload.path||path,recipeChanged=!sameLocalPath(state.settings.dataset_config,linkedPath);
+      renderDataset(payload,state.selectedDataset);
+      const cachedAudit=readDatasetAuditCache(linkedPath,payload.text||"");
+      if(cachedAudit)applyDatasetAudit(cachedAudit,{focus:false});
       state.settings.dataset_config=linkedPath;
       setDatasetDirty(false);
       sync(recipeChanged);
@@ -1552,9 +1573,7 @@ function renderIssues(issues,target="#dataset-issues"){
   const host=$(target);if(!host)return;
   host.innerHTML=issues.length?issues.map(issue=>`<div class="issue ${esc(issue.level)}">${issue.dataset_index==null?"":`Source ${issue.dataset_index+1}: `}${esc(issue.message)}</div>`).join(""):`<div class="issue ok">TOML structure looks valid.</div>`;
 }
-async function inspectDataset(){
-  await flushDatasetDraft();
-  const payload=await api("/api/dataset/inspect",{method:"POST",body:JSON.stringify({text:$("#dataset-source").value,path:$("#dataset-path").value})});
+function applyDatasetAudit(payload,{focus=true,announce=""}={}){
   state.datasetAudit=payload;
   payload.datasets.forEach(report=>{if(!report.error)state.datasetInventories[report.index]=report});
   const host=$("#dataset-inspection"),auditEffective=payload.datasets.reduce((sum,item)=>sum+Number(item.effective_samples||0),0);
@@ -1564,7 +1583,15 @@ async function inspectDataset(){
     return `<article class="dataset-audit-row ${attention?"warning":"ok"}" data-audit-source="${report.index}" role="button" tabindex="0"><div class="audit-source-name"><strong>Source ${report.index+1} · ${esc(datasetBasename(state.dataset.datasets[report.index]?.source))}</strong><small>${report.trainer_usable_count} usable of ${report.media_count} · ${coverage}% captioned · ×${report.repeats} = ${report.effective_samples} · ${weight}% of epoch</small></div><div class="audit-badges"><span>${report.aspects?.landscape||0} landscape</span><span>${report.aspects?.portrait||0} portrait</span><span>${report.aspects?.square||0} square</span></div>${attention?`<p>${report.missing_caption_count?`${report.missing_caption_count} missing captions. `:""}${report.empty_caption_count?`${report.empty_caption_count} empty captions. `:""}${report.unreadable_count?`${report.unreadable_count} unreadable media. `:""}${report.ignored_nested_count?`${report.ignored_nested_count} nested files are ignored by Musubi. `:""}</p>`:`<p>All discovered media is readable and captioned.</p>`}</article>`;
   }).join("")}`;
   host.querySelectorAll("[data-audit-source]").forEach(row=>{const open=()=>{state.selectedDataset=Number(row.dataset.auditSource);state.datasetTab="media";state.datasetMediaPage=1;renderDataset(state.dataset,state.selectedDataset);loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error))};row.addEventListener("click",open);row.addEventListener("keydown",event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();open()}})});
-  setDatasetTab("health",{load:false});host.tabIndex=-1;host.focus({preventScroll:true});renderDatasetRail();renderDatasetOverview();toast("Full dataset audit complete.");
+  if(focus){setDatasetTab("health",{load:false});host.tabIndex=-1;host.focus({preventScroll:true})}renderDatasetRail();renderDatasetOverview();if(announce)toast(announce);
+}
+async function inspectDataset(){
+  await flushDatasetDraft();
+  const path=$("#dataset-path").value,text=$("#dataset-source").value,cached=readDatasetAuditCache(path,text);
+  if(cached){applyDatasetAudit(cached,{focus:true,announce:"Loaded the cached dataset audit. Run full audit to refresh it."});return}
+  const payload=await api("/api/dataset/inspect",{method:"POST",body:JSON.stringify({text,path})});
+  writeDatasetAuditCache(path,text,payload);
+  applyDatasetAudit(payload,{focus:true,announce:"Full dataset audit complete."});
 }
 function openDatasetMedia(index){
   if(state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))return;

@@ -24,6 +24,30 @@ def test_schema_exposes_every_scalar_setting_and_keeps_structured_editors_separa
     assert set(schema["structured_keys"]) == settings.STRUCTURED_KEYS
 
 
+def test_missing_last_settings_bootstraps_schema_from_base_template(monkeypatch, tmp_path):
+    base_settings = tmp_path / "Base_SETTINGS.json"
+    base_settings.write_text(
+        json.dumps(
+            {
+                "training_mode": "Wan 2.2",
+                "minimax_h3_dit_model": "",
+                "minimax_h3_text_encoder": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    monkeypatch.setattr(settings, "LAST_SETTINGS", tmp_path / "last_settings.json")
+
+    payload = settings.load_settings()
+    schema = settings.settings_schema(payload)
+    keys = {field["key"] for section in schema["sections"] for field in section["fields"]}
+
+    assert payload["training_mode"] == "Wan 2.2"
+    assert "minimax_h3_dit_model" in keys
+    assert "minimax_h3_text_encoder" in keys
+
+
 def test_mode_specific_fields_are_tagged_for_frontend_filtering():
     schema = settings.settings_schema(
         {
