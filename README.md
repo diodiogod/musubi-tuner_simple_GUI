@@ -102,10 +102,15 @@ DOP guide: [docs/dop.md](./docs/dop.md)
 - Independently combinable H3 quality layers: proven Dynamic Sigma with configurable cadence, Ostris's frozen alpha assistant, and an optional scheduled drift check, plus editable starting presets
 - Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, disabled by default
 - Focused 24 GB GPU smokes completed for previews, DOP/weight noise, depth, and the H3 DRaFT graph with the real AntelopeV2 reward; useful long-run advanced recipes remain experimental
-- LoRA-only, batch size 1, and no video/audio training
+- Two explicit, backward-compatible workflows: the proven compact still-image trainer, or upstream Musubi's official experimental video/joint-audio trainer
+- Official multimodal workflow supports T2VA, first/last-frame FL2VA, and reference-based Ref2VA datasets; choose joint video+audio, video-only, or experimental audio-only learning without pretending missing audio is real silence
+- Modern and Classic dataset builders detect embedded/sidecar audio, create valid 24 fps H3 clips from still images plus audio, validate frame geometry, and guide Ref2VA JSONL construction (visual Ref2VA editing is in the Modern UI)
+- Low-VRAM text encoding can stream up to all 50 Qwen language layers from system RAM; the GUI recommends 50 for smaller GPUs
 - Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak; the longer two-epoch 15-block run used roughly 19–20 GB
 
-Docs: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
+Docs: [compact still-image workflow](./docs/minimax_h3_experimental.md) · [official video/audio workflow](./docs/minimax_h3.md)
+
+Need captions for a video dataset? [TagGUI Video](https://github.com/diodiogod/taggui-video) is the companion video-captioning fork used by this project. It can prepare per-clip captions before you build the Musubi dataset TOML/JSONL.
 
 ## Installation
 
@@ -437,6 +442,7 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
 - Flux.2: [docs/flux_2.md](./docs/flux_2.md)
 - Krea 2: [docs/krea2.md](./docs/krea2.md)
 - MiniMax H3 experimental image training: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
+- MiniMax H3 official video and joint-audio training: [docs/minimax_h3.md](./docs/minimax_h3.md)
 - Dataset config: [docs/dataset_config.md](./docs/dataset_config.md)
 - Sampling during training: [docs/sampling_during_training.md](./docs/sampling_during_training.md)
 - Advanced config: [docs/advanced_config.md](./docs/advanced_config.md)

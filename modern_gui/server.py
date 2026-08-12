@@ -39,6 +39,13 @@ from modern_gui.dataset_media import (
     resolve_media_token,
     save_media_caption,
 )
+from modern_gui.h3_datasets import (
+    build_image_audio_videos,
+    inspect_pairing_sources,
+    load_ref2va_document,
+    pairing_plan,
+    save_ref2va_document,
+)
 from modern_gui.jobs import SUPERVISOR
 from job_performance import enrich_job, read_job_log
 from modern_gui.recovery import (
@@ -75,6 +82,10 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/dataset/media",
         "/api/dataset/open-source",
         "/api/dataset/caption",
+        "/api/h3/pairing/inspect",
+        "/api/h3/pairing/build",
+        "/api/h3/ref2va/load",
+        "/api/h3/ref2va/save",
         "/api/face/preflight",
         "/api/face/models/download",
         "/api/prompt-library/import",
@@ -383,7 +394,14 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     )
                 )
             if self.path == "/api/dataset/add":
-                return self._json(add_dataset(body.get("text", ""), body.get("kind", "image"), body.get("path", "")))
+                return self._json(
+                    add_dataset(
+                        body.get("text", ""),
+                        body.get("kind", "image"),
+                        body.get("path", ""),
+                        body.get("architecture", ""),
+                    )
+                )
             if self.path == "/api/dataset/remove":
                 return self._json(
                     remove_dataset(body.get("text", ""), int(body.get("index", -1)), body.get("path", ""))
@@ -403,6 +421,33 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 )
             if self.path == "/api/dataset/inspect":
                 return self._json(inspect_dataset_sources(body.get("text", ""), body.get("path", "")))
+            if self.path == "/api/h3/pairing/inspect":
+                inspection = inspect_pairing_sources(body.get("image_directory", ""), body.get("audio_directory", ""))
+                inspection["plan"] = pairing_plan(
+                    body.get("image_directory", ""),
+                    body.get("audio_directory", ""),
+                    strategy=body.get("strategy", "round_robin"),
+                    seed=int(body.get("seed", 42)),
+                )
+                return self._json(inspection)
+            if self.path == "/api/h3/pairing/build":
+                return self._json(
+                    build_image_audio_videos(
+                        body.get("image_directory", ""),
+                        body.get("audio_directory", ""),
+                        body.get("output_directory", ""),
+                        strategy=body.get("strategy", "round_robin"),
+                        seed=int(body.get("seed", 42)),
+                        width=int(body.get("width", 768)),
+                        height=int(body.get("height", 768)),
+                        target_frames=int(body.get("target_frames", 124)),
+                        allow_experimental_duration=bool(body.get("allow_experimental_duration", False)),
+                    )
+                )
+            if self.path == "/api/h3/ref2va/load":
+                return self._json(load_ref2va_document(body.get("path", "")))
+            if self.path == "/api/h3/ref2va/save":
+                return self._json(save_ref2va_document(body.get("path", ""), body.get("records", [])))
             if self.path == "/api/dataset/estimate-steps":
                 dataset_path = str(body.get("path", "")).strip()
                 if not dataset_path:

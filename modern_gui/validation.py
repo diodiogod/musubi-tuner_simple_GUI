@@ -47,7 +47,11 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         error("dataset_config", f"Dataset TOML does not exist: {dataset_path}")
     require("output_dir", "Output directory")
     require("output_name", "Output name")
-    require("vae_model", "VAE model")
+    h3_multimodal = mode == "MiniMax H3 (Experimental)" and str(
+        settings.get("minimax_h3_training_workflow") or ""
+    ).startswith("Video")
+    if not h3_multimodal:
+        require("vae_model", "VAE model")
 
     if mode == "Wan 2.2":
         if not settings.get("train_low_noise") and not settings.get("train_high_noise"):
@@ -73,6 +77,71 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("blocks_to_swap", "Krea Turbo sampling cannot be combined with Blocks to Swap.")
     elif mode == "MiniMax H3 (Experimental)":
         require("minimax_h3_dit_model", "MiniMax H3 pruned ConvRot INT8 DiT")
+        multimodal = str(settings.get("minimax_h3_training_workflow") or "").startswith("Video")
+        if multimodal:
+            require("minimax_h3_video_vae", "official MiniMax H3 video VAE")
+            require("minimax_h3_audio_vae", "official MiniMax H3 audio VAE")
+            if "int8" in Path(str(settings.get("minimax_h3_video_vae") or "")).name.lower():
+                error(
+                    "minimax_h3_video_vae",
+                    "The official trainer needs minimax_h3_video_vae_fp16.safetensors; the INT8 ConvRot VAE is for inference.",
+                )
+            dit_name = Path(str(settings.get("minimax_h3_dit_model") or "")).name.lower()
+            selected_task = str(settings.get("minimax_h3_multimodal_task") or "t2va")
+            if selected_task == "ref2va" and "ref2va" not in dit_name:
+                error("minimax_h3_dit_model", "Ref2VA requires a MiniMax H3 Ref2VA transformer checkpoint.")
+            elif selected_task != "ref2va" and "ref2va" in dit_name:
+                error("minimax_h3_dit_model", "T2VA and FL2VA require the FL2VA transformer family, not Ref2VA.")
+            if settings.get("minimax_h3_training_assistant_enabled") or settings.get("minimax_h3_base_preservation_enabled"):
+                error(
+                    "minimax_h3_training_workflow",
+                    "Ostris Assistant and drift/base preservation currently belong to the compact still-image trainer. "
+                    "Official video/audio training supports Dynamic Sigma guidance protection.",
+                )
+            try:
+                incompatible_regularization = (
+                    float(settings.get("krea2_depth_anchor_weight") or 0) > 0
+                    or float(settings.get("dop_loss_weight") or 0) > 0
+                )
+            except (TypeError, ValueError):
+                incompatible_regularization = True
+            if incompatible_regularization:
+                error(
+                    "minimax_h3_training_workflow",
+                    "Depth Anchor and DOP are not yet compatible with the official joint video/audio trainer. Disable them for this workflow.",
+                )
+            if settings.get("minimax_h3_multimodal_task") == "ref2va":
+                warning(
+                    "minimax_h3_multimodal_task",
+                    "Ref2VA requires reference records in the dataset JSONL; a normal video directory is not sufficient.",
+                )
+            target = str(settings.get("minimax_h3_training_target") or "Video + audio")
+            if target.startswith("Audio only"):
+                try:
+                    if float(settings.get("minimax_h3_audio_loss_weight") or 0) <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    error(
+                        "minimax_h3_audio_loss_weight",
+                        "Audio-only training requires Audio Learning Strength greater than zero.",
+                    )
+                warning(
+                    "minimax_h3_training_target",
+                    "Audio-only is experimental and requires real audio in every clip. Video and both VAEs are still required because H3 is a synchronized model.",
+                )
+            if settings.get("dataset_config"):
+                from modern_gui.h3_datasets import audit_h3_training_dataset
+
+                dataset_audit = audit_h3_training_dataset(
+                    settings["dataset_config"],
+                    task=str(settings.get("minimax_h3_multimodal_task") or "t2va"),
+                    training_target=target,
+                    allow_experimental_duration=bool(settings.get("minimax_h3_allow_experimental_duration")),
+                )
+                for message in dataset_audit["errors"]:
+                    error("dataset_config", message)
+                for message in dataset_audit["warnings"]:
+                    warning("dataset_config", message)
         cadence_enabled = any(
             (
                 _positive_number(str(settings.get("sample_every_n_epochs") or "").strip()),
@@ -83,6 +152,15 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         has_face_stage = any(stage.get("type") == "face_refinement" for stage in configured_stages)
         if settings.get("recache_text") or cadence_enabled or has_face_stage:
             require("minimax_h3_text_encoder", "MiniMax H3 compact Qwen3-VL text encoder")
+        try:
+            te_swap = int(str(settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50"))
+            if not 0 <= te_swap <= 50:
+                raise ValueError
+        except (TypeError, ValueError):
+            error(
+                "minimax_h3_text_encoder_blocks_to_swap",
+                "Text Encoder Low-VRAM Streaming must be a whole number from 0 to 50.",
+            )
         if settings.get("network_type", "LoRA") != "LoRA":
             error("network_type", "Experimental MiniMax H3 currently supports LoRA only.")
         if settings.get("fp8_base") or settings.get("fp8_scaled"):
@@ -105,10 +183,26 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 error("minimax_h3_guidance_distillation_scale", str(exc))
             if not _positive_integer(str(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or "1")):
                 error("minimax_h3_dynamic_sigma_every_n_steps", "Dynamic Sigma cadence must be a positive whole number.")
+            elif multimodal and int(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or 1) != 1:
+                error(
+                    "minimax_h3_dynamic_sigma_every_n_steps",
+                    "Official video/audio guidance protection currently runs every step. Set the cadence to 1.",
+                )
+            try:
+                from musubi_tuner.training.h3_guidance_protection import validate_sigma_min
+
+                validate_sigma_min(settings.get("minimax_h3_guidance_distillation_sigma_min") or 0.15)
+            except (TypeError, ValueError) as exc:
+                error("minimax_h3_guidance_distillation_sigma_min", str(exc))
             if not settings.get("recache_text"):
                 warning(
                     "recache_text",
-                    "H3 quality protection needs an empty-prompt embedding in the Caption/Text Cache. Rebuild that cache once after enabling it; image latents do not need rebuilding.",
+                    (
+                        "Official video/audio quality protection needs its separate unconditional guidance cache. "
+                        "Enable Rebuild Caption/Text Cache once; video/audio latents do not need rebuilding."
+                        if multimodal else
+                        "H3 quality protection needs an empty-prompt embedding in the Caption/Text Cache. Rebuild that cache once after enabling it; image latents do not need rebuilding."
+                    ),
                 )
         if h3_protection["assistant"]:
             assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()

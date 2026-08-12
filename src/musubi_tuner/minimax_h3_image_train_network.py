@@ -20,7 +20,13 @@ from musubi_tuner.training.parser_common import read_config_from_file, setup_par
 from musubi_tuner.training.sampling_prompts import load_prompts
 from musubi_tuner.training.trainer_base import DiTOutput, NetworkTrainer
 from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
-from musubi_tuner.training.h3_guidance_protection import build_guided_target, enabled as guidance_protection_enabled, validate as validate_guidance_scale
+from musubi_tuner.training.h3_guidance_protection import (
+    base_sigma_from_model_timestep,
+    build_guided_target,
+    enabled as guidance_protection_enabled,
+    validate as validate_guidance_scale,
+    validate_sigma_min,
+)
 from musubi_tuner.training.h3_training_assistant import (
     DEFAULT_ASSISTANT,
     base_preservation_loss,
@@ -124,10 +130,12 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             )
         if guidance_protection_enabled(args):
             validate_guidance_scale(args.h3_guidance_distillation_scale)
+            validate_sigma_min(getattr(args, "h3_guidance_distillation_sigma_min", 0.15))
             logger.info(
-                "MiniMax-H3 Dynamic Sigma enabled: scale=%g, every %d step(s)",
+                "MiniMax-H3 Dynamic Sigma enabled: scale=%g, every %d step(s), base sigma minimum=%g",
                 args.h3_guidance_distillation_scale,
                 args.h3_dynamic_sigma_every_n_steps,
+                getattr(args, "h3_guidance_distillation_sigma_min", 0.15),
             )
         if args.h3_dynamic_sigma_every_n_steps < 1:
             raise ValueError("H3 Dynamic Sigma cadence must be at least 1")
@@ -215,6 +223,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             quantize=True,
             tokenizer_dir=args.tokenizer,
             load_mode=args.text_encoder_load_mode,
+            blocks_to_swap=args.text_encoder_blocks_to_swap,
         )
         encoded: dict[str, torch.Tensor] = {}
         try:
@@ -428,10 +437,14 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             accelerator.device,
             dit_dtype,
         )
+        base_sigma = base_sigma_from_model_timestep(args, timesteps, latents)
+        sigma_gate_open = bool(
+            torch.any(base_sigma >= getattr(args, "h3_guidance_distillation_sigma_min", 0.15)).item()
+        )
         unconditional_prediction = None
         run_dynamic_sigma = guidance_protection_enabled(args) and should_preserve_base(
             global_step, getattr(args, "h3_dynamic_sigma_every_n_steps", 1)
-        )
+        ) and sigma_gate_open
         if run_dynamic_sigma:
             unconditional_rows = batch.get("mmh3_unconditional_hidden_states")
             if not isinstance(unconditional_rows, list) or len(unconditional_rows) != 1:
@@ -519,6 +532,11 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             preservation = base_preservation_loss(output.pred, reference_prediction)
             total = total + getattr(args, "h3_base_preservation_loss_weight", 0.0) * preservation
             metrics["loss/h3_base_preservation"] = preservation.detach()
+        if guidance_protection_enabled(args):
+            metrics["guidance/base_sigma"] = base_sigma.mean().detach()
+            metrics["guidance/applied"] = torch.tensor(
+                1.0 if unconditional_prediction is not None else 0.0, device=output.pred.device
+            )
         if unconditional_prediction is not None:
             metrics.update(
                 {
@@ -670,6 +688,9 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             "ss_minimax_h3_guidance_distillation_protection": guidance_protection_enabled(args),
             "ss_minimax_h3_guidance_distillation_scale": args.h3_guidance_distillation_scale,
             "ss_minimax_h3_guidance_distillation_schedule": args.h3_guidance_distillation_schedule,
+            "ss_minimax_h3_guidance_distillation_sigma_min": getattr(
+                args, "h3_guidance_distillation_sigma_min", 0.15
+            ),
             "ss_minimax_h3_quality_protection_method": getattr(args, "h3_quality_protection_method", None) or "legacy",
             "ss_minimax_h3_training_assistant": str(getattr(args, "h3_training_assistant", "") or ""),
             "ss_minimax_h3_base_preservation_loss_weight": getattr(args, "h3_base_preservation_loss_weight", 0.0),
@@ -697,6 +718,12 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
     guidance.add_argument("--h3_dynamic_sigma_every_n_steps", type=int, default=1)
     guidance.add_argument("--h3_guidance_distillation_scale", type=float, default=4.0)
     guidance.add_argument("--h3_guidance_distillation_schedule", choices=("sigma", "constant"), default="sigma")
+    guidance.add_argument(
+        "--h3_guidance_distillation_sigma_min",
+        type=float,
+        default=0.15,
+        help="skip the extra Dynamic Sigma forward below this pre-shift base sigma (recommended: 0.15; 0 = always)",
+    )
     guidance.add_argument(
         "--h3_quality_protection_method",
         choices=("dynamic", "assistant", "assistant_preservation", "off"),
@@ -733,6 +760,12 @@ def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.A
         choices=("auto", "direct", "nf4"),
         default="auto",
         help="compact MiniMax-H3 text encoder loading mode for previews",
+    )
+    parser.add_argument(
+        "--text_encoder_blocks_to_swap",
+        type=int,
+        default=0,
+        help="Stream 0-50 preview text-encoder layers from system RAM; 50 uses the least VRAM",
     )
     parser.add_argument(
         "--minimax_h3_preview_decode_min_free_gb",

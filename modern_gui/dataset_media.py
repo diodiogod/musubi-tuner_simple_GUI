@@ -13,6 +13,9 @@ from typing import Any
 
 from PIL import Image
 
+from musubi_tuner.dataset.audio_utils import resolve_audio_source
+from musubi_tuner.minimax_h3_native.media import probe_h3_media
+
 from modern_gui.dataset_documents import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -358,6 +361,11 @@ def _directory_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], di
         "control_count": 0,
         "missing_control_count": 0,
         "shared_caption_count": sum(count - 1 for count in caption_stem_counts.values() if count > 1),
+        "real_audio_count": 0,
+        "embedded_audio_count": 0,
+        "sidecar_audio_count": 0,
+        "missing_audio_count": 0,
+        "audio_error_count": 0,
     }
     multiple_target = bool(dataset.get("multiple_target")) and kind == "image"
     for path in paths:
@@ -390,6 +398,32 @@ def _directory_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], di
             training_state = "error"
 
         controls = control_map.get(path, [])
+        audio_state = "not_applicable"
+        audio_path = ""
+        duration_seconds = None
+        audio_error = ""
+        if kind == "video":
+            try:
+                media_info = probe_h3_media(path)
+                duration_seconds = media_info.duration_seconds
+                audio_source = resolve_audio_source(path)
+                if audio_source is None:
+                    audio_state = "missing"
+                    counts["missing_audio_count"] += 1
+                elif audio_source.embedded:
+                    audio_state = "embedded"
+                    audio_path = str(path)
+                    counts["embedded_audio_count"] += 1
+                    counts["real_audio_count"] += 1
+                else:
+                    audio_state = "sidecar"
+                    audio_path = str(audio_source.path)
+                    counts["sidecar_audio_count"] += 1
+                    counts["real_audio_count"] += 1
+            except Exception as exc:
+                audio_state = "error"
+                audio_error = str(exc)
+                counts["audio_error_count"] += 1
         if control_root is not None:
             if controls:
                 counts["control_count"] += 1
@@ -414,6 +448,10 @@ def _directory_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], di
                 "controls": controls,
                 "control_root": control_root,
                 "missing_media": False,
+                "audio_state": audio_state,
+                "audio_path": audio_path,
+                "audio_error": audio_error,
+                "duration_seconds": duration_seconds,
             }
         )
     counts["effective_samples"] = counts["trainer_usable_count"] * spec["repeats"]
@@ -423,7 +461,10 @@ def _directory_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], di
     return rows, counts
 
 
-def _resolve_manifest_media(value: Any) -> Path:
+def _resolve_manifest_media(value: Any, base_directory: Path | None = None) -> Path:
+    raw = Path(str(value or "")).expanduser()
+    if not raw.is_absolute() and base_directory is not None:
+        return (base_directory / raw).resolve()
     return resolve_configured_path(str(value or ""))
 
 
@@ -432,6 +473,7 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
     if not manifest.is_file():
         raise FileNotFoundError(f"Dataset JSONL file does not exist: {manifest}")
     kind = spec["kind"]
+    manifest_directory = manifest.parent
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     manifest_revision = _file_revision(manifest)
@@ -448,7 +490,7 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
             continue
         key = "video_path" if kind == "video" else ("image_path" if "image_path" in record else "image_path_0")
         media_value = str(record.get(key) or "").strip()
-        path = _resolve_manifest_media(media_value) if media_value else Path()
+        path = _resolve_manifest_media(media_value, manifest_directory) if media_value else Path()
         caption_value = record.get("caption")
         caption = caption_value if isinstance(caption_value, str) else ""
         caption_state = (
@@ -467,6 +509,35 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
             if (name == "control_path" or name.startswith("control_path_")) and str(record[name] or "").strip()
         ]
         missing_media = not media_value or not path.exists()
+        audio_state = "not_applicable"
+        audio_path = ""
+        audio_error = ""
+        duration_seconds = None
+        reference_counts = {"image": 0, "video": 0, "audio": 0}
+        if kind == "video" and not missing_media:
+            try:
+                media_info = probe_h3_media(path)
+                duration_seconds = media_info.duration_seconds
+                explicit_audio = record.get("audio_path") if "audio_path" in record else None
+                resolved_explicit = _resolve_manifest_media(explicit_audio, manifest_directory) if explicit_audio else None
+                source = resolve_audio_source(path, resolved_explicit)
+                if source is None:
+                    audio_state = "missing"
+                elif source.embedded:
+                    audio_state = "embedded"
+                    audio_path = str(path)
+                else:
+                    audio_state = "explicit" if explicit_audio else "sidecar"
+                    audio_path = str(source.path)
+            except Exception as exc:
+                audio_state = "error"
+                audio_error = str(exc)
+            references = record.get("references")
+            if isinstance(references, list):
+                for reference in references:
+                    reference_type = reference.get("type") if isinstance(reference, dict) else None
+                    if reference_type in reference_counts:
+                        reference_counts[reference_type] += 1
         preview_path = path
         preview_kind = kind
         if kind == "video" and path.is_dir():
@@ -502,13 +573,18 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
                 "training_state": training_state,
                 "role": "primary",
                 "shared_caption": False,
-                "controls": [_resolve_manifest_media(value) for value in control_values],
+                "controls": [_resolve_manifest_media(value, manifest_directory) for value in control_values],
                 "control_root": None,
-                "targets": [_resolve_manifest_media(value) for value in target_values],
+                "targets": [_resolve_manifest_media(value, manifest_directory) for value in target_values],
                 "missing_media": missing_media,
                 "manifest_line": line_index,
                 "media_key": key,
                 "media_value": media_value,
+                "audio_state": audio_state,
+                "audio_path": audio_path,
+                "audio_error": audio_error,
+                "duration_seconds": duration_seconds,
+                "reference_counts": reference_counts,
             }
         )
     trainer_usable = sum(row["training_state"] in {"eligible", "warning"} for row in rows)
@@ -522,6 +598,11 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
         "trainer_usable_count": trainer_usable,
         "effective_samples": trainer_usable * spec["repeats"],
         "repeats": spec["repeats"],
+        "real_audio_count": sum(row.get("audio_state") in {"embedded", "sidecar", "explicit"} for row in rows),
+        "embedded_audio_count": sum(row.get("audio_state") == "embedded" for row in rows),
+        "sidecar_audio_count": sum(row.get("audio_state") in {"sidecar", "explicit"} for row in rows),
+        "missing_audio_count": sum(row.get("audio_state") == "missing" for row in rows),
+        "audio_error_count": sum(row.get("audio_state") == "error" for row in rows),
         "control_count": sum(bool(row["controls"]) for row in rows),
         "missing_control_count": 0,
         "shared_caption_count": 0,
@@ -653,6 +734,10 @@ def list_dataset_media(
                 "controls": controls,
                 "target_count": len(row.get("targets", [])),
                 "missing_media": row["missing_media"],
+                "audio_state": row.get("audio_state", "unknown"),
+                "audio_path": row.get("audio_path", ""),
+                "audio_error": row.get("audio_error", ""),
+                "duration_seconds": row.get("duration_seconds"),
             }
         )
     return {

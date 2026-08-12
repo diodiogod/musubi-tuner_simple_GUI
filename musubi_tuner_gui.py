@@ -658,6 +658,13 @@ class MusubiTunerGUI:
             initial_path=current_path,
             on_use=use_config,
             colors=self.colors,
+            architecture=(
+                "minimax_h3"
+                if self.entries.get("training_mode")
+                and self.entries["training_mode"].get() == "MiniMax H3 (Experimental)"
+                and str(self.entries.get("minimax_h3_training_workflow").get() or "").startswith("Video")
+                else None
+            ),
         )
 
     def create_model_paths_tab(self):
@@ -745,6 +752,18 @@ class MusubiTunerGUI:
             foreground=self.colors["warning"], font=("Segoe UI", 9, "italic"), wraplength=940, justify="left",
         ).pack(anchor="w", padx=8, pady=(8, 4))
         self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_training_workflow", "Training Media Type:",
+            "Still images uses this GUI's proven compact ConvRot workflow. Video + audio uses the isolated official "
+            "MiniMax multimodal cache and trainer. Existing projects default to Still images for backward compatibility.",
+            kind='combobox', options=["Still images · compact ConvRot", "Video + audio · official multimodal"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_multimodal_task", "Video Model Task:",
+            "Used only for Video + audio. t2va learns from text and target clips. fl2va also conditions on first and last "
+            "frames. ref2va uses reference image/video/audio entries supplied through a dataset JSONL.",
+            kind='combobox', options=["t2va", "fl2va", "ref2va"],
+        )
+        self._add_widget(
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_dit_model", "Pruned ConvRot INT8 DiT (Required):",
             "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from Comfy's diffusion_models folder. "
             "This experimental trainer uses that ~21 GB FL2VA checkpoint directly, so the ~66 GB full BF16 DiT is not needed. "
@@ -755,6 +774,49 @@ class MusubiTunerGUI:
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_encoder", "Compact Qwen3-VL-32B:",
             "Recommended: qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. Needed only when Re-cache Text is enabled.",
             kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_encoder_blocks_to_swap", "Text Encoder Low-VRAM Streaming:",
+            "How many of the text encoder's 50 large language layers stay in system RAM and are loaded onto the GPU only "
+            "when needed. Use 50 (recommended) for the lowest VRAM and support for smaller GPUs. Use 0 only if you have "
+            "plenty of VRAM and want the fastest caption caching. This affects caption-cache speed and memory only; it does "
+            "not change training quality or require rebuilding image latents.",
+            validate_num=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_text_encoder_attn_mode", "Text Encoder Attention:",
+            "SDPA is the compatible default. flash_attention_2 can greatly reduce memory for very long Ref2VA "
+            "presentations, but requires Flash Attention to be installed. Eager is primarily a diagnostic fallback.",
+            kind='combobox', options=["sdpa", "flash_attention_2", "eager"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_video_vae", "Official Video VAE:",
+            "Required only for Video + audio training. Choose minimax_h3_video_vae_fp16.safetensors. The smaller "
+            "minimax_h3_video_vae_int8_convrot file is a ComfyUI inference format and is not supported by the official trainer.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_audio_vae", "Official Audio VAE:",
+            "Choose minimax_h3_audio_vae_fp32.safetensors. It is required for the official multimodal cache, including video-only mode. It encodes synchronized audio or a "
+            "silence placeholder; Train Video Only controls whether audio contributes to learning.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_training_target", "What Should This LoRA Learn?:",
+            "Video + audio learns both synchronized streams. Video only ignores audio loss. Audio only is experimental and "
+            "learns only from real audio, but still requires video clips and both VAEs because MiniMax H3 processes the two "
+            "streams together.", kind='combobox', options=["Video + audio", "Video only", "Audio only (experimental)"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_allow_experimental_duration", "Allow Short/Long Experimental Clips:",
+            "The released MiniMax H3 duration range is 5–15 seconds. Leave this disabled for normal datasets. Enable it "
+            "only for short cache/smoke tests such as 22 or 39 frames, or for deliberate experiments outside that range.",
+            kind='checkbox',
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_audio_loss_weight", "Audio Learning Strength:",
+            "Used only for joint video/audio training. 1.0 is the official balanced starting point. Lower values make audio "
+            "learning gentler; 0 disables audio supervision just like Train Video Only.", validate_num=True,
         )
         self._add_widget(
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_tokenizer", "Tokenizer / Processor:",
@@ -1415,6 +1477,15 @@ class MusubiTunerGUI:
             "This setting is used only by Dynamic Sigma.",
             kind="combobox",
             options=["sigma", "constant"],
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_guidance_distillation_sigma_min",
+            "Protection Minimum Sigma:",
+            "Recommended: 0.15. Below this noise level, Dynamic Sigma skips its extra model pass because upstream "
+            "measurements found very little useful guidance signal there. This saves some time and avoids amplifying "
+            "low-noise randomness. Use 0 to reproduce the previous every-timestep behavior.",
+            validate_num=True,
         )
         self._add_widget(
             self.hidden_frames['minimax_h3_guidance_protection'],
@@ -2260,7 +2331,8 @@ class MusubiTunerGUI:
             "--dit", settings["minimax_h3_dit_model"],
             "--vae", settings["vae_model"],
             "--text_encoder", settings["minimax_h3_text_encoder"],
-            "--tokenizer", settings.get("minimax_h3_tokenizer") or "Qwen/Qwen3-VL-32B-Instruct",
+            "--tokenizer", settings.get("minimax_h3_tokenizer") or "MiniMaxAI/MiniMax-H3",
+            "--text_encoder_blocks_to_swap", str(settings.get("minimax_h3_text_encoder_blocks_to_swap") or 50),
             "--prompt", str(prompt.get("prompt") or ""),
             "--output", str(output),
             "--width", str(prompt.get("width") or 768),
@@ -6696,7 +6768,51 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.entries["network_alpha_low"].delete(0, tk.END)
                 self.entries["network_alpha_low"].insert(0, "32")
         elif mode == "MiniMax H3 (Experimental)":
-            self.mode_note_label.config(text="Experimental still-image LoRA · direct pruned ConvRot INT8 base · 24 GB defaults")
+            multimodal = str(settings.get("minimax_h3_training_workflow") or "").startswith("Video")
+            if multimodal:
+                missing_multimodal = [
+                    label for label, key in (
+                        ("official Video VAE", "minimax_h3_video_vae"),
+                        ("official Audio VAE", "minimax_h3_audio_vae"),
+                    ) if not settings.get(key) or not os.path.exists(settings[key])
+                ]
+                if missing_multimodal:
+                    messagebox.showerror("Validation Error", "Video + audio training is missing: " + ", ".join(missing_multimodal))
+                    return
+                if "int8" in os.path.basename(settings["minimax_h3_video_vae"]).lower():
+                    messagebox.showerror(
+                        "Validation Error",
+                        "Video + audio training needs minimax_h3_video_vae_fp16.safetensors. The INT8 ConvRot VAE is a ComfyUI inference format.",
+                    )
+                    return
+                dit_name = os.path.basename(settings.get("minimax_h3_dit_model", "")).lower()
+                task = settings.get("minimax_h3_multimodal_task", "t2va")
+                if (task == "ref2va" and "ref2va" not in dit_name) or (task != "ref2va" and "ref2va" in dit_name):
+                    messagebox.showerror(
+                        "MiniMax Model Mismatch",
+                        "Ref2VA needs a Ref2VA transformer. T2VA and FL2VA need the FL2VA transformer family.",
+                    )
+                    return
+                from modern_gui.h3_datasets import audit_h3_training_dataset
+                h3_audit = audit_h3_training_dataset(
+                    settings.get("dataset_config", ""),
+                    task=settings.get("minimax_h3_multimodal_task", "t2va"),
+                    training_target=settings.get("minimax_h3_training_target", "Video + audio"),
+                    allow_experimental_duration=bool(settings.get("minimax_h3_allow_experimental_duration")),
+                )
+                if h3_audit["errors"]:
+                    messagebox.showerror("MiniMax Dataset Error", "\n\n".join(h3_audit["errors"][:8]))
+                    return
+                if h3_audit["warnings"] and not messagebox.askyesno(
+                    "MiniMax Dataset Warning",
+                    "\n\n".join(h3_audit["warnings"][:8]) + "\n\nContinue anyway?",
+                ):
+                    return
+            self.mode_note_label.config(text=(
+                "Experimental native video/audio LoRA · synchronized H3 training"
+                if multimodal else
+                "Experimental still-image LoRA · direct pruned ConvRot INT8 base · 24 GB defaults"
+            ))
             self.hidden_frames['wan_dit'].pack_forget()
             self.hidden_frames['wan_models'].pack_forget()
             self.hidden_frames['flux2_model_paths'].pack_forget()
@@ -6969,6 +7085,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             and self.entries["use_staged_training"].var.get()
             and any(item.get("enabled", True) and item.get("type") == "face_refinement" for item in self._staged_training_config)
         )
+        h3_multimodal = bool(
+            is_minimax_h3
+            and self.entries.get("minimax_h3_training_workflow")
+            and str(self.entries["minimax_h3_training_workflow"].get() or "").startswith("Video")
+        )
+        self.entries["vae_model"].is_required = not h3_multimodal
+        self.entries["minimax_h3_video_vae"].is_required = h3_multimodal
+        self.entries["minimax_h3_audio_vae"].is_required = h3_multimodal
         self.entries["dataset_config"].is_required = not refinement_only
         # A first-stage existing-LoRA face refinement has its own step count,
         # learning rate, and network shape. Standard SFT-only fields must not
@@ -7247,6 +7371,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self.entries["minimax_h3_dynamic_sigma_every_n_steps"].configure(state="normal" if dynamic else "disabled")
             self.entries["minimax_h3_guidance_distillation_scale"].configure(state="readonly" if dynamic else "disabled")
             self.entries["minimax_h3_guidance_distillation_schedule"].configure(state="readonly" if dynamic else "disabled")
+            self.entries["minimax_h3_guidance_distillation_sigma_min"].configure(state="normal" if dynamic else "disabled")
             self.entries["minimax_h3_training_assistant"].configure(state="normal" if assistant else "disabled")
             for key in ("minimax_h3_base_preservation_loss_weight", "minimax_h3_base_preservation_every_n_steps"):
                 self.entries[key].configure(state="normal" if base else "disabled")
@@ -7514,8 +7639,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "flux2_model_version": "Klein Base 4B ★", "flux2_dit_model": "", "flux2_text_encoder": "", "fp8_text_encoder": False,
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
+            "minimax_h3_training_workflow": "Still images · compact ConvRot", "minimax_h3_multimodal_task": "t2va",
             "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
-            "minimax_h3_tokenizer": "Qwen/Qwen3-VL-32B-Instruct", "minimax_h3_convrot_bwd_mode": "bf16",
+            "minimax_h3_video_vae": "", "minimax_h3_audio_vae": "", "minimax_h3_video_only": False,
+            "minimax_h3_training_target": "Video + audio",
+            "minimax_h3_allow_experimental_duration": False,
+            "minimax_h3_audio_loss_weight": "1.0", "minimax_h3_shift_video": "12.0", "minimax_h3_shift_audio": "3.0",
+            "minimax_h3_visual_cond_clean": "0.999", "minimax_h3_audio_cond_clean": "1.0",
+            "minimax_h3_text_encoder_attn_mode": "sdpa", "minimax_h3_guidance_uncond_cache": "",
+            "minimax_h3_tokenizer": "MiniMaxAI/MiniMax-H3", "minimax_h3_convrot_bwd_mode": "bf16",
+            "minimax_h3_text_encoder_blocks_to_swap": "50",
             "minimax_h3_text_cache_dtype": "bfloat16",
             "minimax_h3_training_preview_mode": "Five-frame video (recommended)",
             "minimax_h3_guidance_distillation_protection": True,
@@ -7526,6 +7659,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_dynamic_sigma_every_n_steps": "1",
             "minimax_h3_guidance_distillation_scale": "4.0",
             "minimax_h3_guidance_distillation_schedule": "sigma",
+            "minimax_h3_guidance_distillation_sigma_min": "0.15",
             "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors",
             "minimax_h3_base_preservation_loss_weight": "0.05",
             "minimax_h3_base_preservation_every_n_steps": "10",
@@ -8852,12 +8986,31 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
                 return
             h3_protection = minimax_h3_backend.quality_protection_components(settings)
+            if multimodal and (h3_protection["assistant"] or h3_protection["base"]):
+                messagebox.showerror(
+                    "Validation Error",
+                    "The official video/audio trainer currently supports Dynamic Sigma protection, but not the Ostris "
+                    "Assistant or drift/base preservation. Disable those two controls for this workflow.",
+                )
+                return
             if h3_protection["dynamic"]:
                 try:
+                    from musubi_tuner.training.h3_guidance_protection import validate_sigma_min
+
                     if int(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or 0) <= 0:
                         raise ValueError
+                    validate_sigma_min(settings.get("minimax_h3_guidance_distillation_sigma_min") or 0.15)
                 except (TypeError, ValueError):
-                    messagebox.showerror("Validation Error", "Dynamic Sigma cadence must be a positive whole number.")
+                    messagebox.showerror(
+                        "Validation Error",
+                        "Dynamic Sigma cadence must be positive and Protection Minimum Sigma must be between 0 and 1.",
+                    )
+                    return
+                if multimodal and int(settings.get("minimax_h3_dynamic_sigma_every_n_steps") or 1) != 1:
+                    messagebox.showerror(
+                        "Validation Error",
+                        "Official video/audio guidance protection currently runs every step. Set Dynamic Sigma Every N Steps to 1.",
+                    )
                     return
             if h3_protection["assistant"]:
                 assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()
@@ -8898,6 +9051,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             except ValueError as exc:
                 messagebox.showerror("Validation Error", f"Invalid MiniMax H3 generalization setting: {exc}.")
                 return
+            if multimodal and (depth_strength > 0 or float(settings.get("dop_loss_weight") or 0) > 0):
+                messagebox.showerror(
+                    "Validation Error",
+                    "Depth Anchor and DOP currently belong to the compact still-image trainer. Disable them before "
+                    "starting official video/audio training.",
+                )
+                return
             wants_minimax_samples = bool(
                 settings.get("sample_every_n_epochs") or settings.get("sample_every_n_steps") or settings.get("sample_at_first")
             )
@@ -8929,11 +9089,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 "A secondary GPU can hold the ~5 GB VAE, but both GPUs must be visible to PyTorch. Begin with a short comparison. Continue?",
             ):
                 return
+            minimax_confirmation = (
+                "This uses upstream Musubi's official MiniMax H3 video and joint-audio training route. It accepts T2VA, "
+                "FL2VA, or Ref2VA datasets; clips without audio use an unsupervised silence placeholder. This route is "
+                "new in the GUI, so begin with a short run and keep the original caches. Continue?"
+                if multimodal else
+                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 "
+                "two-epoch run completed on a 24 GB RTX 4090 and produced a working likeness LoRA. In-training previews "
+                "and advanced regularizers are newer and still need short-run validation. Use batch size 1 and keep the "
+                "original checkpoint. Continue?"
+            )
             if not messagebox.askokcancel(
                 "Experimental MiniMax H3",
-                "This image-only LoRA path trains directly from the pruned ConvRot INT8 checkpoint. A 1024px rank-16 two-epoch run "
-                "completed on a 24 GB RTX 4090 and produced a working likeness LoRA. In-training previews and advanced regularizers are "
-                "newer and still need short-run validation. Use batch size 1 and keep the original checkpoint. Continue?",
+                minimax_confirmation,
             ):
                 return
         # Warn if sample frequency is set but no prompts were added

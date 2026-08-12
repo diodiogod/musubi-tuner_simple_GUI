@@ -41,6 +41,7 @@ from diffusers.optimization import (
 from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 
 from musubi_tuner.dataset import config_utils
+from musubi_tuner.dataset.architectures import round_down_frame_count
 from musubi_tuner.modules.custom_offloading_utils import BlockSwapConfig
 from musubi_tuner.modules.lr_schedulers import RexLR
 from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
@@ -904,7 +905,7 @@ class NetworkTrainer:
         height = (height // 8) * 8
 
         # 1, 5, 9, 13, ... For HunyuanVideo and Wan2.1
-        frame_count = (frame_count - 1) // self.vae_frame_stride * self.vae_frame_stride + 1
+        frame_count = round_down_frame_count(frame_count, self.architecture, self.vae_frame_stride)
 
         if self.i2v_training:
             image_path = sample_parameter.get("image_path", None)

@@ -48,6 +48,7 @@ def cache_prompt_embeddings(args, prompts: list[str], device: torch.device) -> l
         quantize=True,
         tokenizer_dir=args.tokenizer,
         load_mode=args.text_encoder_load_mode,
+        blocks_to_swap=args.text_encoder_blocks_to_swap,
     )
     cached = []
     try:
@@ -317,6 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--tokenizer", default=DEFAULT_PROCESSOR_ID)
     parser.add_argument("--text_encoder_load_mode", choices=("auto", "direct", "nf4"), default="auto")
+    parser.add_argument("--text_encoder_blocks_to_swap", type=int, default=0)
     parser.add_argument("--reference_manifest")
     parser.add_argument("--pose_aware", action="store_true")
     parser.add_argument("--pose_reward_weight", type=float, default=0.20)

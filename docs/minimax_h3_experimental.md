@@ -1,5 +1,9 @@
 # MiniMax H3 image-only LoRA (experimental)
 
+This page describes the compact still-image workflow that accepts the pruned ConvRot INT8 DiT.
+For official video, joint audio, FL2VA, and Ref2VA training in either GUI, see
+[MiniMax-H3 video and audio training](minimax_h3.md).
+
 This fork contains an intentionally narrow MiniMax H3 training path for users with a 24 GB NVIDIA GPU. It trains a standard BF16 LoRA over Comfy's frozen, pruned ConvRot INT8 FL2VA transformer. It does **not** reconstruct or require the roughly 66 GB BF16 transformer.
 
 The implementation is experimental and has completed CPU architecture, loader, forward, LoRA-gradient, cache-contract, backend, sampler, and GUI tests. A real 1024x1024 rank-16 run completed two epochs on a 24 GB RTX 4090, and its LoRA produced good subject resemblance in inference. The same card has also completed compact standalone inference, a scheduled preview followed by training, two-step DOP plus weight-noise training, a differentiable depth-anchor step, and the H3 DRaFT generation/backward/save path. These are focused smoke tests, not validation of every long-run recipe. Start new features with a short run and retain the original checkpoint.
@@ -12,6 +16,8 @@ Download only the components needed for the phase you are running:
 |---|---|---:|---|
 | Train | [`minimax_h3_fl2va_pruned_int8_convrot.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 20.97 GB | Always |
 | Captions / previews / face refinement | [`qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors) | 15.69 GB | Caption caching or generation only |
+
+Tokenizer/config files come from the official `MiniMaxAI/MiniMax-H3` processor subfolder. Generic `Qwen/Qwen3-VL-32B-Instruct` tokenizer files are not fully interchangeable because they lack H3's dedicated dialogue, lyrics, cutoff, and caption tokens. After switching an existing project to the official tokenizer, rebuild its Caption/Text Cache once; image latents do not need rebuilding.
 | Images / previews / depth / face refinement | [`minimax_h3_video_vae_fp16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors) | 5.21 GB | Latent caching or differentiable/image decoding only |
 
 For ordinary LoRA training the files are used sequentially. The text encoder and VAE are not loaded in the training loop when compatible caches exist and previews/depth are off. Existing compatible caches therefore let a user train with only the 20.97 GB pruned transformer available locally. Scheduled previews, depth anchoring, and face refinement deliberately load the required helper at their own phase.
@@ -80,7 +86,7 @@ The standalone CLI is `src/musubi_tuner/minimax_h3_image_generate.py`. Its decod
 
 Both GUIs keep this important section expanded for H3 and expose three independent, combinable layers:
 
-- **Dynamic Sigma (recommended)** is the established default. It uses the cached empty-prompt state and one no-gradient DiT pass on each scheduled step. Its cadence is configurable: `1` means every step, `4` means 25% of steps, and `10` means 10%. This is the mechanism with successful long-run quality evidence; enabling it requires rebuilding only the Caption/Text Cache once.
+- **Dynamic Sigma (recommended)** is the established default. It uses the cached empty-prompt state and one no-gradient DiT pass on each scheduled step. Its cadence is configurable: `1` means every step, `4` means 25% of steps, and `10` means 10%. **Protection Minimum Sigma** defaults to upstream's recommended `0.15`, skipping the extra pass where measured guidance signal is negligible; `0` reproduces the previous always-apply behavior. This is the mechanism with successful long-run quality evidence; enabling it requires rebuilding only the Caption/Text Cache once.
 - **Ostris Assistant (v1)** loads [`ostris/minimax_h3_training_adapter`](https://huggingface.co/ostris/minimax_h3_training_adapter) as a frozen live helper. The roughly 155 MB helper is downloaded on first use, reused from the Hugging Face cache, disabled during previews, and never merged into the user's saved LoRA. It does not itself require an empty-prompt cache.
 - **Drift/Base Preservation (optional experimental)** temporarily bypasses the user's trainable LoRA on its scheduled steps and adds a small MSE penalty against either the base-plus-assistant reference or the base alone. Start with strength `0.05` every `10` steps. This is a separate third mechanism, not another name for Dynamic Sigma.
 

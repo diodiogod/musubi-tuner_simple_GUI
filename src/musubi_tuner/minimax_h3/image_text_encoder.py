@@ -11,9 +11,9 @@ runtime, strip the `model.` prefix, skip the vision tower (`visual.*` — unused
 captions), and keep the compact checkpoint's NVFP4/INT8 tensors packed between forwards. The
 older BF16-to-NF4 load path remains available as a compatibility fallback.
 
-Image LoRA training uses text-only captions (no vision blocks), tokenized raw with NO special
-tokens — the H3 convention. The tokenizer is loaded from Qwen3-VL-32B or a user-provided
-local processor directory.
+Image LoRA training uses text-only captions (no vision blocks), tokenized raw with NO automatic
+wrapper tokens. The tokenizer is loaded from MiniMax's official H3 processor files, which add
+the dialogue, lyrics, cutoff, and caption tokens absent from generic Qwen3-VL.
 
 Output: [1, L, 5120] fp32. ComfyUI runs this language tower in fp32; preserving that precision
 avoids a large error amplification in the deeper Qwen layers. The DiT casts conditioning as needed.
@@ -21,6 +21,8 @@ avoids a large error amplification in the deeper Qwen layers. The DiT casts cond
 
 import torch
 import torch.nn as nn
+
+from musubi_tuner.modules.custom_offloading_utils import LoRAStreamOffloader, attach_forward_streaming_hooks
 
 # The official safetensors safe_open(device="cpu") + get_tensor path memory-maps the file and
 # slices the torch storage per tensor — on Windows, reading a 48 GB file that way hard-crashes
@@ -37,7 +39,8 @@ from musubi_tuner.modules.nvfp4_utils import (
 from musubi_tuner.utils.safetensors_utils import MemoryEfficientSafeOpen
 
 # Derived from the checkpoint tensor shapes (U8 weights are 4-bit-packed: real in-dim = 2x).
-DEFAULT_PROCESSOR_ID = "Qwen/Qwen3-VL-32B-Instruct"
+DEFAULT_PROCESSOR_ID = "MiniMaxAI/MiniMax-H3"
+OFFICIAL_PROCESSOR_SUBFOLDER = "processor"
 
 _QWEN3_32B_TRUNC50 = dict(
     hidden_size=5120, num_hidden_layers=50, num_attention_heads=64, num_key_value_heads=8,
@@ -137,11 +140,14 @@ def build_qwen3_te(config_overrides=None):
 class MiniMaxH3TextEncoder:
     """Encodes captions to raw layer-50 states with shape [1, L, 5120]."""
 
-    def __init__(self, model, tokenizer, device="cuda", compute_dtype=torch.bfloat16):
+    def __init__(self, model, tokenizer, device="cuda", compute_dtype=torch.bfloat16, stream_offloader=None):
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.device = device
         self.compute_dtype = compute_dtype
+        # Keep both the offloader and hook handles alive for the lifetime of the encoder.
+        self.stream_offloader = stream_offloader
+        self.stream_hook_handles = []
 
     @torch.no_grad()
     def encode(self, caption: str, max_length: int = 512) -> torch.Tensor:
@@ -155,7 +161,8 @@ class MiniMaxH3TextEncoder:
 
 
 def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
-                       quantize=True, tokenizer_dir=None, load_mode="auto") -> MiniMaxH3TextEncoder:
+                       quantize=True, tokenizer_dir=None, load_mode="auto",
+                       blocks_to_swap: int = 0) -> MiniMaxH3TextEncoder:
     """Load the text-only Qwen3-VL-32B language tower while skipping ``visual.*``."""
     from bitsandbytes.nn import Linear4bit, Params4bit
     # Import Qwen before entering the meta-device context. Importing transformers
@@ -165,6 +172,8 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
 
     if load_mode not in ("auto", "direct", "nf4"):
         raise ValueError(f"Unknown MiniMax-H3 text-encoder load mode: {load_mode}")
+    if not 0 <= blocks_to_swap <= _QWEN3_32B_TRUNC50["num_hidden_layers"]:
+        raise ValueError("MiniMax-H3 text-encoder blocks to swap must be between 0 and 50")
 
     with MemoryEfficientSafeOpen(path) as checkpoint_reader:
         checkpoint_keys = set(checkpoint_reader.keys())
@@ -174,6 +183,21 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
         raise ValueError("Direct MiniMax-H3 text loading requires a Comfy quantized checkpoint")
     if load_mode == "direct" and not HAS_TRITON:
         raise ValueError("Direct MiniMax-H3 text loading requires Triton")
+    if blocks_to_swap and not direct_quant:
+        raise ValueError(
+            "MiniMax-H3 low-VRAM text streaming requires the packed NVFP4 encoder in direct/auto mode"
+        )
+
+    stream_indices = set()
+    if blocks_to_swap:
+        num_layers = _QWEN3_32B_TRUNC50["num_hidden_layers"]
+        stream_indices = {
+            ((2 * i + 1) * num_layers) // (2 * blocks_to_swap) for i in range(blocks_to_swap)
+        }
+
+    def is_streamed_weight(name: str) -> bool:
+        parts = name.split(".")
+        return len(parts) > 2 and parts[0] == "layers" and parts[1].isdigit() and int(parts[1]) in stream_indices
 
     with torch.device("meta"):
         model = build_qwen3_te()
@@ -242,6 +266,10 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
                     compute_dtype,
                     f.get_tensor(pre_quant_key) if pre_quant_key in ckpt else None,
                 )
+                if is_streamed_weight(name):
+                    # Keep the large packed matrix in host RAM. Quantization scales and norms
+                    # remain resident on CUDA; LoRAStreamOffloader supplies a tiny shared GPU ring.
+                    parent.weight = nn.Parameter(parent.weight.detach().cpu(), requires_grad=False)
                 loaded_keys.add(name)
                 continue
             if direct_quant and leaf == "weight" and isinstance(parent, PackedInt8Embedding):
@@ -283,5 +311,27 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
                 mod.register_buffer(bname, torch.zeros(buf.shape, dtype=buf.dtype, device=dev))
     model.requires_grad_(False)
 
-    tok = AutoTokenizer.from_pretrained(tokenizer_dir or DEFAULT_PROCESSOR_ID)
-    return MiniMaxH3TextEncoder(model, tok, device=device, compute_dtype=compute_dtype)
+    stream_offloader = None
+    if blocks_to_swap:
+        stream_offloader = LoRAStreamOffloader(
+            "MiniMax-H3 text encoder",
+            list(model.layers),
+            len(model.layers),
+            blocks_to_swap,
+            supports_backward=False,
+            device=dev,
+            ring_size=2,
+            # Pageable host masters avoid reserving another ~15 GB of pinned/shared GPU memory on Windows.
+            use_pinned_memory=False,
+        )
+        stream_offloader.prepare_block_devices_before_forward(list(model.layers))
+
+    tokenizer_source = tokenizer_dir or DEFAULT_PROCESSOR_ID
+    tokenizer_kwargs = {"subfolder": OFFICIAL_PROCESSOR_SUBFOLDER} if tokenizer_source == DEFAULT_PROCESSOR_ID else {}
+    tok = AutoTokenizer.from_pretrained(tokenizer_source, **tokenizer_kwargs)
+    encoder = MiniMaxH3TextEncoder(
+        model, tok, device=device, compute_dtype=compute_dtype, stream_offloader=stream_offloader
+    )
+    if stream_offloader is not None:
+        encoder.stream_hook_handles = attach_forward_streaming_hooks(stream_offloader, list(model.layers))
+    return encoder

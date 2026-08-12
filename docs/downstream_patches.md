@@ -88,6 +88,17 @@ not contain the GUI files.
   `tests/test_modern_gui_face_stages.py`, and the H3 cases in the shared
   regularization tests.
 
+### MiniMax H3 official video and joint-audio path
+
+- Upstream `/dev` capability snapshot: `e4f55d1` (2026-08-12), including PRs #1018, #1021, #1024, #1032, #1040, #1045, and #1046.
+- The upstream multimodal modules live under `src/musubi_tuner/minimax_h3_native/` and use entry points named `minimax_h3_native_*`. This namespace is intentional: never overwrite the compact downstream `minimax_h3/` image implementation with the upstream package wholesale.
+- `backends/minimax_h3.py` selects the native entry points only when `minimax_h3_training_workflow` starts with `Video`; missing/old projects remain on `Still images · compact ConvRot`.
+- Supported tasks are T2VA, FL2VA, and Ref2VA. Joint audio is optional at training time through `--video_only` / `--audio_loss_weight`, but the official cache contract always contains synchronized audio latents plus an `audio_present` fact so missing audio is not treated as supervised silence.
+- Shared audio seams are limited to `dataset/audio_utils.py`, audio-aware video datasource items, MiniMax cache serialization, and `training/audio_loss.py`. Preserve the existing DOP cache fields and compact H3 FP32-posterior cache validator when updating them.
+- The official FP16 video VAE and FP32 audio VAE are required. Comfy's smaller INT8 ConvRot video VAE is an inference artifact and the GUI rejects it for native training.
+- Official Qwen/processor loading and its quantization helpers remain isolated from the compact standalone Comfy-style language tower. Both paths share the generalized frozen tensor-streaming offloader.
+- Contract tests imported from upstream are named `test_minimax_h3_native_*` plus `test_audio_dataset_seam.py`; run them together with all existing compact H3 tests.
+
 ### Adapter weight noise
 
 - Implementation: `training/weight_noise.py`.

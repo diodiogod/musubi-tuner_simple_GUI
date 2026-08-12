@@ -102,6 +102,7 @@ def test_experimental_parser_uses_24gb_safe_defaults():
     assert parser.get_default("h3_guidance_distillation_protection") is False
     assert parser.get_default("h3_guidance_distillation_scale") == 4.0
     assert parser.get_default("h3_guidance_distillation_schedule") == "sigma"
+    assert parser.get_default("h3_guidance_distillation_sigma_min") == 0.15
 
 
 def test_disabled_base_preservation_allows_unused_assistant_reference_default():

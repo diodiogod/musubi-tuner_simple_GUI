@@ -13,6 +13,7 @@ from typing import List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
+    from musubi_tuner.dataset.audio_utils import AudioSpec
 
 SharedEpoch = Optional["Synchronized[int]"]
 
@@ -270,6 +271,7 @@ def generate_dataset_group_by_blueprint(
     training: bool = False,
     num_timestep_buckets: Optional[int] = None,
     shared_epoch: SharedEpoch = None,
+    audio_spec: Optional["AudioSpec"] = None,
 ) -> DatasetGroup:
     datasets: List[Union[ImageDataset, VideoDataset]] = []
 
@@ -279,7 +281,10 @@ def generate_dataset_group_by_blueprint(
         else:
             dataset_klass = VideoDataset
 
-        dataset = dataset_klass(**asdict(dataset_blueprint.params))
+        dataset_params = asdict(dataset_blueprint.params)
+        if not dataset_blueprint.is_image_dataset and audio_spec is not None:
+            dataset_params["audio_spec"] = audio_spec
+        dataset = dataset_klass(**dataset_params)
         datasets.append(dataset)
 
     # assertion

@@ -114,6 +114,12 @@ def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--text_encoder_blocks_to_swap",
+        type=int,
+        default=0,
+        help="Stream 0-50 Qwen language layers from system RAM; 50 uses the least VRAM",
+    )
+    parser.add_argument(
         "--cache_dtype",
         choices=("bfloat16", "float32"),
         default="bfloat16",
@@ -154,6 +160,7 @@ def main() -> None:
         quantize=True,
         tokenizer_dir=args.tokenizer,
         load_mode=args.text_encoder_load_mode,
+        blocks_to_swap=args.text_encoder_blocks_to_swap,
     )
 
     cache_dtype = torch.bfloat16 if args.cache_dtype == "bfloat16" else torch.float32

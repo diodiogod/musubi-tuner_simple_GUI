@@ -170,15 +170,17 @@ class BuilderToolTip:
 class DatasetConfigBuilder:
     """Visual editor for the common dataset TOML options with a raw escape hatch."""
 
-    def __init__(self, parent, initial_path="", on_use=None, colors=None):
+    def __init__(self, parent, initial_path="", on_use=None, colors=None, architecture=None):
         self.parent = parent
         self.on_use = on_use
         self.colors = colors or {}
+        self.architecture = architecture
         self.path = Path(initial_path).expanduser() if initial_path else None
         self.document = None
         self.datasets = []
         self.selected_index = None
         self._active_tab = 0
+        self._raw_tab_index = 2 if architecture == "minimax_h3" else 1
         self._changing_tab = False
         self._suspend_dirty = True
         self.is_dirty = False
@@ -217,12 +219,19 @@ class DatasetConfigBuilder:
             "no_resize_control": tk.BooleanVar(value=False),
             "control_width": tk.StringVar(),
             "control_height": tk.StringVar(),
-            "target_frames": tk.StringVar(value="1"),
+            "target_frames": tk.StringVar(value="124" if architecture == "minimax_h3" else "1"),
             "frame_extraction": tk.StringVar(value="head"),
             "frame_stride": tk.StringVar(),
             "frame_sample": tk.StringVar(),
             "max_frames": tk.StringVar(),
             "source_fps": tk.StringVar(),
+        }
+        self.h3_vars = {
+            "images": tk.StringVar(), "audio": tk.StringVar(), "output": tk.StringVar(),
+            "strategy": tk.StringVar(value="round_robin"), "seed": tk.StringVar(value="42"),
+            "width": tk.StringVar(value="768"), "height": tk.StringVar(value="768"),
+            "target_frames": tk.StringVar(value="124"),
+            "allow_experimental": tk.BooleanVar(value=False), "ref_jsonl": tk.StringVar(),
         }
 
         self._build_ui()
@@ -257,10 +266,15 @@ class DatasetConfigBuilder:
         self.builder_tab = ttk.Frame(self.notebook, padding=8)
         self.raw_tab = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(self.builder_tab, text="Builder")
+        if self.architecture == "minimax_h3":
+            self.h3_tab = ttk.Frame(self.notebook, padding=12)
+            self.notebook.add(self.h3_tab, text="MiniMax media")
         self.notebook.add(self.raw_tab, text="Raw TOML")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_builder_tab()
+        if self.architecture == "minimax_h3":
+            self._build_h3_tab()
         self._build_raw_tab()
 
         footer = ttk.Frame(outer)
@@ -470,7 +484,12 @@ class DatasetConfigBuilder:
             video_row,
             "Target frames",
             self.dataset_vars["target_frames"],
-            "Comma-separated clip lengths, for example 17, 33, 65.",
+            (
+                "MiniMax H3 lengths must be 5 + 17×N: 5, 22, 39… 124 is about 5.2 seconds at 24 fps and is the "
+                "smallest released-duration default. Shorter clips require Allow Clips Outside Official 5–15 Seconds."
+                if self.architecture == "minimax_h3" else
+                "Comma-separated clip lengths, for example 17, 33, 65."
+            ),
         )
         video_row = self._combo_row(
             self.video_frame,
@@ -552,6 +571,140 @@ class DatasetConfigBuilder:
         self.inspect_label = ttk.Label(inspect_row, text="", style="Muted.TLabel")
         self.inspect_label.pack(side="left", padx=(10, 0), fill="x", expand=True)
 
+    def _build_h3_tab(self):
+        ttk.Label(
+            self.h3_tab,
+            text="MiniMax H3 synchronized media",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            self.h3_tab,
+            text=(
+                "Build real video files from still images plus audio, or validate a Ref2VA JSONL manifest. "
+                "Audio-only learning still uses synchronized video context; it is not a raw-audio TOML source."
+            ),
+            style="PageHelp.TLabel",
+            wraplength=900,
+        ).pack(anchor="w", pady=(3, 12))
+
+        pairing = ttk.LabelFrame(self.h3_tab, text="Still images + audio → training clips", padding=10)
+        pairing.pack(fill="x")
+        pairing.columnconfigure(1, weight=1)
+        for row, (label, key) in enumerate((
+            ("Still-image folder", "images"), ("Audio folder", "audio"), ("Generated video folder", "output")
+        )):
+            ttk.Label(pairing, text=label, width=24).grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Entry(pairing, textvariable=self.h3_vars[key]).grid(row=row, column=1, sticky="ew", pady=4)
+            ttk.Button(pairing, text="Browse", command=lambda k=key: self._browse_h3_directory(k)).grid(
+                row=row, column=2, padx=(6, 0), pady=4
+            )
+        options = ttk.Frame(pairing)
+        options.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 2))
+        ttk.Label(options, text="Image selection").pack(side="left")
+        strategy = ttk.Combobox(
+            options, textvariable=self.h3_vars["strategy"], state="readonly", width=18,
+            values=("round_robin", "random", "matching_stem"),
+        )
+        strategy.pack(side="left", padx=(6, 14))
+        ttk.Label(options, text="Seed").pack(side="left")
+        ttk.Entry(options, textvariable=self.h3_vars["seed"], width=7).pack(side="left", padx=(5, 14))
+        ttk.Label(options, text="Size").pack(side="left")
+        ttk.Entry(options, textvariable=self.h3_vars["width"], width=7).pack(side="left", padx=(5, 2))
+        ttk.Label(options, text="×").pack(side="left")
+        ttk.Entry(options, textvariable=self.h3_vars["height"], width=7).pack(side="left", padx=(2, 10))
+        ttk.Label(options, text="Frames").pack(side="left")
+        ttk.Entry(options, textvariable=self.h3_vars["target_frames"], width=6).pack(side="left", padx=(5, 0))
+        ttk.Checkbutton(
+            pairing, text="Allow audio outside the released 5–15 second range",
+            variable=self.h3_vars["allow_experimental"],
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(7, 2))
+        actions = ttk.Frame(pairing)
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(9, 0))
+        ttk.Button(actions, text="Preview pairings", command=self._inspect_h3_pairings).pack(side="left")
+        ttk.Button(actions, text="Create clips", style="Accent.TButton", command=self._build_h3_pairs).pack(
+            side="left", padx=(6, 0)
+        )
+        self.h3_pair_status = ttk.Label(actions, text="", style="Muted.TLabel")
+        self.h3_pair_status.pack(side="left", padx=(10, 0), fill="x", expand=True)
+
+        reference = ttk.LabelFrame(self.h3_tab, text="Reference model (Ref2VA)", padding=10)
+        reference.pack(fill="x", pady=(12, 0))
+        reference.columnconfigure(1, weight=1)
+        ttk.Label(reference, text="Ref2VA JSONL", width=24).grid(row=0, column=0, sticky="w")
+        ttk.Entry(reference, textvariable=self.h3_vars["ref_jsonl"]).grid(row=0, column=1, sticky="ew")
+        ttk.Button(reference, text="Browse", command=self._browse_h3_ref_jsonl).grid(row=0, column=2, padx=(6, 0))
+        ttk.Button(reference, text="Validate records", command=self._validate_h3_ref_jsonl).grid(
+            row=1, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Label(
+            reference,
+            text="Each target needs ordered references. The Modern UI provides the visual record editor; this tab validates and links its JSONL output.",
+            style="Muted.TLabel", wraplength=760,
+        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(9, 0))
+
+    def _browse_h3_directory(self, key):
+        selected = filedialog.askdirectory(parent=self.window, initialdir=self.h3_vars[key].get() or None)
+        if selected:
+            self.h3_vars[key].set(selected)
+
+    def _inspect_h3_pairings(self):
+        try:
+            from modern_gui.h3_datasets import pairing_plan
+
+            plan = pairing_plan(
+                self.h3_vars["images"].get(), self.h3_vars["audio"].get(),
+                strategy=self.h3_vars["strategy"].get(), seed=int(self.h3_vars["seed"].get()),
+            )
+            preview = ", ".join(f"{item['audio_name']} + {item['image_name']}" for item in plan[:3])
+            self.h3_pair_status.config(text=f"{len(plan)} pair(s): {preview}{'…' if len(plan) > 3 else ''}")
+        except Exception as exc:
+            messagebox.showerror("MiniMax Pairing Error", str(exc), parent=self.window)
+
+    def _build_h3_pairs(self):
+        try:
+            from modern_gui.h3_datasets import build_image_audio_videos
+
+            result = build_image_audio_videos(
+                self.h3_vars["images"].get(), self.h3_vars["audio"].get(), self.h3_vars["output"].get(),
+                strategy=self.h3_vars["strategy"].get(), seed=int(self.h3_vars["seed"].get()),
+                width=int(self.h3_vars["width"].get()), height=int(self.h3_vars["height"].get()),
+                target_frames=int(self.h3_vars["target_frames"].get()),
+                allow_experimental_duration=self.h3_vars["allow_experimental"].get(),
+            )
+            self.h3_pair_status.config(text=f"Created {result['count']} clip(s). Add that folder as a Video source.")
+            if messagebox.askyesno("Clips Created", "Add the generated folder as a new Video dataset source?", parent=self.window):
+                self._add_dataset("video")
+                self.dataset_vars["source_format"].set("Directory")
+                self.dataset_vars["source"].set(result["output_directory"])
+                self.dataset_vars["target_frames"].set(self.h3_vars["target_frames"].get())
+                self._capture_selected_dataset()
+                self._refresh_dataset_tree(select=self.selected_index)
+        except Exception as exc:
+            messagebox.showerror("MiniMax Clip Builder Error", str(exc), parent=self.window)
+
+    def _browse_h3_ref_jsonl(self):
+        selected = filedialog.askopenfilename(parent=self.window, filetypes=[("JSONL files", "*.jsonl"), ("All files", "*.*")])
+        if selected:
+            self.h3_vars["ref_jsonl"].set(selected)
+
+    def _validate_h3_ref_jsonl(self):
+        try:
+            from musubi_tuner.minimax_h3_native.media import load_h3_jsonl_records
+
+            records = load_h3_jsonl_records(self.h3_vars["ref_jsonl"].get(), "ref2va")
+            if messagebox.askyesno(
+                "Valid Ref2VA Manifest",
+                f"Validated {len(records)} target record(s). Add this manifest as a new Video JSONL source?",
+                parent=self.window,
+            ):
+                self._add_dataset("video")
+                self.dataset_vars["source_format"].set("JSONL file")
+                self.dataset_vars["source"].set(self.h3_vars["ref_jsonl"].get())
+                self._capture_selected_dataset()
+                self._refresh_dataset_tree(select=self.selected_index)
+        except Exception as exc:
+            messagebox.showerror("Ref2VA Validation Error", str(exc), parent=self.window)
+
     def _build_raw_tab(self):
         help_text = (
             "Edit any supported TOML option directly. Switching back to Builder parses these changes. "
@@ -607,7 +760,7 @@ class DatasetConfigBuilder:
             return "break"
         try:
             selected_tab = self.notebook.index(self.notebook.select())
-            if selected_tab == 1:
+            if selected_tab == self._raw_tab_index:
                 self.raw_text.yview_scroll(direction * 3, "units")
             elif event.widget is self.dataset_tree:
                 self.dataset_tree.yview_scroll(direction * 3, "units")
@@ -961,7 +1114,7 @@ class DatasetConfigBuilder:
         table[f"{kind}_directory"] = ""
         table["num_repeats"] = 1
         if kind == "video":
-            table["target_frames"] = [1]
+            table["target_frames"] = [124] if self.architecture == "minimax_h3" else [1]
             table["frame_extraction"] = "head"
         self.datasets.append({"kind": kind, "raw": table})
         self._refresh_dataset_tree(select=len(self.datasets) - 1)
@@ -1045,6 +1198,12 @@ class DatasetConfigBuilder:
             )
             if dataset.get("frame_extraction") == "chunk" and 1 in dataset.get("target_frames", []):
                 raise ValueError(f"Dataset {index}: chunk extraction cannot include 1 in Target frames.")
+            if self.architecture == "minimax_h3" and kind == "video":
+                invalid = [frames for frames in dataset.get("target_frames", []) if frames < 5 or (frames - 5) % 17]
+                if invalid:
+                    raise ValueError(
+                        f"Dataset {index}: MiniMax H3 Target frames must use 5 + 17×N (5, 22, 39, 56, 73…), got {invalid}."
+                    )
 
         if len(set(effective_caches)) != len(effective_caches):
             raise ValueError("Each dataset must use a different cache directory.")
@@ -1060,7 +1219,7 @@ class DatasetConfigBuilder:
         return plain
 
     def _current_document(self):
-        if self.notebook.index(self.notebook.select()) == 1:
+        if self.notebook.index(self.notebook.select()) == self._raw_tab_index:
             return _parse_toml(self.raw_text.get("1.0", "end-1c"))
         text = self._apply_builder_to_document()
         self._replace_raw_text(text)
@@ -1088,10 +1247,10 @@ class DatasetConfigBuilder:
         if selected == self._active_tab:
             return
         try:
-            if selected == 1:
+            if selected == self._raw_tab_index:
                 text = self._apply_builder_to_document()
                 self._replace_raw_text(text)
-            else:
+            elif self._active_tab == self._raw_tab_index:
                 self._load_text(self.raw_text.get("1.0", "end-1c"))
             self._active_tab = selected
         except Exception as exc:

@@ -393,7 +393,7 @@ def update_general(text: str, changes: dict[str, Any], source_path: str = "") ->
     return summarize_document(dump_document(document), source_path)
 
 
-def add_dataset(text: str, kind: str, source_path: str = "") -> dict[str, Any]:
+def add_dataset(text: str, kind: str, source_path: str = "", architecture: str = "") -> dict[str, Any]:
     if kind not in {"image", "video"}:
         raise ValueError("Dataset kind must be image or video.")
     document = parse_document(text) if text.strip() else parse_document("")
@@ -409,7 +409,7 @@ def add_dataset(text: str, kind: str, source_path: str = "") -> dict[str, Any]:
     dataset["num_repeats"] = 1
     dataset["enable_bucket"] = True
     if kind == "video":
-        dataset["target_frames"] = [1, 25]
+        dataset["target_frames"] = [124] if architecture == "minimax_h3" else [1, 25]
     document["datasets"].append(dataset)
     return summarize_document(dump_document(document), source_path)
 

@@ -128,6 +128,39 @@ def test_minimax_h3_dop_and_training_samples_are_accepted(tmp_path: Path):
     assert any("multiples of 32" in message for message in messages)
 
 
+def test_minimax_h3_multimodal_preflight_uses_its_own_vaes_and_rejects_inference_vae(tmp_path: Path):
+    dataset = tmp_path / "dataset.toml"
+    dataset.write_text("[[datasets]]\ntarget_frames = [124]", encoding="utf-8")
+    base = {
+        "training_mode": "MiniMax H3 (Experimental)",
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_multimodal_task": "t2va",
+        "dataset_config": str(dataset),
+        "output_dir": str(tmp_path),
+        "output_name": "joint_av",
+        "minimax_h3_dit_model": "dit.safetensors",
+        "minimax_h3_video_vae": "minimax_h3_video_vae_fp16.safetensors",
+        "minimax_h3_audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
+        "learning_rate": "1e-4",
+        "gradient_accumulation_steps": "1",
+        "network_dim_low": "16",
+        "network_type": "LoRA",
+        "max_train_epochs": "1",
+        "blocks_to_swap": "30",
+        "gradient_checkpointing": True,
+        "mixed_precision": "bf16",
+        "minimax_h3_dynamic_sigma_enabled": False,
+    }
+    result = validate_training_settings(base)
+    assert result["errors"] == []
+
+    result = validate_training_settings(base | {"minimax_h3_video_vae": "minimax_h3_video_vae_int8_convrot.safetensors"})
+    assert any("INT8 ConvRot VAE" in item["message"] for item in result["errors"])
+
+    result = validate_training_settings(base | {"dop_loss_weight": "0.2"})
+    assert any("Depth Anchor and DOP" in item["message"] for item in result["errors"])
+
+
 def test_minimax_video_prompt_is_allowed_and_scheduled_as_five_frames_by_default(tmp_path: Path):
     dataset = tmp_path / "dataset.toml"
     dataset.write_text("[[datasets]]", encoding="utf-8")

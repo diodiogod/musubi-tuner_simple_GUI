@@ -76,6 +76,7 @@
             <div class="step-pane active" data-pane="model">
               <p class="kicker">STEP 1 OF 5</p><h2>Choose the training target</h2><p class="lead">This changes the available model files, defaults, and specialized tools.</p>
               <div class="choice-grid" id="mode-choices"></div>
+              <div id="h3-workflow-explainer" hidden></div>
               <div id="model-fields" class="guided-fields"></div>
             </div>
             <div class="step-pane" data-pane="data">
@@ -87,12 +88,12 @@
             </div>
             <div class="step-pane" data-pane="method">
               <p class="kicker">STEP 3 OF 5</p><h2>Shape the training recipe</h2><p class="lead">Start from safe choices, then expand a section when you need more control.</p>
+              <details class="raw-settings" id="minimax-guidance-protection" open hidden><summary>MiniMax H3 quality protection — recommended minimum sigma 0.15</summary><p class="settings-explainer">Important H3 controls. Dynamic Sigma is enabled by the Proven Quality preset; its Minimum Sigma field defaults to 0.15 and controls when the extra preservation pass is skipped.</p><div id="minimax-guidance-fields" class="guided-fields"></div></details>
               <div id="method-fields" class="guided-fields"></div>
               <section class="training-structure-card" id="training-structure-card"></section>
               <div class="estimate-row"><span id="lora-estimate">Estimate the final adapter size from model tensor shapes.</span><button class="quiet" id="estimate-lora">Estimate size</button></div>
-              <details class="raw-settings"><summary>Weight noise and structural depth</summary><p class="settings-explainer">Experimental controls for overfitting and image structure. Depth can substantially increase training time and VRAM use.</p><div id="regularization-fields" class="guided-fields"></div></details>
+              <details class="raw-settings" id="regularization-settings"><summary>Weight noise and structural depth</summary><p class="settings-explainer">Experimental controls for overfitting and image structure. Depth can substantially increase training time and VRAM use.</p><div id="regularization-fields" class="guided-fields"></div></details>
               <details class="raw-settings dop-settings" id="dop-settings" hidden><summary>Differential Output Preservation (DoP)</summary><p class="settings-explainer">A separate preservation objective that teaches what should remain unchanged while the LoRA learns your trigger. It needs carefully chosen trigger and class words and adds training cost.</p><div id="dop-fields" class="guided-fields"></div></details>
-              <details class="raw-settings" id="minimax-guidance-protection" open hidden><summary>MiniMax H3 quality protection</summary><p class="settings-explainer">Important H3 controls. The frozen Ostris assistant, proven Dynamic Sigma target, and optional drift check can be enabled independently and scheduled at different cadences. Presets provide starting points without locking the advanced controls.</p><div id="minimax-guidance-fields" class="guided-fields"></div></details>
               <details class="raw-settings depth-compute-settings" id="krea-depth-compute" hidden><summary>Krea 2 depth VAE and secondary GPU</summary><p class="settings-explainer">Krea can decode the predicted image on another visible CUDA GPU while the DiT and Depth Anything remain on the training GPU. This is experimental; start with a short run and verify the device mapping in the startup log.</p><div id="krea-depth-fields" class="guided-fields"></div></details>
               <details class="raw-settings depth-compute-settings" id="minimax-depth-compute" hidden><summary>MiniMax depth compute and multi-GPU memory</summary><p class="settings-explainer">Depth compares the current LoRA prediction with the training image's structure. The target is cached, but the current prediction must be decoded during every depth step. The secondary VAE needs at least 16 GB VRAM for its backward pass; its ~5 GB weight size alone is not enough to judge fit.</p><div id="minimax-depth-hardware-notice" class="issue warning" hidden></div><div id="minimax-depth-fields" class="guided-fields"></div></details>
             </div>
@@ -131,6 +132,7 @@
               <div class="dataset-tabs" id="dataset-tabs" role="tablist">
                 <button class="active" data-dataset-tab="media" role="tab">Media</button>
                 <button data-dataset-tab="settings" role="tab">Source settings</button>
+                <button data-dataset-tab="h3" id="dataset-h3-tab" role="tab" hidden>MiniMax media builder</button>
                 <button data-dataset-tab="health" role="tab">Health</button>
                 <button data-dataset-tab="toml" role="tab">TOML</button>
               </div>
@@ -147,6 +149,31 @@
                 <div id="dataset-media-pager" class="dataset-media-pager"></div>
               </section>
               <section class="dataset-pane" data-dataset-pane="settings" role="tabpanel"><div id="dataset-editor"></div></section>
+              <section class="dataset-pane" data-dataset-pane="h3" role="tabpanel">
+                <div class="h3-dataset-workspace">
+                  <div class="workspace-heading"><div><p class="kicker">MINIMAX H3 MEDIA</p><h2>Build synchronized training data</h2><p>Create ordinary H3 clips from still images and audio, or build ordered Ref2VA records without writing JSON by hand.</p></div></div>
+                  <details class="setting-section" open><summary><strong>Still images + audio → training clips</strong><small>Creates MP4 files; it never overwrites existing clips.</small></summary>
+                    <div class="guided-fields" id="h3-pairing-fields">
+                      <div class="field wide"><label>Still-image folder</label><div class="path-control"><input id="h3-pair-images"><button class="quiet" data-h3-browse="h3-pair-images">Browse</button></div></div>
+                      <div class="field wide"><label>Audio folder</label><div class="path-control"><input id="h3-pair-audio"><button class="quiet" data-h3-browse="h3-pair-audio">Browse</button></div></div>
+                      <div class="field wide"><label>Generated video folder</label><div class="path-control"><input id="h3-pair-output"><button class="quiet" data-h3-browse="h3-pair-output">Browse</button></div></div>
+                      <div class="field"><label>Image selection</label><select id="h3-pair-strategy"><option value="round_robin">Rotate images evenly</option><option value="random">Random, reproducible</option><option value="matching_stem">Match the same filename</option></select></div>
+                      <div class="field"><label>Random seed</label><input id="h3-pair-seed" type="number" value="42"></div>
+                      <div class="field"><label>Width</label><input id="h3-pair-width" type="number" value="768"></div>
+                      <div class="field"><label>Height</label><input id="h3-pair-height" type="number" value="768"></div>
+                      <div class="field"><label>Frames per clip</label><input id="h3-pair-frames" type="number" value="124"><small>Use 124 normally. Valid values follow 5 + 17×N.</small></div>
+                      <label class="inline-switch"><input id="h3-pair-experimental" type="checkbox"> Allow audio outside 5–15 seconds</label>
+                    </div>
+                    <div class="review-actions"><button class="quiet" id="h3-inspect-pairs">Preview pairings</button><button class="primary" id="h3-build-pairs">Create training clips</button></div>
+                    <div id="h3-pair-report" class="dataset-health-empty"><p>Choose image and audio folders, then preview exactly which files will be paired.</p></div>
+                  </details>
+                  <details class="setting-section"><summary><strong>Reference model (Ref2VA) records</strong><small>Target clip plus ordered image, video, and audio references.</small></summary>
+                    <div class="path-bar"><label>Ref2VA JSONL</label><input id="h3-ref-path" placeholder="Choose a .jsonl file"><button class="quiet" data-h3-browse="h3-ref-path" data-kind="file">Browse</button><button class="quiet" id="h3-load-ref">Load</button></div>
+                    <div class="review-actions"><button class="quiet" id="h3-add-ref-record">＋ Target record</button><button class="primary" id="h3-save-ref">Validate and save JSONL</button></div>
+                    <div id="h3-ref-records" class="h3-ref-records"><div class="dataset-health-empty"><p>Load a manifest or add the first target record.</p></div></div>
+                  </details>
+                </div>
+              </section>
               <section class="dataset-pane" data-dataset-pane="health" role="tabpanel"><div id="dataset-inspection" aria-live="polite"><div class="dataset-health-empty"><h3>No full audit yet</h3><p>Run the audit to check every source against Musubi’s real file-loading rules.</p><button class="quiet" data-run-dataset-audit>Run full audit</button></div></div></section>
               <section class="dataset-pane" data-dataset-pane="toml" role="tabpanel">
                 <div class="toml-intro"><div><p class="kicker">CANONICAL DOCUMENT</p><h3>Complete TOML</h3><p>Comments, ordering, unknown keys, and specialized trainer fields stay here. Visual edits patch this document in place.</p></div><span id="toml-preservation-state">Structure preserved</span></div>

@@ -1,4 +1,4 @@
-const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, samples: null, sampleSources: [], sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
+const state = { settings: {}, schema: null, dataset: null, samplingEstimate: null, step: "model", selectedDataset: 0, datasetTab: "media", datasetMedia: null, datasetMediaPage: 1, datasetMediaQuery: "", datasetMediaFilter: "all", datasetInventories: {}, datasetAudit: null, datasetRawDirty: false, datasetCaptionDirty: false, openDatasetMediaIndex: 0, h3RefRecords: [], samples: null, sampleSources: [], sampleMode: "compare", captureNoticeJob: "", dirty: false, datasetDirty: false, datasetFormDirty: false, activeView: "home", faceReferenceFilter: "all", faceReferencePage: 0, jobPage: 0, openPromptIndex: -1, openStageIndex: -1, promptPreview: null, depthGpuSnapshot: null };
 let loadedFaceResult = null;
 let controlSequence = 0;
 const $ = selector => document.querySelector(selector);
@@ -91,6 +91,16 @@ const HELP = {
   fp8_base: "Loads compatible base-model weights in FP8 to save VRAM. This does not change the saved LoRA precision.",
   minimax_h3_dit_model: "Required: select minimax_h3_fl2va_pruned_int8_convrot.safetensors. This is the supported ~21 GB Comfy FL2VA checkpoint; the full ~66 GB BF16 DiT is not needed.",
   minimax_h3_convrot_bwd_mode: "Choose bf16. It is the tested setting for a 24 GB GPU. The int8 choice is for advanced, unvalidated experiments.",
+  minimax_h3_text_encoder_blocks_to_swap: "Use 50 (recommended) to make caption caching fit on much smaller GPUs. It streams text-encoder layers from system RAM; 0 is fastest but keeps the full encoder in VRAM.",
+  minimax_h3_training_workflow: "Still images keeps the proven compact trainer. Video + audio enables upstream's official multimodal cache and trainer without replacing the still-image path.",
+  minimax_h3_multimodal_task: "T2VA learns text-to-video/audio. FL2VA learns with first and last frame conditioning. Ref2VA uses reference image, video, and audio records from JSONL.",
+  minimax_h3_video_vae: "Choose minimax_h3_video_vae_fp16.safetensors. Do not select the smaller INT8 ConvRot inference VAE; the official training loader requires the normal video VAE layout.",
+  minimax_h3_audio_vae: "Choose minimax_h3_audio_vae_fp32.safetensors. It is needed to build synchronized audio latents even when video-only learning is selected.",
+  minimax_h3_video_only: "Enable this when you want video motion/appearance training without teaching audio. Audio is still cached as a synchronized placeholder so cache shapes remain valid.",
+  minimax_h3_training_target: "Choose exactly what contributes to the training loss. Video + audio learns both. Video only ignores audio loss. Audio only is experimental: it learns only from real synchronized audio, but still requires a video clip and both VAEs because H3 processes video and audio together.",
+  minimax_h3_training_workflow: "Choose Still images for the proven compact ConvRot workflow, or Video + audio for native H3 clip training. This choice changes the required model files, dataset geometry, and available training targets.",
+  minimax_h3_audio_loss_weight: "1.0 gives video and available audio their normal joint objective. Lower values make audio learning gentler. Zero is equivalent to video-only supervision.",
+  minimax_h3_allow_experimental_duration: "The released duration is 5–15 seconds. Leave this off normally. Enable it only for deliberately short cache tests or clips longer than the supported range.",
   recache_latents: "Rebuild the cached image information before training. Enable this for the first run or after changing images, resolution, or VAE.",
   recache_text: "Rebuild the cached caption information before training. Enable this for the first run or after changing captions or the text encoder.",
   sample_every_n_epochs: "Generate scheduled samples after this many epochs. Fractions are allowed: 0.5 means twice per epoch; the GUI converts it to steps using the dataset estimate.",
@@ -102,6 +112,7 @@ const HELP = {
   minimax_h3_dynamic_sigma_every_n_steps: "1 runs Dynamic Sigma every step; 4 runs it on 25% of steps; 10 runs it on 10% of steps.",
   minimax_h3_guidance_distillation_scale: "Maximum protection strength. Use 4.0 with the recommended sigma schedule. The effective strength automatically becomes gentler near the clean end of denoising.",
   minimax_h3_guidance_distillation_schedule: "Sigma is the new recommended behavior: strong protection at noisy timesteps and gentle protection near the clean image. Constant is the older behavior and mainly exists for reproducing previous experiments.",
+  minimax_h3_guidance_distillation_sigma_min: "Recommended: 0.15. Below this noise level, Dynamic Sigma skips its extra model pass. Use 0 to reproduce the previous every-timestep behavior.",
   minimax_h3_training_assistant: "Frozen v1 helper published by Ostris. The default owner/repository/file value downloads automatically once and is then reused from the Hugging Face cache. You may also paste a local .safetensors path.",
   minimax_h3_base_preservation_loss_weight: "How strongly occasional base-model comparisons resist unwanted drift. Start at 0.05. Too much can make the LoRA learn the concept more weakly.",
   minimax_h3_base_preservation_every_n_steps: "10 means one extra no-gradient base comparison every ten optimizer steps, averaging roughly 10% of an extra model pass instead of one every step.",
@@ -128,7 +139,7 @@ const HELP = {
   krea2_keep_depth_helpers_on_gpu: "Keeps the frozen depth model and its helper tensors in GPU memory between steps. Enable only when you have plenty of free VRAM and want less CPU-to-GPU loading. Leave disabled for safer memory use; it does not improve LoRA quality.",
   krea2_depth_vae_device: "Select where Krea 2 performs the differentiable VAE decode used by depth anchoring. Training GPU is the established default. Secondary sends only the predicted latent to another visible CUDA GPU, decodes it there, and returns pixels and gradients automatically.\n\nKrea uses a lighter 2D image VAE than MiniMax, so an 8 GB helper GPU may be usable, but this is experimental and not guaranteed. Start with a short run and check the startup log to confirm the device mapping.",
 };
-const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","minimax_h3_training_preview_mode","minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_training_assistant","minimax_h3_base_preservation_enabled","minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
+const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","minimax_h3_training_preview_mode","minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_training_assistant","minimax_h3_base_preservation_enabled","minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","minimax_h3_guidance_distillation_sigma_min","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
 const LONG_HELP_COPY = {
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
   starting_point_mode: "New LoRA starts from the base model with a fresh adapter. Use this for a new subject, style, or concept.\n\nContinue from LoRA adds more training to existing adapter weights, but starts a fresh optimizer and schedule. Exact recovery restores a verified saved training state so the optimizer, scheduler, epoch, and step position continue together. Do not use exact recovery merely to extend a completed run.",
@@ -142,6 +153,7 @@ const LONG_HELP_COPY = {
   fp8_base: "FP8 base loading reduces VRAM used by compatible model weights. The LoRA is still trained and saved using the recipe's selected training precision.\n\nSupport depends on the model family, GPU, and weight format. If startup fails or output quality changes unexpectedly, disable FP8 first and verify a BF16 baseline.",
   minimax_h3_dit_model: "Select minimax_h3_fl2va_pruned_int8_convrot.safetensors from ComfyUI's models/diffusion_models folder. This experimental image-only trainer operates directly on that frozen ~21 GB FL2VA ConvRot INT8 base while training a BF16 LoRA. You do not need to download or reconstruct the ~66 GB full BF16 transformer.\n\nThe checkpoint contract is deliberately strict: Ref2VA, ordinary BF16, GGUF, and other INT8/quantized layouts are rejected instead of being guessed. Text-encoder and VAE files are used only during their separate cache phases.",
   minimax_h3_text_cache_dtype: "Controls only how the completed caption embeddings are stored. The Comfy-style Qwen3-VL tower still performs its encoding calculations in FP32.\n\nUse bfloat16 (recommended) for caches half the size and lower training-time disk/CPU traffic. Float32 is available for controlled fidelity comparisons. After changing this, rebuild only the Caption/Text Cache; the Image/Latent Cache does not need to be rebuilt.",
+  minimax_h3_text_encoder_blocks_to_swap: "This is the caption encoder's low-VRAM control, separate from the DiT training block swap. The encoder has 50 large language layers. With 50, their packed weights stay in normal system RAM and only the layers currently needed are streamed through a small GPU buffer. This can reduce text-caching VRAM dramatically, at the cost of a little extra time per caption.\n\nUse 50 (recommended) for 16 GB and smaller GPUs. Use 0 only when the whole compact encoder fits comfortably and maximum caching speed matters. It does not alter captions, training quality, or cached image latents.",
   minimax_h3_depth_vae_device: "Select where the frozen MiniMax video VAE performs differentiable depth decoding. Secondary uses another CUDA device while the DiT and Depth Anything remain on the training GPU.\n\nThis decoder needs far more than its ~5 GB weights during backward pass. A secondary GPU with at least 16 GB VRAM is recommended. An 8 GB helper GPU is not supported, even with reduced depth resolution. Confirm the logical device mapping in the training log before relying on a multi-GPU setup.",
   minimax_h3_keep_depth_vae_on_device: "Keep the MiniMax video VAE resident on its selected GPU between depth steps. This can reduce transfer overhead on a dedicated secondary GPU with ample VRAM.\n\nIt does not reduce the VAE's peak backward-pass memory and cannot make an 8 GB helper GPU usable. Disable it when VRAM is tight or the helper GPU is shared. This changes speed and idle VRAM use, not LoRA quality.",
   minimax_h3_depth_every_n_steps: "Run the structural depth correction every N optimizer steps. 1 applies depth every step and is strongest but slowest. 2 or 4 substantially reduces the average depth cost and is a practical experimental starting point. Larger values make depth influence the run less frequently.",
@@ -277,6 +289,9 @@ function fieldControl(field, {wide = false} = {}) {
         toast("Caption/Text Cache rebuilding was enabled once for Dynamic Sigma protection.");
     }
     if(field.key==="minimax_h3_quality_protection_preset"&&applyH3QualityPreset(input.value))return;
+    if(field.key==="minimax_h3_training_workflow"){
+      sync();renderGuided();renderAllSettings();return;
+    }
     if(field.key.startsWith("minimax_h3_")&&[
       "minimax_h3_training_assistant_enabled","minimax_h3_training_assistant",
       "minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps",
@@ -386,16 +401,28 @@ function renderGuided() {
   $("#mode-choices").innerHTML = state.schema.modes.map(mode => `<button class="choice-card ${mode === state.settings.training_mode ? "selected" : ""}" data-mode="${esc(mode)}"><i></i><span><strong>${esc(mode)}</strong></span></button>`).join("");
   $$("#mode-choices [data-mode]").forEach(button => button.addEventListener("click", () => selectMode(button.dataset.mode)));
   const mode = state.settings.training_mode;
+  const h3Multimodal=mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
+  const h3Explainer=$("#h3-workflow-explainer");h3Explainer.hidden=mode!=="MiniMax H3 (Experimental)";
+  if(mode==="MiniMax H3 (Experimental)")h3Explainer.innerHTML=h3Multimodal
+    ? `<div class="workflow-action"><div><strong>Native synchronized video/audio training</strong><small>T2VA uses text, FL2VA extracts first and last frames from each target clip automatically, and Ref2VA uses ordered JSONL references. Choose exactly what contributes to loss below.</small></div><button class="quiet" data-open-h3-builder>Open MiniMax dataset builder →</button></div>`
+    : `<div class="issue warning">Compact still-image training uses the proven pruned ConvRot workflow. Switch Training Media Type below when you want native video/audio datasets.</div>`;
+  h3Explainer.querySelector("[data-open-h3-builder]")?.addEventListener("click",()=>{go("datasets");ensureDatasetLoaded();setTimeout(()=>setDatasetTab("h3",{load:false}),0)});
   const modelKeys = mode === "Krea 2"
     ? ["krea2_dit_model","krea2_text_encoder","vae_model","krea2_turbo_dit","krea2_projector_diff"]
-    : mode === "MiniMax H3 (Experimental)" ? ["minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_tokenizer","minimax_h3_text_cache_dtype","minimax_h3_convrot_bwd_mode","vae_model"]
+    : mode === "MiniMax H3 (Experimental)"
+      ? (h3Multimodal
+        ? ["minimax_h3_training_workflow","minimax_h3_training_target","minimax_h3_multimodal_task","minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_text_encoder_blocks_to_swap","minimax_h3_text_encoder_attn_mode","minimax_h3_text_cache_dtype","minimax_h3_video_vae","minimax_h3_audio_vae","minimax_h3_audio_loss_weight","minimax_h3_allow_experimental_duration","minimax_h3_convrot_bwd_mode"]
+        : ["minimax_h3_training_workflow","minimax_h3_dit_model","minimax_h3_text_encoder","minimax_h3_text_encoder_blocks_to_swap","minimax_h3_tokenizer","minimax_h3_text_cache_dtype","minimax_h3_convrot_bwd_mode","vae_model"])
     : mode?.startsWith("Flux.2") ? ["flux2_dit_model","flux2_text_encoder","vae_model"]
     : ["is_i2v","dit_high_noise","dit_low_noise","t5_model","clip_model","vae_model"];
   appendFields($("#model-fields"), modelKeys);
   appendFields($("#data-fields"), ["dataset_config","project_root","output_dir","output_name"]);
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
-  appendFields($("#method-fields"), ["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps","timestep_sampling","discrete_flow_shift","krea2_generalization_preset"]);
+  const methodKeys=["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps"];
+  if(!h3Multimodal)methodKeys.push("timestep_sampling","discrete_flow_shift");
+  if(!h3Multimodal&&(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"))methodKeys.push("krea2_generalization_preset");
+  appendFields($("#method-fields"),methodKeys);
   renderTrainingStructure();
   if(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"){
     const presetField=$("#method-fields").querySelector('[data-key="krea2_generalization_preset"]');
@@ -408,23 +435,24 @@ function renderGuided() {
     }
   }
   const depthComputeKeys=["minimax_h3_depth_vae_device","minimax_h3_keep_depth_vae_on_device","minimax_h3_depth_every_n_steps"];
-  const h3GuidanceKeys=["minimax_h3_guidance_distillation_protection","minimax_h3_quality_protection_method","minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled","minimax_h3_training_assistant","minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","minimax_h3_base_preservation_enabled","minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference"];
+  const h3GuidanceKeys=["minimax_h3_guidance_distillation_protection","minimax_h3_quality_protection_method","minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled","minimax_h3_training_assistant","minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","minimax_h3_guidance_distillation_sigma_min","minimax_h3_base_preservation_enabled","minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference"];
   const kreaDepthComputeKeys=["krea2_depth_vae_device"];
   const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
   const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
-  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode);
+  $("#regularization-settings").hidden=h3Multimodal;
+  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode)&&!h3Multimodal;
   $("#dop-settings").hidden=!supportsDop;
   appendFields($("#dop-fields"),dopKeys);
   const h3Guidance=$("#minimax-guidance-protection");h3Guidance.hidden=mode!=="MiniMax H3 (Experimental)";h3Guidance.open=mode==="MiniMax H3 (Experimental)";
   const visibleH3Protection=["minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled"];
   if(state.settings.minimax_h3_training_assistant_enabled)visibleH3Protection.push("minimax_h3_training_assistant");
   visibleH3Protection.push("minimax_h3_dynamic_sigma_enabled");
-  if(state.settings.minimax_h3_dynamic_sigma_enabled)visibleH3Protection.push("minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule");
+  if(state.settings.minimax_h3_dynamic_sigma_enabled)visibleH3Protection.push("minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","minimax_h3_guidance_distillation_sigma_min");
   visibleH3Protection.push("minimax_h3_base_preservation_enabled");
   if(state.settings.minimax_h3_base_preservation_enabled)visibleH3Protection.push("minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference");
   appendFields($("#minimax-guidance-fields"),visibleH3Protection);
-  const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)";
+  const depthCompute=$("#minimax-depth-compute");depthCompute.hidden=mode!=="MiniMax H3 (Experimental)"||h3Multimodal;
   appendFields($("#minimax-depth-fields"),depthComputeKeys);
   if(mode==="MiniMax H3 (Experimental)")renderMinimaxDepthHardwareNotice();
   const kreaDepthCompute=$("#krea-depth-compute");kreaDepthCompute.hidden=mode!=="Krea 2";
@@ -443,7 +471,7 @@ function selectMode(mode) {
       blocks_to_swap:"30", mixed_precision:"bf16", attention_mechanism:"sdpa",
       gradient_checkpointing:true, timestep_sampling:"krea2_shift",
       compile:false, fp8_base:false, fp8_scaled:false,
-      minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"Qwen/Qwen3-VL-32B-Instruct",
+      minimax_h3_tokenizer:state.settings.minimax_h3_tokenizer||"MiniMaxAI/MiniMax-H3",
       minimax_h3_convrot_bwd_mode:"bf16",
       minimax_h3_guidance_distillation_protection:state.settings.minimax_h3_guidance_distillation_protection??true,
       minimax_h3_quality_protection_preset:state.settings.minimax_h3_quality_protection_preset||"Proven Quality",
@@ -452,6 +480,7 @@ function selectMode(mode) {
       minimax_h3_dynamic_sigma_every_n_steps:state.settings.minimax_h3_dynamic_sigma_every_n_steps||"1",
       minimax_h3_guidance_distillation_scale:state.settings.minimax_h3_guidance_distillation_scale||"4.0",
       minimax_h3_guidance_distillation_schedule:state.settings.minimax_h3_guidance_distillation_schedule||"sigma",
+      minimax_h3_guidance_distillation_sigma_min:state.settings.minimax_h3_guidance_distillation_sigma_min||"0.15",
       minimax_h3_base_preservation_enabled:state.settings.minimax_h3_base_preservation_enabled??false,
       minimax_h3_base_preservation_reference:state.settings.minimax_h3_base_preservation_reference||"Base + assistant",
       minimax_h3_depth_vae_device:state.settings.minimax_h3_depth_vae_device||"training",
@@ -492,6 +521,15 @@ function renderReview() {
     ["Precision", state.settings.mixed_precision || "Default"],
     ["Cache preparation", cachePreparation],
   ];
+  if(state.settings.training_mode==="MiniMax H3 (Experimental)"){
+    const native=String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
+    rows.splice(1,0,["MiniMax workflow",native?"Native synchronized video/audio":"Compact still images"]);
+    if(native){
+      rows.splice(2,0,["Conditioning",String(state.settings.minimax_h3_multimodal_task||"t2va").toUpperCase()]);
+      rows.splice(3,0,["Learning target",state.settings.minimax_h3_training_target||"Video + audio"]);
+    }
+    rows.push(["Quality protection",state.settings.minimax_h3_dynamic_sigma_enabled?`Dynamic Sigma · minimum ${state.settings.minimax_h3_guidance_distillation_sigma_min||"0.15"}`:"Dynamic Sigma off"]);
+  }
   $("#review-summary").innerHTML = rows.map(([label,value]) => `<div class="review-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
   $("#start-from-review").textContent=state.settings.use_staged_training?`Start ${(state.settings.staged_training_config||[]).filter(stage=>stage.enabled!==false).length}-stage training`:"Start training";
 }
@@ -510,6 +548,7 @@ function applyH3QualityPreset(preset){
     minimax_h3_dynamic_sigma_every_n_steps:values.dynamicEvery,
     minimax_h3_guidance_distillation_scale:"4.0",
     minimax_h3_guidance_distillation_schedule:"sigma",
+    minimax_h3_guidance_distillation_sigma_min:"0.15",
     minimax_h3_base_preservation_enabled:values.base,
     minimax_h3_base_preservation_loss_weight:"0.05",
     minimax_h3_base_preservation_every_n_steps:"10",
@@ -1277,6 +1316,9 @@ function renderDataset(payload, selected = state.selectedDataset) {
   $("#dataset-count").textContent=payload.datasets.length;
   $("#inspect-dataset").disabled=!payload.datasets.length;
   $("#add-image-dataset").disabled=false;$("#add-video-dataset").disabled=false;
+  const h3Native=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
+  $("#dataset-h3-tab").hidden=!h3Native;
+  if(!h3Native&&state.datasetTab==="h3")state.datasetTab="settings";
   $("#dataset-welcome").style.display=payload?"none":"";
   $("#dataset-content").hidden=!payload;
   $("#toml-preservation-state").textContent=payload.preservation_available?"Comments and structure preserved":"Formatting preservation unavailable";
@@ -1547,14 +1589,16 @@ function renderDatasetMedia(){
   if(!payload){renderDatasetMediaError(new Error("Select a source to browse its media."));return}
   const overview=payload.overview,captionBase=overview.primary_count??overview.media_count,coverage=captionBase?Math.round(overview.caption_count/captionBase*100):0;
   const missingCopy=payload.source.kind==="image"?"Missing captions are excluded from image training.":"Missing video captions will stop dataset loading.";
-  summary.innerHTML=`<div class="media-health-strip"><div><strong>${overview.trainer_usable_count}</strong><small>TRAINER-USABLE</small></div><div><strong>${coverage}%</strong><small>CAPTION COVERAGE</small></div><div><strong>${overview.effective_samples}</strong><small>AFTER ×${overview.repeats} REPEATS</small></div><div class="${overview.missing_caption_count?"warning":""}"><strong>${overview.missing_caption_count}</strong><small>MISSING CAPTIONS</small></div></div>${overview.missing_caption_count?`<p class="media-health-note">${esc(missingCopy)}</p>`:""}`;
+  const audioSummary=payload.source.kind==="video"?`<div class="media-audio-summary"><span class="${overview.real_audio_count?"ok":"warning"}">${overview.real_audio_count||0} with real audio</span><span>${overview.embedded_audio_count||0} embedded</span><span>${overview.sidecar_audio_count||0} sidecar/explicit</span><span class="${overview.missing_audio_count?"warning":""}">${overview.missing_audio_count||0} without audio</span>${overview.audio_error_count?`<span class="error">${overview.audio_error_count} audio errors</span>`:""}</div>`:"";
+  summary.innerHTML=`<div class="media-health-strip"><div><strong>${overview.trainer_usable_count}</strong><small>TRAINER-USABLE</small></div><div><strong>${coverage}%</strong><small>CAPTION COVERAGE</small></div><div><strong>${overview.effective_samples}</strong><small>AFTER ×${overview.repeats} REPEATS</small></div><div class="${overview.missing_caption_count?"warning":""}"><strong>${overview.missing_caption_count}</strong><small>MISSING CAPTIONS</small></div></div>${audioSummary}${overview.missing_caption_count?`<p class="media-health-note">${esc(missingCopy)}</p>`:""}`;
   grid.className=`dataset-media-grid${payload.items.length?"":" empty"}`;
   const stateCopy={eligible:"Ready",warning:"Review",excluded:"Excluded",error:"Error",paired_target:"Layer target"};
   grid.innerHTML=payload.items.length?payload.items.map((item,index)=>{
     const preview=!item.token?`<div class="media-placeholder"><span>${item.missing_media?"!":item.kind==="video"?"▶":"▧"}</span></div>`:item.preview_kind==="video"?`<video src="/api/dataset/media-file?token=${encodeURIComponent(item.token)}" preload="metadata" muted playsinline></video>`:`<img src="/api/dataset/media-file?token=${encodeURIComponent(item.token)}" loading="lazy" alt="">`;
     const dimensions=item.width&&item.height?`${item.width}×${item.height}`:item.kind==="video"?"Video":formatBytes(item.bytes);
     const caption=item.caption?.trim()||({missing:"No caption file",empty:"Caption is empty",unreadable:"Caption is not UTF-8",not_configured:"No caption extension"}[item.caption_state]||"No caption");
-    return `<button class="dataset-media-card ${esc(item.training_state)}" data-media-index="${index}"><div class="media-thumb">${preview}<span class="media-state">${esc(stateCopy[item.training_state]||item.training_state)}</span>${item.controls?.length?`<span class="control-badge">${item.controls.length} control${item.controls.length===1?"":"s"}</span>`:""}</div><div class="media-card-copy"><strong title="${esc(item.name)}">${esc(item.name)}</strong><small>${esc(dimensions)}${item.target_count?` · ${item.target_count} target${item.target_count===1?"":"s"}`:""}</small><p>${esc(caption)}</p></div></button>`;
+    const audioCopy={embedded:"Embedded audio",sidecar:"Sidecar audio",explicit:"Explicit audio",missing:"No real audio",error:"Audio error"}[item.audio_state];
+    return `<button class="dataset-media-card ${esc(item.training_state)}" data-media-index="${index}"><div class="media-thumb">${preview}<span class="media-state">${esc(stateCopy[item.training_state]||item.training_state)}</span>${item.controls?.length?`<span class="control-badge">${item.controls.length} control${item.controls.length===1?"":"s"}</span>`:""}</div><div class="media-card-copy"><strong title="${esc(item.name)}">${esc(item.name)}</strong><small>${esc(dimensions)}${item.duration_seconds?` · ${Number(item.duration_seconds).toFixed(1)}s`:""}${item.target_count?` · ${item.target_count} target${item.target_count===1?"":"s"}`:""}</small>${audioCopy?`<span class="audio-badge ${esc(item.audio_state)}">${esc(audioCopy)}</span>`:""}<p>${esc(caption)}</p></div></button>`;
   }).join(""):`<div class="media-empty"><span>⌕</span><h3>No matching media</h3><p>Try another filter or search phrase.</p></div>`;
   grid.querySelectorAll("[data-media-index]").forEach(button=>button.addEventListener("click",()=>openDatasetMedia(Number(button.dataset.mediaIndex))));
   pager.innerHTML=payload.pages>1?`<button class="quiet" data-media-page="${payload.page-1}" ${payload.page<=1?"disabled":""}>← Previous</button><span>Page ${payload.page} of ${payload.pages} · ${payload.total} matches</span><button class="quiet" data-media-page="${payload.page+1}" ${payload.page>=payload.pages?"disabled":""}>Next →</button>`:`<span>${payload.total} item${payload.total===1?"":"s"}</span>`;
@@ -1579,12 +1623,60 @@ function applyDatasetAudit(payload,{focus=true,announce=""}={}){
   const host=$("#dataset-inspection"),auditEffective=payload.datasets.reduce((sum,item)=>sum+Number(item.effective_samples||0),0);
   host.innerHTML=`<div class="audit-intro"><div><p class="kicker">TRAINER-PARITY AUDIT</p><h3>${payload.datasets.length} source${payload.datasets.length===1?"":"s"} checked</h3><p>Counts follow Musubi’s direct-child scan and supported extensions—not a generic recursive file search.</p></div><span>${auditEffective} effective samples</span></div>${payload.datasets.map(report=>{
     if(report.error)return `<article class="dataset-audit-row error"><div><strong>Source ${report.index+1}</strong><small>${esc(report.kind||"source")} · unavailable</small></div><p>${esc(report.error)}</p></article>`;
-    const captionBase=report.primary_count??report.media_count,coverage=captionBase?Math.round(report.caption_count/captionBase*100):0,attention=report.missing_caption_count+report.empty_caption_count+report.unreadable_caption_count+report.unreadable_count+report.ignored_nested_count,weight=auditEffective?Math.round(report.effective_samples/auditEffective*100):0;
-    return `<article class="dataset-audit-row ${attention?"warning":"ok"}" data-audit-source="${report.index}" role="button" tabindex="0"><div class="audit-source-name"><strong>Source ${report.index+1} · ${esc(datasetBasename(state.dataset.datasets[report.index]?.source))}</strong><small>${report.trainer_usable_count} usable of ${report.media_count} · ${coverage}% captioned · ×${report.repeats} = ${report.effective_samples} · ${weight}% of epoch</small></div><div class="audit-badges"><span>${report.aspects?.landscape||0} landscape</span><span>${report.aspects?.portrait||0} portrait</span><span>${report.aspects?.square||0} square</span></div>${attention?`<p>${report.missing_caption_count?`${report.missing_caption_count} missing captions. `:""}${report.empty_caption_count?`${report.empty_caption_count} empty captions. `:""}${report.unreadable_count?`${report.unreadable_count} unreadable media. `:""}${report.ignored_nested_count?`${report.ignored_nested_count} nested files are ignored by Musubi. `:""}</p>`:`<p>All discovered media is readable and captioned.</p>`}</article>`;
+    const h3Audio=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video")&&report.kind==="video";
+    const captionBase=report.primary_count??report.media_count,coverage=captionBase?Math.round(report.caption_count/captionBase*100):0,audioAttention=h3Audio?(report.missing_audio_count||0)+(report.audio_error_count||0):0,attention=report.missing_caption_count+report.empty_caption_count+report.unreadable_caption_count+report.unreadable_count+report.ignored_nested_count+audioAttention,weight=auditEffective?Math.round(report.effective_samples/auditEffective*100):0;
+    const audioBadges=h3Audio?`<span>${report.real_audio_count||0} real audio</span><span>${report.missing_audio_count||0} missing audio</span>`:"";
+    return `<article class="dataset-audit-row ${attention?"warning":"ok"}" data-audit-source="${report.index}" role="button" tabindex="0"><div class="audit-source-name"><strong>Source ${report.index+1} · ${esc(datasetBasename(state.dataset.datasets[report.index]?.source))}</strong><small>${report.trainer_usable_count} usable of ${report.media_count} · ${coverage}% captioned · ×${report.repeats} = ${report.effective_samples} · ${weight}% of epoch</small></div><div class="audit-badges"><span>${report.aspects?.landscape||0} landscape</span><span>${report.aspects?.portrait||0} portrait</span><span>${report.aspects?.square||0} square</span>${audioBadges}</div>${attention?`<p>${report.missing_caption_count?`${report.missing_caption_count} missing captions. `:""}${report.empty_caption_count?`${report.empty_caption_count} empty captions. `:""}${report.unreadable_count?`${report.unreadable_count} unreadable media. `:""}${report.ignored_nested_count?`${report.ignored_nested_count} nested files are ignored by Musubi. `:""}${h3Audio&&report.missing_audio_count?`${report.missing_audio_count} clips have no embedded or sidecar audio. `:""}${h3Audio&&report.audio_error_count?`${report.audio_error_count} audio probes failed. `:""}</p>`:`<p>All discovered media is readable and captioned${h3Audio?", with usable real audio":""}.</p>`}</article>`;
   }).join("")}`;
   host.querySelectorAll("[data-audit-source]").forEach(row=>{const open=()=>{state.selectedDataset=Number(row.dataset.auditSource);state.datasetTab="media";state.datasetMediaPage=1;renderDataset(state.dataset,state.selectedDataset);loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error))};row.addEventListener("click",open);row.addEventListener("keydown",event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();open()}})});
   if(focus){setDatasetTab("health",{load:false});host.tabIndex=-1;host.focus({preventScroll:true})}renderDatasetRail();renderDatasetOverview();if(announce)toast(announce);
 }
+
+const h3PairPayload=()=>({
+  image_directory:$("#h3-pair-images").value.trim(),audio_directory:$("#h3-pair-audio").value.trim(),
+  output_directory:$("#h3-pair-output").value.trim(),strategy:$("#h3-pair-strategy").value,
+  seed:Number($("#h3-pair-seed").value||42),width:Number($("#h3-pair-width").value||768),height:Number($("#h3-pair-height").value||768),
+  target_frames:Number($("#h3-pair-frames").value||124),
+  allow_experimental_duration:$("#h3-pair-experimental").checked
+});
+async function inspectH3Pairs(){
+  const button=$("#h3-inspect-pairs"),payload=h3PairPayload();
+  await withBusy(button,"Inspecting…",async()=>{
+    const result=await api("/api/h3/pairing/inspect",{method:"POST",body:JSON.stringify(payload)});
+    $("#h3-pair-report").innerHTML=`<div class="media-health-strip"><div><strong>${result.image_count}</strong><small>STILL IMAGES</small></div><div><strong>${result.usable_audio_count}</strong><small>USABLE AUDIO</small></div></div><div class="h3-pair-list">${result.plan.map(item=>`<div><span>${esc(item.audio_name)}</span><b>＋</b><span>${esc(item.image_name)}</span><i>→ ${esc(item.output_name)}</i></div>`).join("")}</div>`;
+  });
+}
+async function buildH3Pairs(){
+  const button=$("#h3-build-pairs"),payload=h3PairPayload();
+  if(!payload.output_directory)throw new Error("Choose a generated video folder first.");
+  await withBusy(button,"Building…",async()=>{
+    const result=await api("/api/h3/pairing/build",{method:"POST",body:JSON.stringify(payload)});
+    $("#h3-pair-report").innerHTML=`<div class="issue ok">Created ${result.count} synchronized ${result.target_frames}-frame training clip${result.count===1?"":"s"} and caption sidecars in ${esc(result.output_directory)}.</div>`;
+    const dataset=state.dataset?.datasets?.[state.selectedDataset];
+    if(dataset?.kind==="video"){
+      state.datasetTab="settings";renderDataset(state.dataset,state.selectedDataset);
+      const mode=$("#dataset-editor [data-key=\"_source_mode\"]"),path=$("#dataset-editor [data-key=\"_source_path\"]");
+      const frames=$("#dataset-editor [data-key=\"target_frames\"]");
+      if(mode&&path){mode.value="directory";path.value=result.output_directory;if(frames)frames.value=String(result.target_frames);markDatasetFormChanged()}
+    }
+    toast("Training clips created. Review and save the linked TOML source.");
+  });
+}
+function newH3RefRecord(){return {video_path:"",audio_path:"",caption:"",references:[]}}
+function renderH3RefRecords(){
+  const host=$("#h3-ref-records"),records=state.h3RefRecords;
+  host.innerHTML=records.length?records.map((record,index)=>`<article class="h3-ref-card" data-ref-record="${index}"><div class="structured-item-head"><div><strong>Target ${index+1}</strong><small>${esc(record.video_path||"Choose the target video")}</small></div><button class="danger" data-ref-action="remove-record">Remove</button></div><div class="guided-fields"><div class="field wide"><label>Target video</label><div class="path-control"><input data-ref-field="video_path" value="${esc(record.video_path||"")}"><button class="quiet" data-ref-browse-field="video_path">Browse</button></div></div><div class="field wide"><label>Target audio override (optional)</label><div class="path-control"><input data-ref-field="audio_path" value="${esc(record.audio_path||"")}" placeholder="Blank uses sidecar or embedded audio"><button class="quiet" data-ref-browse-field="audio_path">Browse</button></div></div><div class="field wide"><label>Caption</label><textarea data-ref-field="caption">${esc(record.caption||"")}</textarea></div></div><div class="structured-head"><h4>Ordered references</h4><button class="quiet" data-ref-action="add-reference">＋ Reference</button></div><div class="h3-reference-list">${(record.references||[]).map((reference,refIndex)=>`<div class="h3-reference-row" data-ref-index="${refIndex}"><span class="stage-node">${refIndex+1}</span><select data-reference-field="type"><option value="image" ${reference.type==="image"?"selected":""}>Image</option><option value="video" ${reference.type==="video"?"selected":""}>Video</option><option value="audio" ${reference.type==="audio"?"selected":""}>Audio</option></select><input data-reference-field="path" value="${esc(reference.path||"")}" placeholder="Reference file"><button class="quiet" data-reference-browse="path">Browse</button><input data-reference-field="audio_path" value="${esc(reference.audio_path??"")}" placeholder="Video audio override (optional)" ${reference.type!=="video"?"disabled":""}><button class="quiet" data-reference-browse="audio_path" ${reference.type!=="video"?"disabled":""}>Browse audio</button><button data-ref-action="up" ${refIndex===0?"disabled":""}>↑</button><button data-ref-action="down" ${refIndex===(record.references||[]).length-1?"disabled":""}>↓</button><button class="danger" data-ref-action="remove-reference">×</button></div>`).join("")||'<div class="dataset-health-empty"><p>Add at least one image or video reference. Ref2VA preserves this order.</p></div>'}</div></article>`).join(""):'<div class="dataset-health-empty"><p>Load a manifest or add the first target record.</p></div>';
+  host.querySelectorAll("[data-ref-record]").forEach(card=>{
+    const index=Number(card.dataset.refRecord),record=records[index];
+    card.querySelectorAll("[data-ref-field]").forEach(input=>input.addEventListener("input",()=>{record[input.dataset.refField]=input.value}));
+    card.querySelectorAll("[data-ref-browse-field]").forEach(button=>button.addEventListener("click",()=>withBusy(button,"Choosing…",async()=>{const key=button.dataset.refBrowseField,input=card.querySelector(`[data-ref-field="${key}"]`),result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"file",initial:input.value})});if(result.path){input.value=result.path;record[key]=result.path}}).catch(error=>toast(error.message,"error"))));
+    card.querySelector('[data-ref-action="remove-record"]').addEventListener("click",()=>{records.splice(index,1);renderH3RefRecords()});
+    card.querySelector('[data-ref-action="add-reference"]').addEventListener("click",()=>{(record.references||(record.references=[])).push({type:"image",path:""});renderH3RefRecords()});
+    card.querySelectorAll("[data-ref-index]").forEach(row=>{const refIndex=Number(row.dataset.refIndex),reference=record.references[refIndex];row.querySelectorAll("[data-reference-field]").forEach(input=>input.addEventListener("input",()=>{const key=input.dataset.referenceField;if(key==="audio_path"&&!input.value)delete reference.audio_path;else reference[key]=input.value;if(key==="type")renderH3RefRecords()}));row.querySelectorAll("[data-reference-browse]").forEach(button=>button.addEventListener("click",()=>withBusy(button,"Choosing…",async()=>{const key=button.dataset.referenceBrowse,input=row.querySelector(`[data-reference-field="${key}"]`),result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"file",initial:input.value})});if(result.path){input.value=result.path;reference[key]=result.path}}).catch(error=>toast(error.message,"error"))));row.querySelector('[data-ref-action="remove-reference"]').addEventListener("click",()=>{record.references.splice(refIndex,1);renderH3RefRecords()});row.querySelector('[data-ref-action="up"]').addEventListener("click",()=>{[record.references[refIndex-1],record.references[refIndex]]=[record.references[refIndex],record.references[refIndex-1]];renderH3RefRecords()});row.querySelector('[data-ref-action="down"]').addEventListener("click",()=>{[record.references[refIndex+1],record.references[refIndex]]=[record.references[refIndex],record.references[refIndex+1]];renderH3RefRecords()})});
+  });
+}
+async function loadH3Ref(){const result=await api("/api/h3/ref2va/load",{method:"POST",body:JSON.stringify({path:$("#h3-ref-path").value.trim()})});state.h3RefRecords=result.records||[];renderH3RefRecords();toast(`Loaded ${state.h3RefRecords.length} Ref2VA record(s).`)}
+async function saveH3Ref(){const button=$("#h3-save-ref"),path=$("#h3-ref-path").value.trim();await withBusy(button,"Validating…",async()=>{const result=await api("/api/h3/ref2va/save",{method:"POST",body:JSON.stringify({path,records:state.h3RefRecords})});state.settings.minimax_h3_multimodal_task="ref2va";sync();const dataset=state.dataset?.datasets?.[state.selectedDataset];if(dataset?.kind==="video"){state.datasetTab="settings";renderDataset(state.dataset,state.selectedDataset);const mode=$("#dataset-editor [data-key=\"_source_mode\"]"),source=$("#dataset-editor [data-key=\"_source_path\"]");if(mode&&source){mode.value="jsonl";source.value=result.path;markDatasetFormChanged()}}toast(`Saved and validated ${result.count} Ref2VA record(s).`)})}
 async function inspectDataset(){
   await flushDatasetDraft();
   const path=$("#dataset-path").value,text=$("#dataset-source").value,cached=readDatasetAuditCache(path,text);
@@ -1605,7 +1697,7 @@ function renderDatasetMediaInspector(){
   bindHoverVideoControls($("#dataset-inspector-media video"));
   $("#dataset-inspector-kicker").textContent=`${item.kind.toUpperCase()} · ${item.role==="target"?"LAYER TARGET":"TRAINING ITEM"}`;
   $("#dataset-inspector-name").textContent=item.name;
-  $("#dataset-inspector-meta").textContent=[item.width&&item.height?`${item.width}×${item.height}`:"",formatBytes(item.bytes),item.relative_path].filter(Boolean).join(" · ");
+  $("#dataset-inspector-meta").textContent=[item.width&&item.height?`${item.width}×${item.height}`:"",item.duration_seconds?`${Number(item.duration_seconds).toFixed(2)} seconds`:"",item.audio_state&&item.audio_state!=="not_applicable"?`audio: ${item.audio_state}`:"",formatBytes(item.bytes),item.relative_path].filter(Boolean).join(" · ");
   const copy={eligible:["Ready for training","ok"],warning:["Training item needs review","warning"],excluded:["Excluded from image training","warning"],error:["Dataset loading will fail","error"],paired_target:["Paired layered target","ok"]}[item.training_state]||[item.training_state,"warning"];
   $("#dataset-inspector-status").innerHTML=`<div class="issue ${copy[1]}">${esc(copy[0])}${item.shared_caption?" · This sidecar is shared by another same-stem media file.":""}</div>`;
   const editor=$("#dataset-caption-editor");editor.value=item.caption||"";editor.disabled=!item.token||item.caption_state==="not_configured";
@@ -2091,8 +2183,18 @@ $("#refresh-dataset-media").addEventListener("click",event=>withBusy(event.curre
 $("#dataset-caption-editor").addEventListener("input",()=>{state.datasetCaptionDirty=true;$("#dataset-caption-state").textContent="Unsaved caption";$("#save-dataset-caption").disabled=false});
 $("#dataset-media-prev").addEventListener("click",()=>moveDatasetMediaInspector(-1));$("#dataset-media-next").addEventListener("click",()=>moveDatasetMediaInspector(1));
 $("#save-dataset-caption").addEventListener("click",()=>saveDatasetCaption().catch(error=>toast(error.message,"error")));
+$$('[data-h3-browse]').forEach(button=>button.addEventListener("click",()=>withBusy(button,"Choosing…",async()=>{const input=document.getElementById(button.dataset.h3Browse),result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:button.dataset.kind||"directory",initial:input.value})});if(result.path)input.value=result.path}).catch(error=>toast(error.message,"error"))));
+$("#h3-inspect-pairs").addEventListener("click",()=>inspectH3Pairs().catch(error=>toast(error.message,"error")));
+$("#h3-build-pairs").addEventListener("click",()=>buildH3Pairs().catch(error=>toast(error.message,"error")));
+$("#h3-add-ref-record").addEventListener("click",()=>{state.h3RefRecords.push(newH3RefRecord());renderH3RefRecords()});
+$("#h3-load-ref").addEventListener("click",()=>loadH3Ref().catch(error=>toast(error.message,"error")));
+$("#h3-save-ref").addEventListener("click",()=>saveH3Ref().catch(error=>toast(error.message,"error")));
 $("#add-image-dataset").addEventListener("click",()=>{state.datasetTab="settings";mutateDataset("/api/dataset/add",{kind:"image"},state.dataset?.datasets?.length||0)});
-$("#add-video-dataset").addEventListener("click",()=>{state.datasetTab="settings";mutateDataset("/api/dataset/add",{kind:"video"},state.dataset?.datasets?.length||0)});
+$("#add-video-dataset").addEventListener("click",()=>{
+  state.datasetTab="settings";
+  const h3Native=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
+  mutateDataset("/api/dataset/add",{kind:"video",architecture:h3Native?"minimax_h3":""},state.dataset?.datasets?.length||0)
+});
 $("#save-dataset").addEventListener("click",()=>withBusy($("#save-dataset"),"Saving…",saveDatasetDocument).catch(error=>{if(error.status===409){$("#dataset-document-state").textContent="Disk changed";$("#dataset-document-state").classList.add("dirty")}toast(error.message,"error")}));
 $("#refresh-samples").addEventListener("click",()=>loadSamples().catch(e=>toast(e.message)));$("#manage-sample-sources").addEventListener("click",openSampleSources);$("#find-nearby-sources").addEventListener("click",()=>findAndAddNearbySources());$("#browse-sample-source").addEventListener("click",()=>withBusy($("#browse-sample-source"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"directory",initial:$("#sample-source-path").value})});if(result.path)$("#sample-source-path").value=result.path}).catch(e=>toast(e.message,"error")));$("#add-sample-source").addEventListener("click",()=>addSampleSourceFromDialog());$("#refresh-jobs").addEventListener("click",()=>loadJobs().catch(e=>toast(e.message)));
 $("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$("#job-status-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});

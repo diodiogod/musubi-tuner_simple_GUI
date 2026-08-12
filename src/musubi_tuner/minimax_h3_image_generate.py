@@ -66,6 +66,7 @@ def generate(args: argparse.Namespace) -> Path:
         quantize=True,
         tokenizer_dir=args.tokenizer,
         load_mode=args.text_encoder_load_mode,
+        blocks_to_swap=args.text_encoder_blocks_to_swap,
     )
     with torch.no_grad():
         hidden_states = encoder.encode(args.prompt)[0].detach().to("cpu")
@@ -154,6 +155,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text_encoder", required=True, help="compact Qwen3-VL NVFP4/AWQ text encoder")
     parser.add_argument("--tokenizer", default=DEFAULT_PROCESSOR_ID)
     parser.add_argument("--text_encoder_load_mode", choices=("auto", "direct", "nf4"), default="auto")
+    parser.add_argument("--text_encoder_blocks_to_swap", type=int, default=0)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--network_weights", action="append", default=[])

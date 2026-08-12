@@ -37,6 +37,7 @@ def test_training_command_enforces_direct_int8_safe_path(tmp_path):
     assert command[command.index("--depth_anchor_every_n_steps") + 1] == "1"
     assert "--h3_guidance_distillation_protection" in command
     assert command[command.index("--h3_dynamic_sigma_every_n_steps") + 1] == "1"
+    assert command[command.index("--h3_guidance_distillation_sigma_min") + 1] == "0.15"
 
 
 def test_hybrid_assistant_command_forwards_helper_and_sparse_preservation(tmp_path):
@@ -126,3 +127,59 @@ def test_training_command_exposes_h3_regularization_and_samples(tmp_path):
     assert command[command.index("--depth_anchor_weight") + 1] == "0.1"
     assert command[command.index("--dop_loss_weight") + 1] == "0.2"
     assert command[command.index("--sample_prompts") + 1].endswith("samples.txt")
+
+
+def test_official_multimodal_workflow_uses_isolated_joint_av_trainer(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_multimodal_task": "fl2va",
+        "minimax_h3_video_vae": str(tmp_path / "video_vae.safetensors"),
+        "minimax_h3_audio_vae": str(tmp_path / "audio_vae.safetensors"),
+        "minimax_h3_video_only": False,
+        "minimax_h3_audio_loss_weight": "0.5",
+        "minimax_h3_dynamic_sigma_enabled": True,
+    }
+    (command,) = minimax_h3.build_commands(settings)
+
+    assert command[6] == "src/musubi_tuner/minimax_h3_native_train_network.py"
+    assert command[command.index("--task") + 1] == "fl2va"
+    assert command[command.index("--audio_loss_weight") + 1] == "0.5"
+    assert command[command.index("--text_encoder_blocks_to_swap") + 1] == "50"
+    assert command[command.index("--timestep_sampling") + 1] == "uniform"
+    assert command[command.index("--weighting_scheme") + 1] == "none"
+    assert command[command.index("--discrete_flow_shift") + 1] == "1.0"
+    assert "--h3_guidance_loss_scale" in command
+    assert "--h3_guidance_loss_uncond_cache" in command
+    assert "--h3_training_assistant" not in command
+
+
+def test_official_multimodal_cache_sequence_includes_audio_and_guidance_probe(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_multimodal_task": "t2va",
+        "minimax_h3_video_vae": str(tmp_path / "video_vae.safetensors"),
+        "minimax_h3_audio_vae": str(tmp_path / "audio_vae.safetensors"),
+        "minimax_h3_dynamic_sigma_enabled": True,
+        "recache_latents": True,
+        "recache_text": True,
+    }
+    latent, text = minimax_h3.build_cache_commands(settings, "python")
+
+    assert latent[1].endswith("minimax_h3_native_cache_latents.py")
+    assert latent[latent.index("--task") + 1] == "t2va"
+    assert latent[latent.index("--audio_vae") + 1].endswith("audio_vae.safetensors")
+    assert text[1].endswith("minimax_h3_native_cache_text_encoder_outputs.py")
+    assert text[text.index("--text_encoder_blocks_to_swap") + 1] == "50"
+    assert "--uncond_output" in text
+
+
+def test_official_multimodal_audio_only_is_explicit(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_training_target": "Audio only (experimental)",
+    }
+
+    (command,) = minimax_h3.build_commands(settings)
+
+    assert "--audio_only" in command
+    assert "--video_only" not in command

@@ -95,6 +95,12 @@ def test_add_duplicate_and_remove_dataset_round_trip():
     assert [item["kind"] for item in removed["datasets"]] == ["image", "video"]
 
 
+def test_add_h3_video_dataset_uses_released_frame_geometry():
+    added = add_dataset(SAMPLE, "video", architecture="minimax_h3")
+
+    assert added["datasets"][-1]["target_frames"] == [124]
+
+
 def test_source_inspection_reports_media_captions_and_resolutions(tmp_path: Path):
     image_dir = tmp_path / "images"
     image_dir.mkdir()

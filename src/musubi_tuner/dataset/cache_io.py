@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 # the keys of the dict are `<content_type>_FxHxW_<dtype>` for latents
 # and `<content_type>_<dtype|mask>` for other tensors
 
+AUDIO_PRESENT_KEY = "audio_present_float32"
+
+
+def append_audio_present_entry(sd: dict[str, torch.Tensor], audio_present: bool):
+    sd[AUDIO_PRESENT_KEY] = torch.tensor(1.0 if audio_present else 0.0, dtype=torch.float32)
+
+
+def validate_audio_present_entry(sd: dict[str, torch.Tensor]) -> float:
+    tensor = sd.get(AUDIO_PRESENT_KEY)
+    if not isinstance(tensor, torch.Tensor) or tensor.shape != torch.Size([]) or tensor.dtype != torch.float32:
+        raise ValueError(f"Audio latent cache requires a scalar float32 {AUDIO_PRESENT_KEY} tensor")
+    value = tensor.item()
+    if value not in (0.0, 1.0):
+        raise ValueError(f"{AUDIO_PRESENT_KEY} must be exactly 0.0 or 1.0, got {value}")
+    return value
+
 
 def save_latent_cache(item_info: ItemInfo, latent: torch.Tensor):
     """HunyuanVideo architecture. HunyuanVideo doesn't support I2V and control latents"""
@@ -591,11 +607,97 @@ def save_text_encoder_output_cache_hidream_o1(
     save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_HIDREAM_O1_FULL, merge_existing=False)
 
 
+def _h3_dtype_matches(tensor: torch.Tensor, dtype_name: str) -> bool:
+    return dtype_to_str(tensor.dtype) == dtype_name
+
+
+def save_latent_cache_minimax_h3(
+    item_info: ItemInfo,
+    tensors: dict[str, torch.Tensor],
+    metadata: Optional[dict[str, str]] = None,
+):
+    import re
+
+    target_pattern = re.compile(r"^latents_(\d+)x(\d+)x(\d+)_(.+)$")
+    audio_pattern = re.compile(r"^latents_audio_32x2x(\d+)_(.+)$")
+    visual_pattern = re.compile(r"^latents_(?:first|last|ref_\d{3}_(?:image|video))_(\d+)x(\d+)x(\d+)_(.+)$")
+    audio_condition_pattern = re.compile(r"^latents_ref_\d{3}_audio_32x2x(\d+)_(.+)$")
+    target_count = audio_count = 0
+    normalized = {}
+    for key, tensor in tensors.items():
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"MiniMax-H3 cache value must be a tensor: {key}")
+        if key == AUDIO_PRESENT_KEY:
+            normalized[key] = tensor.detach().cpu().contiguous()
+            continue
+        match = target_pattern.fullmatch(key)
+        if match:
+            frames, height, width = map(int, match.group(1, 2, 3))
+            if tensor.shape != (24, frames, height, width) or not _h3_dtype_matches(tensor, match.group(4)):
+                raise ValueError(f"Invalid MiniMax-H3 target video latent: {key} {tuple(tensor.shape)}")
+            target_count += 1
+        elif (match := audio_pattern.fullmatch(key)):
+            frames = int(match.group(1))
+            if tensor.shape != (32, 2, frames) or not _h3_dtype_matches(tensor, match.group(2)):
+                raise ValueError(f"MiniMax-H3 audio latent [32,2,A] required, got {tuple(tensor.shape)}")
+            audio_count += 1
+        elif (match := visual_pattern.fullmatch(key)):
+            frames, height, width = map(int, match.group(1, 2, 3))
+            if tensor.shape != (24, frames, height, width) or not _h3_dtype_matches(tensor, match.group(4)):
+                raise ValueError(f"Invalid MiniMax-H3 visual condition latent: {key} {tuple(tensor.shape)}")
+        elif (match := audio_condition_pattern.fullmatch(key)):
+            frames = int(match.group(1))
+            if tensor.shape != (32, 2, frames) or not _h3_dtype_matches(tensor, match.group(2)):
+                raise ValueError(f"Invalid MiniMax-H3 audio condition latent: {key} {tuple(tensor.shape)}")
+        else:
+            raise ValueError(f"Unsupported MiniMax-H3 latent cache key: {key}")
+        normalized[key] = tensor.detach().cpu().contiguous()
+    if target_count != 1 or audio_count != 1:
+        raise ValueError(
+            f"MiniMax-H3 cache requires one target video and one target audio latent; found {target_count} and {audio_count}"
+        )
+    validate_audio_present_entry(normalized)
+    save_latent_cache_common(item_info, normalized, ARCHITECTURE_MINIMAX_H3_FULL, extra_metadata=metadata)
+
+
+def save_text_encoder_output_cache_minimax_h3(
+    item_info: ItemInfo,
+    tensors: dict[str, torch.Tensor],
+    metadata: Optional[dict[str, str]] = None,
+):
+    hidden_keys = [key for key in tensors if key.startswith("varlen_mmh3_hidden_states_")]
+    if len(hidden_keys) != 1:
+        raise ValueError(f"MiniMax-H3 text cache requires exactly one hidden-state tensor, found {len(hidden_keys)}")
+    hidden_key = hidden_keys[0]
+    tags_key = "varlen_mmh3_token_tags_int64"
+    if set(tensors) != {hidden_key, tags_key}:
+        raise ValueError(f"MiniMax-H3 text cache requires keys {hidden_key!r} and {tags_key!r}")
+    hidden_states, token_tags = tensors[hidden_key], tensors[tags_key]
+    if hidden_states.ndim != 2 or hidden_states.shape[1] != 5120:
+        raise ValueError(f"MiniMax-H3 hidden states must be [L,5120], got {tuple(hidden_states.shape)}")
+    if not _h3_dtype_matches(hidden_states, hidden_key.removeprefix("varlen_mmh3_hidden_states_")):
+        raise ValueError(f"MiniMax-H3 hidden-state key dtype does not match tensor: {hidden_key}")
+    if hidden_states.shape[0] > 32768:
+        raise ValueError(f"MiniMax-H3 text cache exceeds 32768 rows: {hidden_states.shape[0]}")
+    if token_tags.dtype != torch.int64 or token_tags.shape != (hidden_states.shape[0],):
+        raise ValueError("MiniMax-H3 token tags must be int64 [L]")
+    if not torch.all((token_tags == 0) | (token_tags == 1)):
+        raise ValueError("MiniMax-H3 token tags may contain only 0 and 1")
+    normalized = {
+        hidden_key: hidden_states.detach().cpu().contiguous(),
+        tags_key: token_tags.detach().cpu().contiguous(),
+    }
+    save_text_encoder_output_cache_common(
+        item_info, normalized, ARCHITECTURE_MINIMAX_H3_FULL, merge_existing=False, additional_metadata=metadata
+    )
+
+
 def save_text_encoder_output_cache_common(
     item_info: ItemInfo,
     sd: dict[str, torch.Tensor],
     arch_fullname: str,
     merge_existing: bool = True,
+    additional_metadata: Optional[dict[str, str]] = None,
 ):
     # merge_existing keeps keys written by previous passes (e.g. HunyuanVideo caches LLM and CLIP separately).
     # Single-pass architectures that write their full key set at once should pass merge_existing=False so the
@@ -611,6 +713,10 @@ def save_text_encoder_output_cache_common(
         "caption1": item_info.caption,
         "format_version": "1.0.1",
     }
+    if additional_metadata:
+        if not all(isinstance(key, str) and isinstance(value, str) for key, value in additional_metadata.items()):
+            raise ValueError("Safetensors metadata keys and values must be strings")
+        metadata.update(additional_metadata)
     if merge_existing and os.path.exists(item_info.text_encoder_output_cache_path):
         # load existing cache and update metadata
         new_key_bases = {remove_dtype_suffix(key) for key in sd}  # logical keys (dtype stripped) just written

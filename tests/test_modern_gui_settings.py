@@ -99,8 +99,25 @@ def test_h3_quality_layers_are_independent_and_section_opens_by_default():
     assert fields["minimax_h3_quality_protection_preset"]["options"][0] == "Proven Quality"
     assert fields["minimax_h3_training_assistant_enabled"]["type"] == "boolean"
     assert fields["minimax_h3_dynamic_sigma_enabled"]["type"] == "boolean"
+    assert fields["minimax_h3_guidance_distillation_sigma_min"]["type"] == "text"
+    assert settings.MINIMAX_H3_DEFAULTS["minimax_h3_guidance_distillation_sigma_min"] == "0.15"
     assert fields["minimax_h3_base_preservation_enabled"]["type"] == "boolean"
     assert '<details class="raw-settings" id="minimax-guidance-protection" open hidden>' in html
+
+
+def test_h3_multimodal_controls_are_typed_and_backward_compatible():
+    schema = settings.settings_schema(settings.MINIMAX_H3_DEFAULTS)
+    fields = {field["key"]: field for section in schema["sections"] for field in section["fields"]}
+
+    assert settings.MINIMAX_H3_DEFAULTS["minimax_h3_training_workflow"].startswith("Still images")
+    assert fields["minimax_h3_training_workflow"]["options"][1].startswith("Video + audio")
+    assert fields["minimax_h3_multimodal_task"]["options"] == ["t2va", "fl2va", "ref2va"]
+    assert fields["minimax_h3_video_only"]["type"] == "boolean"
+    assert fields["minimax_h3_training_target"]["options"] == [
+        "Video + audio", "Video only", "Audio only (experimental)"
+    ]
+    assert fields["minimax_h3_video_vae"]["type"] == "path"
+    assert fields["minimax_h3_audio_vae"]["type"] == "path"
 
 
 def test_normal_cache_controls_are_in_guided_dataset_step_not_stages_panel():
