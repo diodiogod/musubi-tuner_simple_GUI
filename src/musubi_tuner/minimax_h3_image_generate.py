@@ -136,7 +136,11 @@ def generate(args: argparse.Namespace) -> Path:
         disable_mmap=args.disable_mmap,
     ).eval().requires_grad_(False)
     with torch.no_grad():
-        pixels = decode_image_latent(vae, latent.to(device=device, dtype=torch.float16))[0, :, 0].cpu()
+        pixels = decode_image_latent(
+            vae,
+            latent.to(device=device, dtype=torch.float16),
+            single_frame=args.image_vae_mode == "single_frame",
+        )[0, :, 0].cpu()
     del vae, latent
     clean_memory_on_device(device)
 
@@ -152,6 +156,12 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a still image with compact MiniMax-H3 and optional LoRA")
     parser.add_argument("--dit", required=True, help="pruned ConvRot INT8 FL2VA transformer")
     parser.add_argument("--vae", required=True, help="MiniMax-H3 video VAE")
+    parser.add_argument(
+        "--image_vae_mode",
+        choices=("temporal_compat", "single_frame"),
+        default="temporal_compat",
+        help="Decode mode: temporal_compat duplicates T=1 for the official video VAE; single_frame passes T=1 directly for an image-specialized H3 VAE.",
+    )
     parser.add_argument("--text_encoder", required=True, help="compact Qwen3-VL NVFP4/AWQ text encoder")
     parser.add_argument("--tokenizer", default=DEFAULT_PROCESSOR_ID)
     parser.add_argument("--text_encoder_load_mode", choices=("auto", "direct", "nf4"), default="auto")

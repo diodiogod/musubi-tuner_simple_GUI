@@ -113,16 +113,24 @@ def sample_image_latent(
     return latent
 
 
-def decode_image_latent(vae, latent: torch.Tensor, *, checkpoint_decode: bool = False) -> torch.Tensor:
+def decode_image_latent(
+    vae,
+    latent: torch.Tensor,
+    *,
+    checkpoint_decode: bool = False,
+    single_frame: bool = False,
+) -> torch.Tensor:
     """Decode one H3 image latent to ``[B,3,1,H,W]`` in ``[0,1]``.
 
-    The released ViT decoder was trained on temporal chunks.  Decoding a lone
+    The released video decoder was trained on temporal chunks. Decoding a lone
     temporal token through its single-clip shortcut is visibly patchy, so the
-    latent is duplicated to a two-token video and only the first frame is kept.
+    default path duplicates it to a two-token video and keeps the first frame.
+    Image-specialized H3 VAEs trained for direct T=1 decoding set
+    ``single_frame=True`` and receive the original temporal token unchanged.
     """
     if latent.ndim != 5 or tuple(latent.shape[:3]) != (1, 24, 1):
         raise ValueError(f"MiniMax-H3 image latent must be [1,24,1,H,W], got {tuple(latent.shape)}")
-    decode_input = torch.cat((latent, latent), dim=2)
+    decode_input = latent if single_frame else torch.cat((latent, latent), dim=2)
 
     def decode(value: torch.Tensor) -> torch.Tensor:
         return vae.decode(value)[:, :, :1]
