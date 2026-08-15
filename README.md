@@ -99,11 +99,13 @@ DOP guide: [docs/dop.md](./docs/dop.md)
 - 24 GB-oriented safe defaults: rank 16, BF16 LoRA/backward, gradient checkpointing, and 30 H2D-only swapped blocks
 - Advanced speed tuning: 15 swapped blocks completed two epochs at roughly 19–20 GB on an RTX 4090 and produced a working likeness LoRA, but has less safety margin and is not the automatic default
 - FP32-policy latent caching, compact NVFP4/AWQ caption caching, scheduled training previews, and sequential standalone LoRA image inference
-- Independently combinable H3 quality layers: proven Dynamic Sigma with configurable cadence, Ostris's frozen alpha assistant, and an optional scheduled drift check, plus editable starting presets
+- H3 quality controls: proven Dynamic Sigma, Ostris's frozen assistant in both compact and native video training, native Teacher Matching, and an optional compact-only scheduled drift check
 - Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, disabled by default
 - Focused 24 GB GPU smokes completed for previews, DOP/weight noise, depth, and the H3 DRaFT graph with the real AntelopeV2 reward; useful long-run advanced recipes remain experimental
 - Two explicit, backward-compatible workflows: the proven compact still-image trainer, or upstream Musubi's official experimental video/joint-audio trainer
 - Official multimodal workflow supports T2VA, first/last-frame FL2VA, and reference-based Ref2VA datasets; choose joint video+audio, video-only, or experimental audio-only learning without pretending missing audio is real silence
+- Native T2VA optionally supports upstream teacher matching (endpoint or self-reference teacher), including preservation anchoring, decomposed magnitude/direction loss, and focus-band sampling; it remains disabled by default and requires a matching text-cache rebuild
+- Compact still-image training keeps the proven `krea2_shift` default and exposes `h3_shifted_uniform` as an experimental full-schedule alternative for community comparison
 - Modern and Classic dataset builders detect embedded/sidecar audio, create valid 24 fps H3 clips from still images plus audio, validate frame geometry, and guide Ref2VA JSONL construction (visual Ref2VA editing is in the Modern UI)
 - Low-VRAM text encoding can stream up to all 50 Qwen language layers from system RAM; the GUI recommends 50 for smaller GPUs
 - Real 1024x1024 rank-16 CUDA smoke completed at a 14,397 MiB physical peak; the longer two-epoch 15-block run used roughly 19–20 GB

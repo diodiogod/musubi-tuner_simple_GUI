@@ -181,8 +181,27 @@ def _build_multimodal_commands(settings):
     add_arg(cmd, "--network_alpha", settings.get("network_alpha_low"))
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
     add_arg(cmd, "--convrot_int8_bwd", settings.get("minimax_h3_convrot_bwd_mode") or "bf16")
+    teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
     protection = quality_protection_components(settings)
-    if protection["dynamic"]:
+    if teacher_matching:
+        add_arg(cmd, "--h3_teacher_matching", True)
+        add_arg(cmd, "--h3_teacher_conditions", settings.get("minimax_h3_teacher_conditions") or "ref")
+        add_arg(cmd, "--h3_teacher_condition_sigma_max", settings.get("minimax_h3_teacher_condition_sigma_max") or "0.75")
+        add_arg(cmd, "--h3_teacher_loss_dc_weight", settings.get("minimax_h3_teacher_loss_dc_weight") or "0.3")
+        add_arg(cmd, "--h3_teacher_loss_mag_weight", settings.get("minimax_h3_teacher_loss_mag_weight") or "1.0")
+        add_arg(cmd, "--h3_teacher_preservation_weight", settings.get("minimax_h3_teacher_preservation_weight") or "1.0")
+        add_arg(cmd, "--h3_timestep_focus_min", settings.get("minimax_h3_timestep_focus_min") or "0.4")
+        add_arg(cmd, "--h3_timestep_focus_max", settings.get("minimax_h3_timestep_focus_max") or "0.8")
+        add_arg(cmd, "--h3_timestep_focus_prob", settings.get("minimax_h3_timestep_focus_prob") or "0.5")
+    else:
+        add_arg(cmd, "--h3_training_assistant_enabled", protection["assistant"])
+        if protection["assistant"]:
+            add_arg(
+                cmd,
+                "--h3_training_assistant",
+                settings.get("minimax_h3_training_assistant") or DEFAULT_H3_TRAINING_ASSISTANT,
+            )
+    if not teacher_matching and protection["dynamic"]:
         add_arg(cmd, "--h3_guidance_loss_scale", settings.get("minimax_h3_guidance_distillation_scale") or "4.0")
         add_arg(cmd, "--h3_guidance_loss_sigma_min", settings.get("minimax_h3_guidance_distillation_sigma_min") or "0.15")
         add_arg(cmd, "--h3_guidance_loss_uncond_cache", _guidance_cache_path(settings), is_path=True)
@@ -246,13 +265,16 @@ def build_cache_commands(settings, python_executable):
 def _build_multimodal_cache_commands(settings, python_executable):
     commands = []
     task = settings.get("minimax_h3_multimodal_task") or "t2va"
+    teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
+    teacher_conditions = settings.get("minimax_h3_teacher_conditions") or "ref"
+    latent_task = "fl2va" if teacher_matching and teacher_conditions == "first,last" else task
     if settings.get("recache_latents"):
         commands.append([
             python_executable, "src/musubi_tuner/minimax_h3_native_cache_latents.py",
             "--dataset_config", settings["dataset_config"],
             "--video_vae", settings["minimax_h3_video_vae"],
             "--audio_vae", settings["minimax_h3_audio_vae"],
-            "--task", task,
+            "--task", latent_task,
         ])
         add_arg(commands[-1], "--allow_experimental_duration", settings.get("minimax_h3_allow_experimental_duration"))
     if settings.get("recache_text"):
@@ -265,7 +287,9 @@ def _build_multimodal_cache_commands(settings, python_executable):
         add_arg(command, "--text_encoder_blocks_to_swap", settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50")
         add_arg(command, "--text_encoder_attn_mode", settings.get("minimax_h3_text_encoder_attn_mode") or "sdpa")
         add_arg(command, "--text_cache_dtype", "bf16" if settings.get("minimax_h3_text_cache_dtype") == "bfloat16" else "float32")
-        if quality_protection_components(settings)["dynamic"]:
+        if teacher_matching:
+            add_arg(command, "--teacher_conditions", teacher_conditions)
+        elif quality_protection_components(settings)["dynamic"]:
             add_arg(command, "--uncond_output", _guidance_cache_path(settings), is_path=True)
         commands.append(command)
     return commands

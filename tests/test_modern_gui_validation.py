@@ -157,8 +157,10 @@ def test_minimax_h3_multimodal_preflight_uses_its_own_vaes_and_rejects_inference
     result = validate_training_settings(base | {"minimax_h3_video_vae": "minimax_h3_video_vae_int8_convrot.safetensors"})
     assert any("INT8 ConvRot VAE" in item["message"] for item in result["errors"])
 
-    result = validate_training_settings(base | {"dop_loss_weight": "0.2"})
-    assert any("Depth Anchor and DOP" in item["message"] for item in result["errors"])
+    # Compact-only DOP values may remain in a saved recipe when the user switches
+    # to native video. The UI shows them disabled and the native backend ignores them.
+    result = validate_training_settings(base | {"dop_enabled": True, "dop_loss_weight": "0.2"})
+    assert result["errors"] == []
 
 
 def test_minimax_video_prompt_is_allowed_and_scheduled_as_five_frames_by_default(tmp_path: Path):

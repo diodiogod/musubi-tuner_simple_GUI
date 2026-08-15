@@ -41,6 +41,8 @@ def base_sigma_from_model_timestep(args, timesteps: torch.Tensor, latents: torch
         shift = float(torch.exp(torch.tensor(mu)).item())
     elif sampling == "shift":
         shift = float(getattr(args, "discrete_flow_shift", 1.0))
+    elif sampling == "h3_shifted_uniform":
+        shift = 12.0
     if shift is not None:
         denominator = shift - (shift - 1.0) * sigma
         sigma = sigma / denominator.clamp_min(torch.finfo(sigma.dtype).eps)

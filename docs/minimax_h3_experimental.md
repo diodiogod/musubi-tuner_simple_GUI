@@ -33,6 +33,13 @@ Select **MiniMax H3 (Experimental)** in either GUI. The mode applies these defau
 - attention: `sdpa`
 - gradient checkpointing: enabled
 - timestep sampling: `krea2_shift`
+
+`krea2_shift` remains the proven default. The GUI also exposes `h3_shifted_uniform` for
+community testing after Fizgig reported that middle-concentrated H3 training could undertrain
+the high-noise pose/composition region used by ordinary 20-step inference. The experimental
+mode draws uniformly over the base schedule and applies H3's shift of 12. It does not require
+rebuilding latent or text caches, so users can compare it in a continuation or separate run;
+do not assume it is better without checking normal non-Turbo inference.
 - blocks to swap: `30`
 - block-swap direction: H2D-only (enforced by the backend)
 - ConvRot backward: `bf16`

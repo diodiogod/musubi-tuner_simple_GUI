@@ -565,6 +565,7 @@ class NetworkTrainer:
             or args.timestep_sampling == "flux_shift"
             or args.timestep_sampling == "qwen_shift"
             or args.timestep_sampling == "krea2_shift"
+            or args.timestep_sampling == "h3_shifted_uniform"
             or args.timestep_sampling == "ideogram4_shift"
             or args.timestep_sampling == "logsnr"
             or args.timestep_sampling == "qinglong_flux"
@@ -600,6 +601,14 @@ class NetworkTrainer:
                 elif args.timestep_sampling == "ideogram4_shift":
                     h, w = latents.shape[-2:]
                     t = compute_ideogram4_shift_timestep(rand(batch_size, org_timesteps), h, w)
+
+                elif args.timestep_sampling == "h3_shifted_uniform":
+                    # MiniMax H3's released shift-12 schedule applied to a uniform base draw.
+                    # Unlike the historical *shift modes below, this deliberately does not
+                    # concentrate samples around the middle of the noise range.
+                    base_t = rand(batch_size, org_timesteps)
+                    shift = 12.0
+                    t = (base_t * shift) / (1 + (shift - 1) * base_t)
 
                 elif args.timestep_sampling.endswith("shift"):
                     if args.timestep_sampling == "shift":

@@ -634,7 +634,8 @@ class MiniMaxH3VideoVAE(nn.Module):
         latent_std = self.latents_std.view(1, -1, 1, 1, 1).to(latents)
         latents = latents * latent_std + latent_mean
         if latents.shape[2] == 1:
-            pixels = self._decode_clip(latents)[:, :, -1:]
+            # Upstream PR #1054: the temporal decoder needs at least two tokens of context.
+            pixels = self._decode_video(latents.repeat(1, 1, 2, 1, 1))[:, :, :1]
         else:
             pixels = self._decode_video(latents)
         pixels = pixels.float() * self.pixel_std.to(pixels) + self.pixel_mean.to(pixels)
@@ -693,4 +694,3 @@ def load_video_vae(
     vae.to(device)
     vae.eval()
     return vae
-

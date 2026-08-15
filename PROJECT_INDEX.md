@@ -43,7 +43,7 @@
 - Wan 2.2: dual low/high-noise workflows, combined vs separate runs, timestep-boundary handling, I2V/T2V controls
 - Flux.2: single-model DiT workflow, Flux model-version selection, Qwen3/Mistral text encoder selection, and optional DOP class preservation for Klein 4B/9B
 - Krea 2: RAW DiT flow, optional Turbo DiT sampling path, projector patch handling, Krea-specific timestep defaults, experimental small-dataset generalization controls (adapter weight noise and automatic depth anchoring), and optional DOP class preservation
-- MiniMax H3: backward-compatible compact still-image LoRA over the pruned ConvRot INT8 transformer, plus an isolated official T2VA/FL2VA/Ref2VA video workflow under `minimax_h3_native/` with joint, video-only, and experimental audio-only objectives; both expose low-VRAM text-encoder streaming. `modern_gui/h3_datasets.py` owns guided still+audio clip construction, Ref2VA document editing, and H3 media audits.
+- MiniMax H3: backward-compatible compact still-image LoRA over the pruned ConvRot INT8 transformer, plus an isolated official T2VA/FL2VA/Ref2VA video workflow under `minimax_h3_native/` with joint, video-only, and experimental audio-only objectives; both expose low-VRAM text-encoder streaming. Native T2VA also carries upstream teacher matching, while compact training exposes an opt-in H3 shifted-uniform timestep experiment. `modern_gui/h3_datasets.py` owns guided still+audio clip construction, Ref2VA document editing, and H3 media audits.
 
 ## Documentation Files
 

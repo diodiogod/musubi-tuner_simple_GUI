@@ -40,6 +40,14 @@ def test_training_command_enforces_direct_int8_safe_path(tmp_path):
     assert command[command.index("--h3_guidance_distillation_sigma_min") + 1] == "0.15"
 
 
+def test_compact_workflow_exposes_shifted_uniform_without_changing_default(tmp_path):
+    default_command, = minimax_h3.build_commands(_settings(tmp_path))
+    experimental_command, = minimax_h3.build_commands(_settings(tmp_path) | {"timestep_sampling": "h3_shifted_uniform"})
+
+    assert default_command[default_command.index("--timestep_sampling") + 1] == "krea2_shift"
+    assert experimental_command[experimental_command.index("--timestep_sampling") + 1] == "h3_shifted_uniform"
+
+
 def test_hybrid_assistant_command_forwards_helper_and_sparse_preservation(tmp_path):
     settings = _settings(tmp_path) | {
         "minimax_h3_training_assistant_enabled": True,
@@ -171,6 +179,69 @@ def test_official_multimodal_cache_sequence_includes_audio_and_guidance_probe(tm
     assert text[1].endswith("minimax_h3_native_cache_text_encoder_outputs.py")
     assert text[text.index("--text_encoder_blocks_to_swap") + 1] == "50"
     assert "--uncond_output" in text
+
+
+def test_native_ref_teacher_builds_matching_train_and_text_cache_commands(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_multimodal_task": "t2va",
+        "minimax_h3_teacher_matching": True,
+        "minimax_h3_teacher_conditions": "ref",
+        "minimax_h3_video_vae": str(tmp_path / "video_vae.safetensors"),
+        "minimax_h3_audio_vae": str(tmp_path / "audio_vae.safetensors"),
+        "minimax_h3_teacher_loss_dc_weight": "0.3",
+        "minimax_h3_timestep_focus_prob": "0.5",
+        "recache_latents": True,
+        "recache_text": True,
+    }
+
+    (command,) = minimax_h3.build_commands(settings)
+    latent, text = minimax_h3.build_cache_commands(settings, "python")
+
+    assert "--h3_teacher_matching" in command
+    assert command[command.index("--h3_teacher_conditions") + 1] == "ref"
+    assert command[command.index("--h3_teacher_loss_dc_weight") + 1] == "0.3"
+    assert command[command.index("--h3_timestep_focus_prob") + 1] == "0.5"
+    assert "--h3_guidance_loss_scale" not in command
+    assert latent[latent.index("--task") + 1] == "t2va"
+    assert text[text.index("--teacher_conditions") + 1] == "ref"
+    assert "--uncond_output" not in text
+
+
+def test_native_endpoint_teacher_uses_fl2va_latents_for_t2va_student(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_multimodal_task": "t2va",
+        "minimax_h3_teacher_matching": True,
+        "minimax_h3_teacher_conditions": "first,last",
+        "minimax_h3_video_vae": str(tmp_path / "video_vae.safetensors"),
+        "minimax_h3_audio_vae": str(tmp_path / "audio_vae.safetensors"),
+        "recache_latents": True,
+        "recache_text": True,
+    }
+
+    latent, text = minimax_h3.build_cache_commands(settings, "python")
+
+    assert latent[latent.index("--task") + 1] == "fl2va"
+    assert text[text.index("--task") + 1] == "t2va"
+    assert text[text.index("--teacher_conditions") + 1] == "first,last"
+
+
+def test_native_video_can_attach_ostris_assistant_with_dynamic_sigma(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + audio · official multimodal",
+        "minimax_h3_teacher_matching": False,
+        "minimax_h3_training_assistant_enabled": True,
+        "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/helper.safetensors",
+        "minimax_h3_dynamic_sigma_enabled": True,
+    }
+
+    (command,) = minimax_h3.build_commands(settings)
+
+    assert "--h3_training_assistant_enabled" in command
+    assert command[command.index("--h3_training_assistant") + 1] == settings["minimax_h3_training_assistant"]
+    assert "--h3_guidance_loss_scale" in command
+    assert "--h3_teacher_matching" not in command
 
 
 def test_official_multimodal_audio_only_is_explicit(tmp_path):

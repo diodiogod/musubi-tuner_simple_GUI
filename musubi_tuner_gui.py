@@ -1336,10 +1336,10 @@ class MusubiTunerGUI:
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(
             flow_frame, "timestep_sampling", "Timestep Sampling:",
-            "For MiniMax H3, leave this on 'krea2_shift'—the GUI selects it automatically and it is the tested setting. "
-            "This option controls which noise levels the model practices during training. It does not mean that a Krea model is being used. "
+            "Compact MiniMax H3 defaults to 'krea2_shift' because it is the tested recipe. 'h3_shifted_uniform' is an "
+            "experimental full-schedule alternative based on Fizgig's finding that middle-concentrated sampling can weaken ordinary 20-step inference. "
             "For other model families, keep the value selected by their mode unless you are following a specific advanced recipe.",
-            kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift"]
+            kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift", "h3_shifted_uniform"]
         )
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
         self.hidden_frames['timestep_boundary'] = ttk.Frame(flow_frame)
@@ -1357,6 +1357,39 @@ class MusubiTunerGUI:
             wraplength=850,
             style="PageHelp.TLabel",
         ).pack(anchor="w", padx=10, pady=(8, 4))
+        teacher_title = ttk.Label(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            text="Native video workflow · upstream teacher matching",
+            style="PageTitle.TLabel",
+        )
+        teacher_title.pack(anchor="w", padx=10, pady=(6, 2))
+        ToolTip(teacher_title, "These controls apply only to native Video + audio training and require a T2VA task plus a rebuilt text cache.")
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'], "minimax_h3_teacher_matching",
+            "Use Upstream Teacher Matching",
+            "Another experimental way to protect the model's original quality while training. The unchanged base model "
+            "acts as a teacher and discourages the LoRA from degrading video quality. It works with normal still-image "
+            "datasets: no separate reference image is needed. Use Ref for still images. Training is slower because the "
+            "model runs one extra time per step, and the Caption/Text Cache must be rebuilt. It cannot run together with Dynamic Sigma.",
+            kind="checkbox", default_val=False, command=self._on_h3_teacher_matching_changed,
+        )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'], "minimax_h3_teacher_conditions", "Teacher Information:",
+            "Use Ref for normal still-image training. It uses the current training sample, so you do not need a separate "
+            "reference image. First,last is intended for video datasets and uses the real first and last frames. Ref is "
+            "the recommended starting option.",
+            kind="combobox", options=["ref", "first,last"], command=self._on_h3_teacher_matching_changed,
+        )
+        for key, label, tip in (
+            ("minimax_h3_teacher_condition_sigma_max", "Teacher Cutoff Sigma:", "Recommended 0.75. Above this base sigma the extra pass becomes pure frozen-base preservation."),
+            ("minimax_h3_teacher_loss_dc_weight", "Teacher Color/Style Weight:", "Upstream identity starting value: 0.3. Reduces copying of global color and tone on teaching steps."),
+            ("minimax_h3_teacher_loss_mag_weight", "Teacher Magnitude Weight:", "Keep 1.0 normally. Controls magnitude relative to direction in the decomposed teacher loss."),
+            ("minimax_h3_teacher_preservation_weight", "Teacher Base-Preservation Weight:", "Keep 1.0 initially. Raise only when high-noise composition or palette drift keeps growing."),
+            ("minimax_h3_timestep_focus_min", "Teacher Focus Band Start:", "Lower base-sigma edge of the teacher focus band; upstream starts at 0.4."),
+            ("minimax_h3_timestep_focus_max", "Teacher Focus Band End:", "Upper base-sigma edge of the teacher focus band; upstream starts at 0.8."),
+            ("minimax_h3_timestep_focus_prob", "Teacher Focus Probability:", "0.5 draws half the steps from the focus band while the rest still cover the full schedule."),
+        ):
+            self._add_widget(self.hidden_frames['minimax_h3_guidance_protection'], key, label, tip, validate_num=True)
         self._add_widget(
             self.hidden_frames['dop_options'],
             "dop_enabled",
@@ -6787,6 +6820,36 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     return
                 dit_name = os.path.basename(settings.get("minimax_h3_dit_model", "")).lower()
                 task = settings.get("minimax_h3_multimodal_task", "t2va")
+                if settings.get("minimax_h3_teacher_matching"):
+                    if task != "t2va":
+                        messagebox.showerror("MiniMax Teacher Matching", "Teacher matching trains a T2VA student. Select t2va.")
+                        return
+                    try:
+                        sigma_max = float(settings.get("minimax_h3_teacher_condition_sigma_max", 0.75))
+                        focus_min = float(settings.get("minimax_h3_timestep_focus_min", 0.4))
+                        focus_max = float(settings.get("minimax_h3_timestep_focus_max", 0.8))
+                        focus_prob = float(settings.get("minimax_h3_timestep_focus_prob", 0.5))
+                        if not (0 <= sigma_max <= 1 and 0 <= focus_min < focus_max <= 1 and 0 <= focus_prob <= 1):
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        messagebox.showerror("MiniMax Teacher Matching", "Teacher sigma and focus values must stay between 0 and 1, with Focus Start below Focus End.")
+                        return
+                    if not settings.get("recache_text"):
+                        if not messagebox.askyesno(
+                            "Rebuild Teacher Cache?",
+                            "Teacher matching requires new teacher presentation rows in the caption cache. Enable text re-caching now?",
+                        ):
+                            return
+                        self.entries["recache_text"].var.set(True)
+                        settings["recache_text"] = True
+                    if settings.get("minimax_h3_teacher_conditions") == "first,last" and not settings.get("recache_latents"):
+                        if not messagebox.askyesno(
+                            "Rebuild Endpoint Latents?",
+                            "First/last teacher matching requires FL2VA endpoint latents. Enable latent re-caching now?",
+                        ):
+                            return
+                        self.entries["recache_latents"].var.set(True)
+                        settings["recache_latents"] = True
                 if (task == "ref2va" and "ref2va" not in dit_name) or (task != "ref2va" and "ref2va" in dit_name):
                     messagebox.showerror(
                         "MiniMax Model Mismatch",
@@ -7062,8 +7125,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
         is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
+        selected_h3_multimodal = bool(
+            is_minimax_h3
+            and self.entries.get("minimax_h3_training_workflow")
+            and str(self.entries["minimax_h3_training_workflow"].get() or "").startswith("Video")
+        )
         supports_dop = is_krea2 or is_minimax_h3 or mode == "Flux.2 Klein"
-        dop_active = bool(supports_dop and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
+        dop_active = bool(supports_dop and not selected_h3_multimodal and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
         invalid_fields = []
         wants_samples = bool(
@@ -7287,6 +7355,24 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if is_minimax_h3:
                 self.hidden_frames['minimax_h3_guidance_protection'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['minimax_h3_depth_compute'].pack(fill="x", padx=10, pady=10)
+                compact_only_h3 = (
+                    "minimax_h3_quality_protection_preset", "minimax_h3_base_preservation_enabled",
+                    "minimax_h3_base_preservation_loss_weight", "minimax_h3_base_preservation_reference",
+                    "minimax_h3_base_preservation_every_n_steps",
+                )
+                for key in compact_only_h3:
+                    widget = self.entries[key]
+                    if h3_multimodal:
+                        widget.configure(state="disabled")
+                    elif key in ("minimax_h3_quality_protection_preset", "minimax_h3_base_preservation_reference"):
+                        widget.configure(state="readonly")
+                    else:
+                        widget.configure(state="normal")
+                teacher_active = h3_multimodal and self.entries["minimax_h3_teacher_matching"].var.get()
+                self.entries["minimax_h3_training_assistant_enabled"].configure(state="disabled" if teacher_active else "normal")
+                self.entries["minimax_h3_training_assistant"].configure(
+                    state="normal" if self.entries["minimax_h3_training_assistant_enabled"].var.get() and not teacher_active else "disabled"
+                )
             else:
                 self.hidden_frames['minimax_h3_guidance_protection'].pack_forget()
                 self.hidden_frames['minimax_h3_depth_compute'].pack_forget()
@@ -7301,6 +7387,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
             elif is_minimax_h3:
                 self.regularization_availability_var.set(
+                    "Native video/audio: DOP is shown but disabled because its loss and cache are not implemented in that trainer."
+                    if h3_multimodal else
                     "MiniMax H3 supports experimental DOP, adapter weight noise, and depth anchoring. Depth should start with at least 30 swapped blocks."
                 )
             elif mode == "Flux.2 Klein":
@@ -7313,8 +7401,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
             if supports_dop:
                 self.hidden_frames['dop_options'].pack(fill="x", padx=10, pady=10)
+                self.entries['dop_enabled'].configure(state="disabled" if h3_multimodal else "normal")
                 if self.entries['dop_enabled'].var.get():
                     self.hidden_frames['dop_details'].pack(fill="x")
+                    for key in ("dop_trigger_word", "dop_class_word", "dop_loss_weight"):
+                        self.entries[key].configure(state="disabled" if h3_multimodal else "normal")
                 else:
                     self.hidden_frames['dop_details'].pack_forget()
             else:
@@ -7357,6 +7448,19 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if dynamic:
                 self.entries["recache_text"].var.set(True)
         self._on_h3_quality_controls_changed(mark_custom=False)
+
+    def _on_h3_teacher_matching_changed(self):
+        try:
+            if self.entries["minimax_h3_teacher_matching"].var.get():
+                self.entries["minimax_h3_multimodal_task"].set("t2va")
+                self.entries["minimax_h3_dynamic_sigma_enabled"].var.set(False)
+                self.entries["minimax_h3_training_assistant_enabled"].var.set(False)
+                self.entries["recache_text"].var.set(True)
+                if self.entries["minimax_h3_teacher_conditions"].get() == "first,last":
+                    self.entries["recache_latents"].var.set(True)
+            self._on_h3_quality_controls_changed(mark_custom=False)
+        except (KeyError, AttributeError, tk.TclError):
+            pass
 
     def _on_h3_quality_controls_changed(self, mark_custom=True):
         """Enable each independent H3 quality layer without hiding the others."""
@@ -7660,6 +7764,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_guidance_distillation_scale": "4.0",
             "minimax_h3_guidance_distillation_schedule": "sigma",
             "minimax_h3_guidance_distillation_sigma_min": "0.15",
+            "minimax_h3_teacher_matching": False, "minimax_h3_teacher_conditions": "ref",
+            "minimax_h3_teacher_condition_sigma_max": "0.75", "minimax_h3_teacher_loss_dc_weight": "0.3",
+            "minimax_h3_teacher_loss_mag_weight": "1.0", "minimax_h3_teacher_preservation_weight": "1.0",
+            "minimax_h3_timestep_focus_min": "0.4", "minimax_h3_timestep_focus_max": "0.8",
+            "minimax_h3_timestep_focus_prob": "0.5",
             "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors",
             "minimax_h3_base_preservation_loss_weight": "0.05",
             "minimax_h3_base_preservation_every_n_steps": "10",
@@ -8986,13 +9095,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
                 return
             h3_protection = minimax_h3_backend.quality_protection_components(settings)
-            if multimodal and (h3_protection["assistant"] or h3_protection["base"]):
-                messagebox.showerror(
-                    "Validation Error",
-                    "The official video/audio trainer currently supports Dynamic Sigma protection, but not the Ostris "
-                    "Assistant or drift/base preservation. Disable those two controls for this workflow.",
-                )
-                return
+            if multimodal:
+                # Compact-only values remain saved and visible but are deliberately
+                # inactive in the native trainer.
+                h3_protection["assistant"] = False
+                h3_protection["base"] = False
             if h3_protection["dynamic"]:
                 try:
                     from musubi_tuner.training.h3_guidance_protection import validate_sigma_min

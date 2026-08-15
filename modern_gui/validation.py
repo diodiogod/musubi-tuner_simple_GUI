@@ -88,27 +88,52 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 )
             dit_name = Path(str(settings.get("minimax_h3_dit_model") or "")).name.lower()
             selected_task = str(settings.get("minimax_h3_multimodal_task") or "t2va")
+            teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
+            if teacher_matching:
+                if selected_task != "t2va":
+                    error("minimax_h3_multimodal_task", "Teacher matching trains a T2VA student. Select t2va.")
+                conditions = str(settings.get("minimax_h3_teacher_conditions") or "ref")
+                if conditions not in {"ref", "first,last"}:
+                    error("minimax_h3_teacher_conditions", "Teacher Information must be ref or first,last.")
+                numeric_ranges = {
+                    "minimax_h3_teacher_condition_sigma_max": (0.0, 1.0),
+                    "minimax_h3_teacher_loss_dc_weight": (0.0, 1.0),
+                    "minimax_h3_teacher_loss_mag_weight": (0.0, None),
+                    "minimax_h3_teacher_preservation_weight": (0.0, None),
+                    "minimax_h3_timestep_focus_min": (0.0, 1.0),
+                    "minimax_h3_timestep_focus_max": (0.0, 1.0),
+                    "minimax_h3_timestep_focus_prob": (0.0, 1.0),
+                }
+                parsed = {}
+                for key, (minimum, maximum) in numeric_ranges.items():
+                    try:
+                        parsed[key] = float(settings.get(key))
+                        if parsed[key] < minimum or (maximum is not None and parsed[key] > maximum):
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        error(key, f"Enter a number between {minimum} and {maximum if maximum is not None else '∞'}.")
+                if parsed.get("minimax_h3_timestep_focus_min", 0.0) >= parsed.get("minimax_h3_timestep_focus_max", 1.0):
+                    error("minimax_h3_timestep_focus_max", "Teacher Focus Band End must be greater than its Start.")
+                if not settings.get("recache_text"):
+                    warning("recache_text", "Teacher matching needs new teacher presentation rows. Rebuild the Caption/Text Cache before training.")
+                if settings.get("minimax_h3_training_assistant_enabled"):
+                    error("minimax_h3_training_assistant_enabled", "Teacher Matching and the Ostris Assistant are alternative native quality methods. Enable only one.")
+                if conditions == "first,last" and not settings.get("recache_latents"):
+                    warning("recache_latents", "First/last teacher matching needs FL2VA endpoint latents. Rebuild the Image/Latent Cache with this mode selected.")
             if selected_task == "ref2va" and "ref2va" not in dit_name:
                 error("minimax_h3_dit_model", "Ref2VA requires a MiniMax H3 Ref2VA transformer checkpoint.")
             elif selected_task != "ref2va" and "ref2va" in dit_name:
                 error("minimax_h3_dit_model", "T2VA and FL2VA require the FL2VA transformer family, not Ref2VA.")
-            if settings.get("minimax_h3_training_assistant_enabled") or settings.get("minimax_h3_base_preservation_enabled"):
-                error(
-                    "minimax_h3_training_workflow",
-                    "Ostris Assistant and drift/base preservation currently belong to the compact still-image trainer. "
-                    "Official video/audio training supports Dynamic Sigma guidance protection.",
-                )
             try:
                 incompatible_regularization = (
                     float(settings.get("krea2_depth_anchor_weight") or 0) > 0
-                    or float(settings.get("dop_loss_weight") or 0) > 0
                 )
             except (TypeError, ValueError):
                 incompatible_regularization = True
             if incompatible_regularization:
                 error(
                     "minimax_h3_training_workflow",
-                    "Depth Anchor and DOP are not yet compatible with the official joint video/audio trainer. Disable them for this workflow.",
+                    "Depth Anchor is not yet compatible with the official joint video/audio trainer. Disable it for this workflow.",
                 )
             if settings.get("minimax_h3_multimodal_task") == "ref2va":
                 warning(
@@ -174,7 +199,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         from backends.minimax_h3 import quality_protection_components
 
         h3_protection = quality_protection_components(settings)
-        if h3_protection["dynamic"]:
+        if h3_protection["dynamic"] and not (multimodal and settings.get("minimax_h3_teacher_matching")):
             try:
                 from musubi_tuner.training.h3_guidance_protection import validate as validate_h3_guidance_scale
 
@@ -264,7 +289,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
     if not settings.get("use_staged_training") and not _positive_integer(epochs) and not _positive_integer(steps):
         error("max_train_epochs", "Set a positive epoch or step limit.")
 
-    if settings.get("dop_enabled"):
+    h3_multimodal = mode == "MiniMax H3 (Experimental)" and str(settings.get("minimax_h3_training_workflow") or "").startswith("Video")
+    if settings.get("dop_enabled") and not h3_multimodal:
         if mode not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)"}:
             error("dop_enabled", "DOP is supported only for Krea 2, FLUX.2 Klein, and experimental MiniMax H3.")
         try:

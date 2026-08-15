@@ -90,7 +90,7 @@ not contain the GUI files.
 
 ### MiniMax H3 official video and joint-audio path
 
-- Upstream `/dev` capability snapshot: `e4f55d1` (2026-08-12), including PRs #1018, #1021, #1024, #1032, #1040, #1045, and #1046.
+- Upstream `/dev` capability snapshot: `4d3ddce` (2026-08-14), including PRs #1018, #1021, #1024, #1032, #1040, #1045, #1046, and #1047.
 - The upstream multimodal modules live under `src/musubi_tuner/minimax_h3_native/` and use entry points named `minimax_h3_native_*`. This namespace is intentional: never overwrite the compact downstream `minimax_h3/` image implementation with the upstream package wholesale.
 - `backends/minimax_h3.py` selects the native entry points only when `minimax_h3_training_workflow` starts with `Video`; missing/old projects remain on `Still images · compact ConvRot`.
 - Supported tasks are T2VA, FL2VA, and Ref2VA. Joint audio is optional at training time through `--video_only` / `--audio_loss_weight`, but the official cache contract always contains synchronized audio latents plus an `audio_present` fact so missing audio is not treated as supervised silence.
@@ -98,6 +98,9 @@ not contain the GUI files.
 - The official FP16 video VAE and FP32 audio VAE are required. Comfy's smaller INT8 ConvRot video VAE is an inference artifact and the GUI rejects it for native training.
 - Official Qwen/processor loading and its quantization helpers remain isolated from the compact standalone Comfy-style language tower. Both paths share the generalized frozen tensor-streaming offloader.
 - Contract tests imported from upstream are named `test_minimax_h3_native_*` plus `test_audio_dataset_seam.py`; run them together with all existing compact H3 tests.
+- PR #1047 teacher matching is adapted into the native namespace. It is T2VA-only, mutually exclusive with native guidance loss, and uses either FL2VA endpoint teacher rows or a Ref2VA self-reference presentation. Preserve the downstream audio-only loss weighting when updating its loss path.
+- The single-token VAE decode correction from draft PR #1054 is applied to both native and compact VAE modules; the compact sampler's existing duplication remains compatible.
+- `h3_shifted_uniform` is a downstream compact-training experiment: uniform base draws mapped through H3 shift 12. Do not silently replace the established `krea2_shift` default without comparative user evidence.
 
 ### Adapter weight noise
 
