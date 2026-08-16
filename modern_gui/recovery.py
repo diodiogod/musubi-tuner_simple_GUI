@@ -171,6 +171,13 @@ def effective_history_settings(job: dict[str, Any]) -> dict[str, Any]:
         settings["krea2_generalization_preset"] = "Off (Baseline)"
         settings["krea2_weight_noise_sigma"] = "0"
         settings["krea2_depth_anchor_weight"] = "0"
+    if is_minimax:
+        # Older snapshots predate the text-encoder streaming field. Keep the
+        # safe low-VRAM default visible when those recipes are reopened, while
+        # preserving an explicit 0 chosen by the user.
+        te_swap = settings.get("minimax_h3_text_encoder_blocks_to_swap")
+        if te_swap is None or (isinstance(te_swap, str) and not te_swap.strip()):
+            settings["minimax_h3_text_encoder_blocks_to_swap"] = "50"
     return settings
 
 
@@ -389,6 +396,10 @@ def prepare_continuation(job: dict[str, Any]) -> dict[str, Any]:
     settings = copy.deepcopy(snapshot)
     if final_settings:
         settings.update(copy.deepcopy(final_settings))
+    if str(settings.get("training_mode") or "").startswith("MiniMax H3"):
+        te_swap = settings.get("minimax_h3_text_encoder_blocks_to_swap")
+        if te_swap is None or (isinstance(te_swap, str) and not te_swap.strip()):
+            settings["minimax_h3_text_encoder_blocks_to_swap"] = "50"
     try:
         lora = resolve_continuation_lora(job, final_settings or settings)
         settings["resume_path"] = ""

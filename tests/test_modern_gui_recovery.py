@@ -30,6 +30,21 @@ def test_legacy_minimax_replay_does_not_activate_new_depth_features():
     assert settings["krea2_generalization_preset"] == "Off (Baseline)"
     assert settings["krea2_weight_noise_sigma"] == "0"
     assert settings["krea2_depth_anchor_weight"] == "0"
+    assert settings["minimax_h3_text_encoder_blocks_to_swap"] == "50"
+
+
+def test_minimax_replay_preserves_explicit_zero_text_encoder_streaming():
+    job = {
+        "mode": "MiniMax H3 (Experimental)",
+        "settings": {
+            "training_mode": "MiniMax H3 (Experimental)",
+            "minimax_h3_text_encoder_blocks_to_swap": 0,
+        },
+    }
+
+    settings = effective_history_settings(job)
+
+    assert settings["minimax_h3_text_encoder_blocks_to_swap"] == 0
 
 
 def test_current_minimax_replay_preserves_explicit_depth_features():

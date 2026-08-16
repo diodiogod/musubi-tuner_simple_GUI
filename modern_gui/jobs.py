@@ -28,7 +28,7 @@ from modern_gui.stages import (
     stage_label,
     validate_stage_plan,
 )
-from modern_gui.monitor import is_training_progress_line, parse_training_line
+from modern_gui.monitor import is_training_progress_line, parse_cache_progress, parse_training_line
 from modern_gui.face_stages import prepare_face_stage, validate_face_environment
 from modern_gui.stages import resolve_stage_lora
 from process_lifecycle import ProcessTreeScope
@@ -199,6 +199,7 @@ class JobSupervisor:
                     "total_steps": 0,
                     "epoch": 0,
                     "total_epochs": 0,
+                    "cache_progress": None,
                     "loss": None,
                     "depth_loss": None,
                     "dop_loss": None,
@@ -257,6 +258,7 @@ class JobSupervisor:
                 "kind": kind,
                 "metrics": {
                     "step": 0, "total_steps": 0, "epoch": 0, "total_epochs": 0,
+                    "cache_progress": None,
                     "loss": None, "depth_loss": None, "dop_loss": None,
                     "dop_weighted": None, "loss_history": [], "speed_history": [],
                 },
@@ -341,6 +343,12 @@ class JobSupervisor:
                 update = parse_training_line(message)
                 metrics = self._active.get("metrics", {})
                 metrics.update(update)
+                phase = str(self._active.get("phase") or "")
+                if "caching" in phase.casefold():
+                    cache_update = parse_cache_progress(message)
+                    if cache_update:
+                        cache_update["kind"] = "text" if "text" in phase.casefold() else "latent"
+                        metrics["cache_progress"] = cache_update
                 stop_after_epoch = self._active.get("stop_after_epoch")
                 if stop_after_epoch and "epoch" in update and int(update["epoch"]) > int(stop_after_epoch):
                     # An epoch header is printed after the prior epoch's
@@ -405,6 +413,8 @@ class JobSupervisor:
                     if self._active.get("kind") != "staged_training":
                         self._active["command_index"] = index + 1
                     phase = self._phase(command)
+                    if "caching" in phase.casefold():
+                        self._active.setdefault("metrics", {})["cache_progress"] = None
                     self._active["phase"] = f"{phase_prefix} · {phase}" if phase_prefix else phase
                     job_id = str(self._active["id"])
                 self._append_log("system", f"$ {subprocess.list2cmdline([str(value) for value in command])}")

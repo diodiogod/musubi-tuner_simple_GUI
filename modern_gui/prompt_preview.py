@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from modern_gui.sample_prompts import serialize_sample_prompt
+from backends._common import setting_or_default
 
 
 def serialize_prompt(prompt: dict[str, Any]) -> str:
@@ -211,7 +212,8 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
         "--text_encoder", str(settings["minimax_h3_text_encoder"]),
         "--tokenizer", str(settings.get("minimax_h3_tokenizer") or "MiniMaxAI/MiniMax-H3"),
         "--text_encoder_load_mode", str(settings.get("minimax_h3_text_encoder_load_mode") or "auto"),
-        "--text_encoder_blocks_to_swap", str(settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50"),
+        "--text_encoder_blocks_to_swap",
+        str(setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", "50")),
         "--prompt", str(prompt.get("prompt") or ""),
         "--output", str(output),
         "--width", str(width),

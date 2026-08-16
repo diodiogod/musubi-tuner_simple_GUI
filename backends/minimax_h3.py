@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from backends._common import setting_or_default
+
 DEFAULT_H3_TRAINING_ASSISTANT = (
     "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors"
 )
@@ -84,7 +86,7 @@ def build_commands(settings):
     add_arg(cmd, "--text_encoder", settings.get("minimax_h3_text_encoder"), is_path=True)
     add_arg(cmd, "--tokenizer", settings.get("minimax_h3_tokenizer"))
     add_arg(cmd, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
-    add_arg(cmd, "--text_encoder_blocks_to_swap", settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50")
+    add_arg(cmd, "--text_encoder_blocks_to_swap", setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", "50"))
     add_arg(
         cmd,
         "--minimax_h3_preview_decode_min_free_gb",
@@ -164,7 +166,7 @@ def _build_multimodal_commands(settings):
     add_arg(cmd, "--video_vae", settings.get("minimax_h3_video_vae"), is_path=True)
     add_arg(cmd, "--audio_vae", settings.get("minimax_h3_audio_vae"), is_path=True)
     add_arg(cmd, "--text_encoder", settings.get("minimax_h3_text_encoder"), is_path=True)
-    add_arg(cmd, "--text_encoder_blocks_to_swap", settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50")
+    add_arg(cmd, "--text_encoder_blocks_to_swap", setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", "50"))
     add_arg(cmd, "--text_encoder_attn_mode", settings.get("minimax_h3_text_encoder_attn_mode") or "sdpa")
     target = str(settings.get("minimax_h3_training_target") or "").lower()
     legacy_video_only = bool(settings.get("minimax_h3_video_only"))
@@ -254,7 +256,7 @@ def build_cache_commands(settings, python_executable):
         if tokenizer:
             command.extend(["--tokenizer", tokenizer])
         add_arg(command, "--text_encoder_load_mode", settings.get("minimax_h3_text_encoder_load_mode") or "auto")
-        add_arg(command, "--text_encoder_blocks_to_swap", settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50")
+        add_arg(command, "--text_encoder_blocks_to_swap", setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", "50"))
         add_arg(command, "--cache_dtype", settings.get("minimax_h3_text_cache_dtype") or "bfloat16")
         add_arg(command, "--cache_h3_unconditional", quality_protection_components(settings)["dynamic"])
         build_dop_cache_args(command, settings)
@@ -284,7 +286,7 @@ def _build_multimodal_cache_commands(settings, python_executable):
             "--text_encoder", settings["minimax_h3_text_encoder"],
             "--task", task,
         ]
-        add_arg(command, "--text_encoder_blocks_to_swap", settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50")
+        add_arg(command, "--text_encoder_blocks_to_swap", setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", "50"))
         add_arg(command, "--text_encoder_attn_mode", settings.get("minimax_h3_text_encoder_attn_mode") or "sdpa")
         add_arg(command, "--text_cache_dtype", "bf16" if settings.get("minimax_h3_text_cache_dtype") == "bfloat16" else "float32")
         if teacher_matching:

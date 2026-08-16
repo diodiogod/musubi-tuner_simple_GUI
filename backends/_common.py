@@ -18,6 +18,20 @@ def add_arg(cmd, key, value, is_path=False):
         cmd.extend([key, normalize_path(clean) if is_path else clean])
 
 
+def setting_or_default(settings, key, default):
+    """Return a setting while preserving explicit falsy numeric values.
+
+    GUI settings are normally strings, but replayed/continued jobs can contain
+    JSON numbers. ``settings.get(key) or default`` would incorrectly turn an
+    intentional numeric ``0`` into the default. Only missing or blank string
+    values should use the fallback.
+    """
+    value = settings.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    return value
+
+
 def add_checkpoint_cadence_arg(cmd, key, value):
     """Forward a checkpoint cadence only when it is enabled.
 

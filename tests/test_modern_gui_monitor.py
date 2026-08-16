@@ -1,4 +1,4 @@
-from modern_gui.monitor import is_training_progress_line, parse_training_line
+from modern_gui.monitor import is_training_progress_line, parse_cache_progress, parse_training_line
 from modern_gui.jobs import JobSupervisor
 
 
@@ -30,6 +30,25 @@ def test_parser_extracts_epochs_and_face_steps():
     assert parse_training_line("step=12/80 loss=0.22") == {"step": 12, "total_steps": 80}
 
 
+def test_parser_extracts_cache_progress_without_treating_it_as_training_steps():
+    parsed = parse_cache_progress(" 42%|####      | 42/100 [00:10<00:14, 4.20it/s]")
+
+    assert parsed["current"] == 42
+    assert parsed["total"] == 100
+    assert parsed["percent"] == 42
+    assert parsed["eta"] == "00:14"
+    assert parsed["rate"] == "4.20it/s"
+    assert parse_training_line(" 42%|####      | 42/100 [00:10<00:14, 4.20it/s]") == {}
+
+
+def test_parser_extracts_cache_count_when_tqdm_has_no_total():
+    parsed = parse_cache_progress("99it [00:18, 5.26it/s]")
+
+    assert parsed["current"] == 99
+    assert parsed["total"] == 0
+    assert parsed["rate"] == "5.26it/s"
+
+
 def test_only_main_training_bar_is_replaceable_progress():
     assert is_training_progress_line("steps:  25%|##5| 373/1510 [16:50<51:20, 2.71s/it]")
     assert not is_training_progress_line("Loading weights: 25%|##5| 3/12 [00:02<00:06]")
@@ -51,6 +70,24 @@ def test_job_monitor_replaces_transient_progress_and_same_step_loss():
         "steps:  2%|#| 2/100 [00:02<01:38, 1.0s/it, avr_loss=0.19]",
     ]
     assert supervisor._active["metrics"]["loss_history"] == [[1, 0.3], [2, 0.19]]
+
+
+def test_job_monitor_keeps_cache_progress_during_cache_phase():
+    supervisor = JobSupervisor()
+    supervisor._active = {"phase": "Caching text", "metrics": {"loss_history": []}}
+
+    supervisor._append_log("output", "42%|####| 42/100 [00:10<00:14, 4.20it/s]")
+
+    assert supervisor._active["metrics"]["cache_progress"] == {
+        "current": 42,
+        "total": 100,
+        "percent": 42,
+        "elapsed": "00:10",
+        "eta": "00:14",
+        "rate": "4.20it/s",
+        "text": "42%|####| 42/100 [00:10<00:14, 4.20it/s]",
+        "kind": "text",
+    }
 
 
 def test_job_monitor_discards_empty_carriage_return_output():

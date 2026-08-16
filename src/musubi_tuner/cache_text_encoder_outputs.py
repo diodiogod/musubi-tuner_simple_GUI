@@ -86,38 +86,41 @@ def process_text_encoder_batches(
     """
 
     num_workers = num_workers if num_workers is not None else max(1, os.cpu_count() - 1)
-    for i, dataset in enumerate(datasets):
-        logger.info(f"Encoding dataset [{i}]")
-        all_cache_files = all_cache_files_for_dataset[i]
-        all_cache_paths = all_cache_paths_for_dataset[i]
+    total_items = sum(len(dataset.datasource) for dataset in datasets)
+    with tqdm(total=total_items, unit="item") as progress:
+        for i, dataset in enumerate(datasets):
+            logger.info(f"Encoding dataset [{i}]")
+            all_cache_files = all_cache_files_for_dataset[i]
+            all_cache_paths = all_cache_paths_for_dataset[i]
 
-        if not requires_content:
-            batches = dataset.retrieve_text_encoder_output_cache_batches(num_workers)  # return captions only
-        else:
-            batches = dataset.retrieve_latent_cache_batches(num_workers)  # return captions and images/videos
+            if not requires_content:
+                batches = dataset.retrieve_text_encoder_output_cache_batches(num_workers)  # return captions only
+            else:
+                batches = dataset.retrieve_latent_cache_batches(num_workers)  # return captions and images/videos
 
-        for batch in tqdm(batches):
-            # update cache files (it's ok if we update it multiple times)
-            if requires_content:
-                batch = batch[1]  # batch is (key, items), so use items
-            all_cache_paths.update([os.path.normpath(item.text_encoder_output_cache_path) for item in batch])
+            for batch in batches:
+                # update cache files (it's ok if we update it multiple times)
+                if requires_content:
+                    batch = batch[1]  # batch is (key, items), so use items
+                progress.update(len(batch))
+                all_cache_paths.update([os.path.normpath(item.text_encoder_output_cache_path) for item in batch])
 
-            # skip existing cache files
-            if skip_existing:
-                filtered_batch = [
-                    item
-                    for item in batch
-                    if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
-                    or (cache_validator is not None and not cache_validator(item))
-                ]
-                # print(f"Filtered {len(batch) - len(filtered_batch)} existing cache files")
-                if len(filtered_batch) == 0:
-                    continue
-                batch = filtered_batch
+                # skip existing cache files
+                if skip_existing:
+                    filtered_batch = [
+                        item
+                        for item in batch
+                        if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
+                        or (cache_validator is not None and not cache_validator(item))
+                    ]
+                    # print(f"Filtered {len(batch) - len(filtered_batch)} existing cache files")
+                    if len(filtered_batch) == 0:
+                        continue
+                    batch = filtered_batch
 
-            bs = batch_size if batch_size is not None else len(batch)
-            for i in range(0, len(batch), bs):
-                encode(batch[i : i + bs])
+                bs = batch_size if batch_size is not None else len(batch)
+                for i in range(0, len(batch), bs):
+                    encode(batch[i : i + bs])
 
 
 def post_process_cache_files(

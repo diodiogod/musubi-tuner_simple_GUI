@@ -178,7 +178,10 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         if settings.get("recache_text") or cadence_enabled or has_face_stage:
             require("minimax_h3_text_encoder", "MiniMax H3 compact Qwen3-VL text encoder")
         try:
-            te_swap = int(str(settings.get("minimax_h3_text_encoder_blocks_to_swap") or "50"))
+            raw_te_swap = settings.get("minimax_h3_text_encoder_blocks_to_swap")
+            if raw_te_swap is None or (isinstance(raw_te_swap, str) and not raw_te_swap.strip()):
+                raw_te_swap = "50"
+            te_swap = int(str(raw_te_swap))
             if not 0 <= te_swap <= 50:
                 raise ValueError
         except (TypeError, ValueError):

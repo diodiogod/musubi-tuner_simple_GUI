@@ -98,6 +98,17 @@ def test_cache_commands_use_image_only_tools_and_compact_te(tmp_path):
     assert commands[1][commands[1].index("--cache_dtype") + 1] == "bfloat16"
 
 
+def test_explicit_zero_text_encoder_streaming_is_not_replaced_by_default(tmp_path):
+    settings = _settings(tmp_path) | {
+        "recache_text": True,
+        "minimax_h3_text_encoder_blocks_to_swap": 0,
+    }
+
+    command = minimax_h3.build_cache_commands(settings, "python")[0]
+
+    assert command[command.index("--text_encoder_blocks_to_swap") + 1] == "0"
+
+
 def test_combined_assistant_and_periodic_dynamic_sigma_still_cache_unconditional_text(tmp_path):
     settings = _settings(tmp_path) | {
         "recache_text": True,

@@ -1898,18 +1898,28 @@ function secondsPerStep(metrics,progress,elapsed,step){
   return step>0&&elapsed>0?elapsed/step:0;
 }
 function renderMetrics(m,job) {
-  const progress=parseProgressLine(latestProgressLine),step=Number(m.step||progress?.step||0),total=Number(m.total_steps||progress?.total||0),pct=total?Math.min(100,step/total*100):0;
+  const progress=parseProgressLine(latestProgressLine),phase=String(job?.phase||""),cachePhase=/caching/i.test(phase),cache=cachePhase&&m.cache_progress||{};
+  const step=Number(m.step||progress?.step||0),total=Number(m.total_steps||progress?.total||0);
   const configuredEpochs=Number(job?.settings?.max_train_epochs||0),totalEpochs=Number(m.total_epochs||configuredEpochs||0);let epoch=Number(m.epoch||0);if(!epoch&&totalEpochs&&total)epoch=Math.min(totalEpochs,Math.floor(step/Math.ceil(total/totalEpochs))+1);
-  $("#metric-percent").textContent=`${Math.round(pct)}%`; $("#progress-ring").style.background=`conic-gradient(var(--accent2) ${pct}%,var(--surface2) ${pct}%)`;
-  $("#progress-ring").setAttribute("aria-valuenow", String(Math.round(pct)));
-  $("#progress-ring").setAttribute("aria-valuetext", total ? `${step} of ${total} steps` : "Waiting to start");
-  $("#metric-progress").textContent=total?`${step.toLocaleString()} of ${total.toLocaleString()} steps`:"Waiting to start";
-  $("#metric-epoch").textContent=totalEpochs?"Epoch "+(epoch||1)+" of "+totalEpochs:"Configure a recipe, then launch it from Review.";
-  const started=job?.started_at?Date.parse(job.started_at):NaN,wallElapsed=Number.isFinite(started)?Math.max(0,(Date.now()-started)/1000):0,barElapsed=durationToSeconds(progress?.elapsed),elapsed=barElapsed||wallElapsed;
-  const pace=secondsPerStep(m,progress,elapsed,step);
-  if(total&&totalEpochs){const perEpoch=Math.max(1,Math.ceil(total/totalEpochs)),currentEpoch=Math.min(totalEpochs,Math.max(1,epoch||1)),boundary=Math.min(total,currentEpoch*perEpoch),remaining=Math.max(0,boundary-step),nextEpoch=Math.min(totalEpochs,currentEpoch+1),nextMetric=$("#metric-next-epoch");if(remaining){const nextEta=pace?formatDuration(remaining*pace):"time pending";nextMetric.textContent=`${remaining.toLocaleString()} steps · ~${nextEta}`;nextMetric.title=`About ${remaining.toLocaleString()} steps until epoch ${nextEpoch} (target step ${boundary.toLocaleString()}).`;}else{nextMetric.textContent=currentEpoch>=totalEpochs?"Final epoch · complete":"Epoch boundary reached";nextMetric.title="The next epoch boundary has been reached.";}}else{$("#metric-next-epoch").textContent="Waiting for epoch data";$("#metric-next-epoch").removeAttribute("title");}
-  $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&pace)?formatDuration(pace*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||(pace?pace.toFixed(2)+"s / step":"—");
-  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5); $("#metric-depth").textContent=m.depth_loss==null?"—":Number(m.depth_loss).toFixed(5); $("#metric-dop").textContent=m.dop_loss==null?"—":Number(m.dop_loss).toFixed(5); drawLoss(m.loss_history||[]);
+  const started=job?.started_at?Date.parse(job.started_at):NaN,wallElapsed=Number.isFinite(started)?Math.max(0,(Date.now()-started)/1000):0;
+  if(cachePhase){
+    const current=Number(cache.current||0),cacheTotal=Number(cache.total||0),cachePercent=Number(cache.percent||0),pct=cacheTotal?Math.min(100,current/cacheTotal*100):cachePercent;
+    const cacheLabel=cache.kind==="text"?"Caption/text cache":"Image/latent cache",cacheName=cache.kind==="text"?"Encoding captions":"Encoding image latents";
+    $("#metric-percent").textContent=cacheTotal?`${Math.round(pct)}%`:current?`${current}`:"—";$("#progress-ring").style.background=`conic-gradient(var(--accent2) ${pct}%,var(--surface2) ${pct}%)`;
+    $("#progress-ring").setAttribute("aria-valuenow",String(Math.round(pct)));$("#progress-ring").setAttribute("aria-valuetext",cacheTotal?`${current} of ${cacheTotal} cache items`:`${current||0} cache items processed`);
+    $("#metric-progress").textContent=cacheTotal?`${cacheName} · ${current.toLocaleString()} of ${cacheTotal.toLocaleString()}`:current?`${cacheName} · ${current.toLocaleString()} processed`:cacheName;
+    $("#metric-epoch").textContent="Preparation phase · training starts after the caches finish";$("#metric-next-label").textContent=cacheLabel.toUpperCase();$("#metric-next-epoch").textContent=cacheTotal?`${current.toLocaleString()} / ${cacheTotal.toLocaleString()} · ${Math.round(pct)}%`:current?`${current.toLocaleString()} processed`:"Waiting for cache progress";$("#metric-next-epoch").title="This cache is prepared before optimization begins.";
+    const elapsed=durationToSeconds(cache.elapsed)||wallElapsed;$("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=cache.eta||"—";$("#metric-rate").textContent=cache.rate||"—";
+  }else{
+    const pct=total?Math.min(100,step/total*100):0;
+    $("#metric-percent").textContent=`${Math.round(pct)}%`;$("#progress-ring").style.background=`conic-gradient(var(--accent2) ${pct}%,var(--surface2) ${pct}%)`;
+    $("#progress-ring").setAttribute("aria-valuenow",String(Math.round(pct)));$("#progress-ring").setAttribute("aria-valuetext",total?`${step} of ${total} steps`:"Waiting to start");
+    $("#metric-progress").textContent=total?`${step.toLocaleString()} of ${total.toLocaleString()} steps`:"Waiting to start";$("#metric-epoch").textContent=totalEpochs?"Epoch "+(epoch||1)+" of "+totalEpochs:"Configure a recipe, then launch it from Review.";$("#metric-next-label").textContent="NEXT EPOCH";
+    const barElapsed=durationToSeconds(progress?.elapsed),elapsed=barElapsed||wallElapsed,pace=secondsPerStep(m,progress,elapsed,step),nextMetric=$("#metric-next-epoch");
+    if(total&&totalEpochs){const perEpoch=Math.max(1,Math.ceil(total/totalEpochs)),currentEpoch=Math.min(totalEpochs,Math.max(1,epoch||1)),boundary=Math.min(total,currentEpoch*perEpoch),remaining=Math.max(0,boundary-step),nextEpoch=Math.min(totalEpochs,currentEpoch+1);if(remaining){const nextEta=pace?formatDuration(remaining*pace):"time pending";nextMetric.textContent=`${remaining.toLocaleString()} steps · ~${nextEta}`;nextMetric.title=`About ${remaining.toLocaleString()} steps until epoch ${nextEpoch} (target step ${boundary.toLocaleString()}).`;}else{nextMetric.textContent=currentEpoch>=totalEpochs?"Final epoch · complete":"Epoch boundary reached";nextMetric.title="The next epoch boundary has been reached.";}}else{nextMetric.textContent="Waiting for epoch data";nextMetric.removeAttribute("title");}
+    $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&pace)?formatDuration(pace*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||(pace?pace.toFixed(2)+"s / step":"—");
+  }
+  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5);$("#metric-depth").textContent=m.depth_loss==null?"—":Number(m.depth_loss).toFixed(5);$("#metric-dop").textContent=m.dop_loss==null?"—":Number(m.dop_loss).toFixed(5);drawLoss(m.loss_history||[]);
 }
 function drawLoss(history) {
   const canvas=$("#loss-canvas"),ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height; ctx.clearRect(0,0,w,h); ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--line"); ctx.lineWidth=1;

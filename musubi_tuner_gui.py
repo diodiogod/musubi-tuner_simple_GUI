@@ -2357,6 +2357,9 @@ class MusubiTunerGUI:
         save_dir.mkdir(parents=True, exist_ok=True)
         seed = int(str(prompt.get("seed") or settings.get("seed") or 42))
         output = save_dir / f"{output_name}_preview_{seed}_{int(time.time())}.png"
+        text_encoder_blocks = settings.get("minimax_h3_text_encoder_blocks_to_swap")
+        if text_encoder_blocks is None or (isinstance(text_encoder_blocks, str) and not text_encoder_blocks.strip()):
+            text_encoder_blocks = 50
         attention = {"sdpa": "torch", "flash_attn": "flash", "sage_attn": "sageattn"}.get(
             settings.get("attention_mechanism"), "torch"
         )
@@ -2367,7 +2370,7 @@ class MusubiTunerGUI:
             "--vae", settings["vae_model"],
             "--text_encoder", settings["minimax_h3_text_encoder"],
             "--tokenizer", settings.get("minimax_h3_tokenizer") or "MiniMaxAI/MiniMax-H3",
-            "--text_encoder_blocks_to_swap", str(settings.get("minimax_h3_text_encoder_blocks_to_swap") or 50),
+            "--text_encoder_blocks_to_swap", str(text_encoder_blocks),
             "--prompt", str(prompt.get("prompt") or ""),
             "--output", str(output),
             "--width", str(prompt.get("width") or 768),

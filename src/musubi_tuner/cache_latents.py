@@ -293,48 +293,51 @@ def encode_datasets(
 ):
     """Common function to encode datasets. This function is called from multiple architecture scripts."""
     num_workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
-    for i, dataset in enumerate(datasets):
-        logger.info(f"Encoding dataset [{i}]")
-        all_latent_cache_paths = []
-        for _, batch in tqdm(dataset.retrieve_latent_cache_batches(num_workers)):
-            batch: list[ItemInfo] = batch
-            if not supports_alpha:
-                # make sure content has 3 channels
-                for item in batch:
-                    if isinstance(item.content, np.ndarray):
-                        if item.content.shape[-1] == 4:
-                            item.content = item.content[..., :3]
+    total_items = sum(len(dataset.datasource) for dataset in datasets)
+    with tqdm(total=total_items, unit="item") as progress:
+        for i, dataset in enumerate(datasets):
+            logger.info(f"Encoding dataset [{i}]")
+            all_latent_cache_paths = []
+            for _, batch in dataset.retrieve_latent_cache_batches(num_workers):
+                progress.update(len(batch))
+                batch: list[ItemInfo] = batch
+                if not supports_alpha:
+                    # make sure content has 3 channels
+                    for item in batch:
+                        if isinstance(item.content, np.ndarray):
+                            if item.content.shape[-1] == 4:
+                                item.content = item.content[..., :3]
+                        else:
+                            item.content = [img[..., :3] if img.shape[-1] == 4 else img for img in item.content]
+
+                all_latent_cache_paths.extend([item.latent_cache_path for item in batch])
+
+                if args.skip_existing:
+                    if skip_existing_validator is None:
+                        filtered_batch = [item for item in batch if not os.path.exists(item.latent_cache_path)]
                     else:
-                        item.content = [img[..., :3] if img.shape[-1] == 4 else img for img in item.content]
+                        filtered_batch = [item for item in batch if not skip_existing_validator(item.latent_cache_path)]
+                    if len(filtered_batch) == 0:
+                        continue
+                    batch = filtered_batch
 
-            all_latent_cache_paths.extend([item.latent_cache_path for item in batch])
+                bs = args.batch_size if args.batch_size is not None else len(batch)
+                for i in range(0, len(batch), bs):
+                    encode(batch[i : i + bs])
 
-            if args.skip_existing:
-                if skip_existing_validator is None:
-                    filtered_batch = [item for item in batch if not os.path.exists(item.latent_cache_path)]
-                else:
-                    filtered_batch = [item for item in batch if not skip_existing_validator(item.latent_cache_path)]
-                if len(filtered_batch) == 0:
-                    continue
-                batch = filtered_batch
+            # normalize paths
+            all_latent_cache_paths = [os.path.normpath(p) for p in all_latent_cache_paths]
+            all_latent_cache_paths = set(all_latent_cache_paths)
 
-            bs = args.batch_size if args.batch_size is not None else len(batch)
-            for i in range(0, len(batch), bs):
-                encode(batch[i : i + bs])
-
-        # normalize paths
-        all_latent_cache_paths = [os.path.normpath(p) for p in all_latent_cache_paths]
-        all_latent_cache_paths = set(all_latent_cache_paths)
-
-        # remove old cache files not in the dataset
-        all_cache_files = dataset.get_all_latent_cache_files()
-        for cache_file in all_cache_files:
-            if os.path.normpath(cache_file) not in all_latent_cache_paths:
-                if args.keep_cache:
-                    logger.info(f"Keep cache file not in the dataset: {cache_file}")
-                else:
-                    os.remove(cache_file)
-                    logger.info(f"Removed old cache file: {cache_file}")
+            # remove old cache files not in the dataset
+            all_cache_files = dataset.get_all_latent_cache_files()
+            for cache_file in all_cache_files:
+                if os.path.normpath(cache_file) not in all_latent_cache_paths:
+                    if args.keep_cache:
+                        logger.info(f"Keep cache file not in the dataset: {cache_file}")
+                    else:
+                        os.remove(cache_file)
+                        logger.info(f"Removed old cache file: {cache_file}")
 
 
 def main():
