@@ -780,7 +780,9 @@ class MusubiTunerGUI:
             "How many of the text encoder's 50 large language layers stay in system RAM and are loaded onto the GPU only "
             "when needed. Use 50 (recommended) for the lowest VRAM and support for smaller GPUs. Use 0 only if you have "
             "plenty of VRAM and want the fastest caption caching. This affects caption-cache speed and memory only; it does "
-            "not change training quality or require rebuilding image latents.",
+            "not change training quality or require rebuilding image latents. If you add images, you must review and enable "
+            "the Image/Latent Cache option too; the current GUI may recompute existing entries because incremental caching "
+            "of only missing or outdated files is not implemented yet.",
             validate_num=True,
         )
         self._add_widget(
@@ -1220,14 +1222,14 @@ class MusubiTunerGUI:
             cache_frame,
             "recache_latents",
             "Re-cache Latents Before Training",
-            "Force latent cache generation before the run. Use this when the dataset, resolution, or VAE changed.",
+            "Force latent cache generation before the run. Use this when the dataset, resolution, or VAE changed. If you add images, enable this option; the current GUI may recompute existing entries too because incremental missing/outdated-only caching is not implemented yet.",
             kind="checkbox",
         )
         self._add_widget(
             cache_frame,
             "recache_text",
             "Re-cache Text Encoders Before Training",
-            "Force caption/text-encoder cache generation before the run. Use this when captions or the text encoder changed.",
+            "Force caption/text-encoder cache generation before the run. Use this when captions or the text encoder changed. If you add images or captions, enable this option; the current GUI may recompute existing entries too because incremental missing/outdated-only caching is not implemented yet.",
             kind="checkbox",
         )
         ttk.Label(
