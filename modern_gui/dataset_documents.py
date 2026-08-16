@@ -86,6 +86,18 @@ def plain_document(document: Any) -> dict[str, Any]:
     return toml.loads(dump_document(document))
 
 
+def _drop_empty_cache_directories(document: Any) -> None:
+    """Remove blank cache keys so Musubi can apply its source-directory fallback."""
+
+    datasets = document.get("datasets") if isinstance(document, dict) else None
+    if not isinstance(datasets, list):
+        return
+    for dataset in datasets:
+        if isinstance(dataset, dict) and "cache_directory" in dataset:
+            if not str(dataset.get("cache_directory") or "").strip():
+                dataset.pop("cache_directory", None)
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
@@ -305,6 +317,7 @@ def save_document(path: str, text: str, expected_revision: str | None = None) ->
             "The TOML changed on disk after it was loaded. Reload it or copy your draft before saving."
         )
     parsed = parse_document(text)
+    _drop_empty_cache_directories(parsed)
     normalized = dump_document(parsed)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     temporary = resolved.with_suffix(resolved.suffix + ".tmp")
@@ -393,7 +406,13 @@ def update_general(text: str, changes: dict[str, Any], source_path: str = "") ->
     return summarize_document(dump_document(document), source_path)
 
 
-def add_dataset(text: str, kind: str, source_path: str = "", architecture: str = "") -> dict[str, Any]:
+def add_dataset(
+    text: str,
+    kind: str,
+    source_path: str = "",
+    architecture: str = "",
+    folder_path: str = "",
+) -> dict[str, Any]:
     if kind not in {"image", "video"}:
         raise ValueError("Dataset kind must be image or video.")
     document = parse_document(text) if text.strip() else parse_document("")
@@ -402,16 +421,53 @@ def add_dataset(text: str, kind: str, source_path: str = "", architecture: str =
             document["datasets"] = tomlkit.aot()
         else:
             document["datasets"] = []
+    _drop_empty_cache_directories(document)
     dataset = tomlkit.table() if tomlkit is not None else {}
-    dataset[f"{kind}_directory"] = ""
-    dataset["cache_directory"] = ""
-    dataset["resolution"] = [1024, 1024]
-    dataset["num_repeats"] = 1
-    dataset["enable_bucket"] = True
+    # Keep the source path separate from the TOML document path.  The former
+    # comes from the native Explorer drop window; the latter is used for disk
+    # revision tracking and must remain the path of the dataset TOML itself.
+    dataset[f"{kind}_directory"] = str(folder_path or "")
+    # Omit cache_directory when no dedicated cache is requested.  Musubi uses
+    # the image/video source directory as its fallback; writing an explicit
+    # empty string would bypass that fallback and resolve caches incorrectly.
+    # Let fields already declared in [general] flow into the new source.  If
+    # the document has no such declaration, preserve the editor's historical
+    # defaults so a newly added source is still immediately usable.
+    general = document.get("general", {})
+    if not isinstance(general, dict):
+        general = {}
+    for key, fallback in (
+        ("resolution", [1024, 1024]),
+        ("num_repeats", 1),
+        ("enable_bucket", True),
+    ):
+        if key not in general:
+            dataset[key] = fallback
     if kind == "video":
         dataset["target_frames"] = [124] if architecture == "minimax_h3" else [1, 25]
     document["datasets"].append(dataset)
     return summarize_document(dump_document(document), source_path)
+
+
+def add_datasets(
+    text: str,
+    kind: str,
+    folder_paths: list[str],
+    source_path: str = "",
+    architecture: str = "",
+) -> dict[str, Any]:
+    """Add several dropped folders while returning one final document summary."""
+
+    paths = list(dict.fromkeys(str(path) for path in folder_paths if str(path or "").strip()))
+    if not paths:
+        return add_dataset(text, kind, source_path, architecture)
+    current_text = text
+    summary: dict[str, Any] | None = None
+    for folder_path in paths:
+        summary = add_dataset(current_text, kind, source_path, architecture, folder_path)
+        current_text = summary["text"]
+    assert summary is not None
+    return summary
 
 
 def remove_dataset(text: str, index: int, source_path: str = "") -> dict[str, Any]:

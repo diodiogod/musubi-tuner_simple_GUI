@@ -1606,6 +1606,18 @@ async function mutateDataset(endpoint,extra,selected=state.selectedDataset,{mess
     if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
   }catch(error){renderIssues([{level:"error",message:error.message}]);toast(error.message,"error")}
 }
+async function addDatasetFromExplorer(kind,button){
+  const selected=state.dataset?.datasets?.length||0;
+  state.datasetTab="settings";
+  await withBusy(button,"Waiting…",async()=>{
+    const title=kind==="video"?"Drop a video dataset folder":"Drop an image dataset folder";
+    const result=await api("/api/path/drop",{method:"POST",body:JSON.stringify({title,kind})});
+    const paths=Array.isArray(result.paths)?result.paths:(result.path?[result.path]:[]);
+    if(!paths.length){toast("No folder was selected. The TOML was left unchanged.");return}
+    const h3Native=kind==="video"&&state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
+    await mutateDataset("/api/dataset/add",{kind,source_paths:paths,architecture:h3Native?"minimax_h3":""},selected,{message:`${paths.length} ${kind} folder${paths.length===1?"":"s"} added. Review the inherited settings, then save the TOML.`});
+  });
+}
 async function moveDatasetSource(direction){
   const index=state.selectedDataset,destination=index+direction;if(index<0||destination<0||destination>=state.dataset.datasets.length)return;
   await mutateDataset("/api/dataset/move",{index,destination},destination,{message:`Source moved to position ${destination+1}.`});
@@ -2240,12 +2252,8 @@ $("#h3-build-pairs").addEventListener("click",()=>buildH3Pairs().catch(error=>to
 $("#h3-add-ref-record").addEventListener("click",()=>{state.h3RefRecords.push(newH3RefRecord());renderH3RefRecords()});
 $("#h3-load-ref").addEventListener("click",()=>loadH3Ref().catch(error=>toast(error.message,"error")));
 $("#h3-save-ref").addEventListener("click",()=>saveH3Ref().catch(error=>toast(error.message,"error")));
-$("#add-image-dataset").addEventListener("click",()=>{state.datasetTab="settings";mutateDataset("/api/dataset/add",{kind:"image"},state.dataset?.datasets?.length||0)});
-$("#add-video-dataset").addEventListener("click",()=>{
-  state.datasetTab="settings";
-  const h3Native=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
-  mutateDataset("/api/dataset/add",{kind:"video",architecture:h3Native?"minimax_h3":""},state.dataset?.datasets?.length||0)
-});
+$("#add-image-dataset").addEventListener("click",event=>addDatasetFromExplorer("image",event.currentTarget).catch(error=>toast(error.message,"error")));
+$("#add-video-dataset").addEventListener("click",event=>addDatasetFromExplorer("video",event.currentTarget).catch(error=>toast(error.message,"error")));
 $("#save-dataset").addEventListener("click",()=>withBusy($("#save-dataset"),"Saving…",saveDatasetDocument).catch(error=>{if(error.status===409){$("#dataset-document-state").textContent="Disk changed";$("#dataset-document-state").classList.add("dirty")}toast(error.message,"error")}));
 $("#refresh-samples").addEventListener("click",()=>loadSamples().catch(e=>toast(e.message)));$("#manage-sample-sources").addEventListener("click",openSampleSources);$("#find-nearby-sources").addEventListener("click",()=>findAndAddNearbySources());$("#browse-sample-source").addEventListener("click",()=>withBusy($("#browse-sample-source"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"directory",initial:$("#sample-source-path").value})});if(result.path)$("#sample-source-path").value=result.path}).catch(e=>toast(e.message,"error")));$("#add-sample-source").addEventListener("click",()=>addSampleSourceFromDialog());$("#refresh-jobs").addEventListener("click",()=>loadJobs().catch(e=>toast(e.message)));
 $("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$("#job-status-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});

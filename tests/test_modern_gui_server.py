@@ -46,6 +46,38 @@ def test_server_hosts_app_and_core_read_only_apis():
     assert "Musubi Studio" in html
 
 
+def test_server_native_folder_drop_and_dataset_add(monkeypatch, tmp_path):
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    monkeypatch.setattr("modern_gui.path_drop.choose_directories", lambda title: [str(image_dir)])
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MusubiWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    source = """[general]
+resolution = [768, 768]
+caption_extension = ".txt"
+
+[[datasets]]
+image_directory = "existing"
+"""
+    try:
+        dropped = request_json(root + "/api/path/drop", {"title": "Drop images"})
+        added = request_json(
+            root + "/api/dataset/add",
+            {"text": source, "path": "dataset.toml", "kind": "image", "source_path": dropped["path"]},
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert dropped["path"] == str(image_dir)
+    assert dropped["paths"] == [str(image_dir)]
+    assert added["datasets"][-1]["source"] == str(image_dir)
+    assert added["datasets"][-1]["resolution"] == [768, 768]
+    assert added["datasets"][-1]["value_origins"]["resolution"] == "general"
+
+
 def test_server_lists_serves_and_updates_dataset_media(tmp_path):
     image_dir = tmp_path / "images"
     image_dir.mkdir()

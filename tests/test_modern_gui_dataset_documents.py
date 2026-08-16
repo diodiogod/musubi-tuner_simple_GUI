@@ -5,6 +5,7 @@ from PIL import Image
 
 from modern_gui.dataset_documents import (
     add_dataset,
+    add_datasets,
     duplicate_dataset,
     load_document,
     inspect_dataset_sources,
@@ -65,6 +66,20 @@ def test_invalid_toml_does_not_replace_existing_file(tmp_path: Path):
     assert destination.read_text(encoding="utf-8") == SAMPLE
 
 
+def test_save_removes_empty_cache_directory_to_preserve_musubi_fallback(tmp_path: Path):
+    destination = tmp_path / "dataset.toml"
+    source = """[[datasets]]
+image_directory = "images"
+cache_directory = ""
+resolution = 512
+"""
+
+    saved = save_document(str(destination), source)
+
+    assert "cache_directory" not in saved["datasets"][0]["raw_values"]
+    assert "cache_directory" not in destination.read_text(encoding="utf-8")
+
+
 def test_missing_source_and_resolution_are_reported():
     summary = summarize_document("[[datasets]]\nnum_repeats = 1\n")
 
@@ -99,6 +114,52 @@ def test_add_h3_video_dataset_uses_released_frame_geometry():
     added = add_dataset(SAMPLE, "video", architecture="minimax_h3")
 
     assert added["datasets"][-1]["target_frames"] == [124]
+
+
+def test_add_dataset_uses_dropped_source_and_inherits_document_defaults():
+    source = """[general]
+resolution = [768, 1024]
+num_repeats = 3
+enable_bucket = false
+caption_extension = ".txt"
+
+[[datasets]]
+image_directory = "existing"
+"""
+
+    added = add_dataset(
+        source,
+        "image",
+        source_path="dataset.toml",
+        folder_path=r"J:\\training\\images",
+    )
+    dataset = added["datasets"][-1]
+
+    assert dataset["source"] == r"J:\\training\\images"
+    assert dataset["resolution"] == [768, 1024]
+    assert dataset["repeats"] == 3
+    assert dataset["enable_bucket"] is False
+    assert dataset["value_origins"]["resolution"] == "general"
+    assert dataset["value_origins"]["num_repeats"] == "general"
+    assert dataset["value_origins"]["enable_bucket"] == "general"
+    assert dataset["value_origins"]["caption_extension"] == "general"
+    assert dataset["cache_directory"] == ""
+    assert "cache_directory" not in dataset["raw_values"]
+
+
+def test_add_datasets_adds_all_dropped_folders():
+    added = add_datasets(
+        SAMPLE,
+        "image",
+        [r"J:\\training\\one", r"J:\\training\\two", r"J:\\training\\one"],
+        source_path="dataset.toml",
+    )
+
+    assert [item["source"] for item in added["datasets"][-2:]] == [
+        r"J:\\training\\one",
+        r"J:\\training\\two",
+    ]
+    assert all("cache_directory" not in item["raw_values"] for item in added["datasets"][-2:])
 
 
 def test_source_inspection_reports_media_captions_and_resolutions(tmp_path: Path):

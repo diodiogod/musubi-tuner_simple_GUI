@@ -21,6 +21,7 @@ from modern_gui.commands import build_command_plan
 from modern_gui.dataset_documents import (
     DocumentConflictError,
     add_dataset,
+    add_datasets,
     duplicate_dataset,
     inspect_dataset_sources,
     load_document,
@@ -94,6 +95,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/prompt-library/delete",
         "/api/prompts/preview",
         "/api/path/select",
+        "/api/path/drop",
         "/api/estimate-lora",
         "/api/workspace/apply",
         "/api/face/evaluate",
@@ -394,14 +396,16 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     )
                 )
             if self.path == "/api/dataset/add":
-                return self._json(
-                    add_dataset(
-                        body.get("text", ""),
-                        body.get("kind", "image"),
-                        body.get("path", ""),
-                        body.get("architecture", ""),
-                    )
-                )
+                common = {
+                    "text": body.get("text", ""),
+                    "kind": body.get("kind", "image"),
+                    "source_path": body.get("path", ""),
+                    "architecture": body.get("architecture", ""),
+                }
+                source_paths = body.get("source_paths")
+                if isinstance(source_paths, list):
+                    return self._json(add_datasets(folder_paths=source_paths, **common))
+                return self._json(add_dataset(folder_path=body.get("source_path", ""), **common))
             if self.path == "/api/dataset/remove":
                 return self._json(
                     remove_dataset(body.get("text", ""), int(body.get("index", -1)), body.get("path", ""))
@@ -658,6 +662,11 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 finally:
                     root.destroy()
                 return self._json({"path": selected or ""})
+            if self.path == "/api/path/drop":
+                from modern_gui.path_drop import choose_directories
+
+                selected = choose_directories(body.get("title") or "Drop dataset folders")
+                return self._json({"paths": selected, "path": selected[0] if selected else ""})
             if self.path == "/api/estimate-lora":
                 from musubi_tuner_gui import MusubiTunerGUI
 
