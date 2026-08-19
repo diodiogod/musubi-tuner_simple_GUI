@@ -28,7 +28,9 @@ from modern_gui.dataset_documents import (
     move_dataset,
     remove_dataset,
     save_document,
+    split_dataset_subfolders,
     summarize_document,
+    toggle_dataset_disabled,
     update_dataset,
     update_general,
 )
@@ -80,6 +82,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
     {
         "/api/settings",
         "/api/dataset/save",
+        "/api/dataset/toggle-disabled",
         "/api/dataset/media",
         "/api/dataset/open-source",
         "/api/dataset/caption",
@@ -406,6 +409,23 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 if isinstance(source_paths, list):
                     return self._json(add_datasets(folder_paths=source_paths, **common))
                 return self._json(add_dataset(folder_path=body.get("source_path", ""), **common))
+            if self.path == "/api/dataset/split-subfolders":
+                return self._json(
+                    split_dataset_subfolders(
+                        body.get("text", ""),
+                        int(body.get("index", -1)),
+                        body.get("path", ""),
+                    )
+                )
+            if self.path == "/api/dataset/toggle-disabled":
+                return self._json(
+                    toggle_dataset_disabled(
+                        body.get("text", ""),
+                        int(body.get("index", -1)),
+                        bool(body.get("disabled", True)),
+                        body.get("path", ""),
+                    )
+                )
             if self.path == "/api/dataset/remove":
                 return self._json(
                     remove_dataset(body.get("text", ""), int(body.get("index", -1)), body.get("path", ""))

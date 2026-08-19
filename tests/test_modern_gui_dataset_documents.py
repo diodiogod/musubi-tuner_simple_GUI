@@ -11,7 +11,10 @@ from modern_gui.dataset_documents import (
     inspect_dataset_sources,
     remove_dataset,
     save_document,
+    split_dataset_subfolders,
     summarize_document,
+    toggle_dataset_disabled,
+    update_general,
     update_dataset,
 )
 
@@ -160,6 +163,100 @@ def test_add_datasets_adds_all_dropped_folders():
         r"J:\\training\\two",
     ]
     assert all("cache_directory" not in item["raw_values"] for item in added["datasets"][-2:])
+
+
+def test_split_dataset_subfolders_copies_settings_and_replaces_empty_parent(tmp_path: Path):
+    root = tmp_path / "car"
+    low = root / "1_low_quality"
+    high = root / "4_high_quality"
+    low.mkdir(parents=True)
+    high.mkdir()
+    Image.new("RGB", (32, 24), "red").save(low / "low.png")
+    Image.new("RGB", (32, 24), "blue").save(high / "high.png")
+    (root / "empty").mkdir()
+    source = f'''[general]
+caption_extension = ".txt"
+
+[[datasets]]
+image_directory = "{str(root).replace(chr(92), "/")}"
+cache_directory = "{str(tmp_path / "cache").replace(chr(92), "/")}"
+resolution = [768, 768]
+num_repeats = 3
+'''
+
+    split = split_dataset_subfolders(source, 0)
+
+    assert [item["source"] for item in split["datasets"]] == [
+        str(root / "1_low_quality").replace(chr(92), "/"),
+        str(root / "4_high_quality").replace(chr(92), "/"),
+    ]
+    assert split["subfolder_scan"]["removed_parent"] is True
+    assert all(item["repeats"] == 3 for item in split["datasets"])
+    assert split["datasets"][0]["cache_directory"] == str(tmp_path / "cache" / "1_low_quality").replace(chr(92), "/")
+
+
+def test_split_dataset_subfolders_preserves_parent_direct_media(tmp_path: Path):
+    root = tmp_path / "car"
+    root.mkdir()
+    child = root / "high"
+    child.mkdir()
+    Image.new("RGB", (32, 24), "red").save(root / "direct.png")
+    Image.new("RGB", (32, 24), "blue").save(child / "nested.png")
+    source = f'''[[datasets]]
+image_directory = "{str(root).replace(chr(92), "/")}"
+resolution = 512
+'''
+
+    split = split_dataset_subfolders(source, 0)
+
+    assert [item["source"] for item in split["datasets"]] == [
+        str(root).replace(chr(92), "/"),
+        str(child).replace(chr(92), "/"),
+    ]
+    assert split["subfolder_scan"]["removed_parent"] is False
+
+
+def test_disabled_dataset_is_comment_marked_and_restores_all_settings():
+    source = SAMPLE.replace('image_directory = "images"', 'image_directory = "images"\nfuture_option = "keep-me"')
+
+    disabled = toggle_dataset_disabled(source, 0, True)
+
+    assert disabled["datasets"] == []
+    assert len(disabled["disabled_datasets"]) == 1
+    assert disabled["disabled_datasets"][0]["source"] == "images"
+    assert "# musubi-gui: disabled dataset v1" in disabled["text"]
+    assert "# image_directory = \"images\"" in disabled["text"]
+    assert 'image_directory = "images"' not in disabled["text"].split("# musubi-gui: disabled dataset v1", 1)[0]
+
+    restored = toggle_dataset_disabled(disabled["text"], 0, False)
+
+    assert restored["datasets"][0]["source"] == "images"
+    assert restored["datasets"][0]["raw_values"]["future_option"] == "keep-me"
+    assert restored["disabled_datasets"] == []
+    assert "musubi-gui: disabled dataset" not in restored["text"]
+
+
+def test_visual_updates_preserve_disabled_dataset_blocks():
+    source = toggle_dataset_disabled(SAMPLE, 0, True)["text"]
+
+    updated = update_general(source, {"batch_size": 2})
+
+    assert updated["datasets"] == []
+    assert updated["general"]["batch_size"] == 2
+    assert updated["disabled_datasets"][0]["resolution"] == [1024, 1024]
+    assert "# musubi-gui: disabled dataset v1" in updated["text"]
+
+
+def test_save_and_load_round_trip_keeps_disabled_sources(tmp_path: Path):
+    destination = tmp_path / "dataset.toml"
+    source = toggle_dataset_disabled(SAMPLE, 0, True)["text"]
+
+    save_document(str(destination), source)
+    loaded = load_document(str(destination))
+
+    assert loaded["datasets"] == []
+    assert loaded["disabled_datasets"][0]["source"] == "images"
+    assert "# musubi-gui: disabled dataset v1" in destination.read_text(encoding="utf-8")
 
 
 def test_source_inspection_reports_media_captions_and_resolutions(tmp_path: Path):

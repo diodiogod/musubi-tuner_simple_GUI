@@ -568,6 +568,17 @@ class DatasetConfigBuilder:
         inspect_row = ttk.Frame(content)
         inspect_row.grid(row=row + 1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ttk.Button(inspect_row, text="Inspect files", command=self._inspect_selected_source).pack(side="left")
+        self.split_subfolders_button = ttk.Button(
+            inspect_row,
+            text="Add valid subfolders",
+            command=self._split_selected_subfolders,
+        )
+        self.split_subfolders_button.pack(side="left", padx=(8, 0))
+        BuilderToolTip(
+            self.split_subfolders_button,
+            "Find immediate child folders containing supported media and add each as a separate dataset source. "
+            "Nested files are not scanned recursively by Musubi.",
+        )
         self.inspect_label = ttk.Label(inspect_row, text="", style="Muted.TLabel")
         self.inspect_label.pack(side="left", padx=(10, 0), fill="x", expand=True)
 
@@ -868,7 +879,44 @@ class DatasetConfigBuilder:
             self._inspect_selected_source()
 
     def _update_source_button(self):
-        return
+        if hasattr(self, "split_subfolders_button"):
+            state = "normal" if self.dataset_vars["source_format"].get() == "Directory" else "disabled"
+            self.split_subfolders_button.configure(state=state)
+
+    def _split_selected_subfolders(self):
+        if self.selected_index is None or not 0 <= self.selected_index < len(self.datasets):
+            return
+        if self.dataset_vars["source_format"].get() != "Directory":
+            return
+        if not messagebox.askyesno(
+            "Add valid subfolders",
+            "Add every immediate subfolder containing supported media as its own dataset source?\n\n"
+            "If the parent contains no direct media, it will be replaced by those child sources. "
+            "Nothing on disk will be moved or deleted.",
+            parent=self.window,
+        ):
+            return
+        try:
+            self._capture_selected_dataset()
+            text = self._apply_builder_to_document()
+            from modern_gui.dataset_documents import split_dataset_subfolders
+
+            result = split_dataset_subfolders(text, self.selected_index, str(self.path or ""))
+            scan = result.get("subfolder_scan", {})
+            self._load_text(result["text"])
+            self._mark_dirty()
+            added = len(scan.get("added", []))
+            suffix = "; the empty parent source was replaced" if scan.get("removed_parent") else ""
+            self.status_var.set(f"Added {added} valid subfolder{'s' if added != 1 else ''}{suffix}.")
+            messagebox.showinfo(
+                "Subfolders added",
+                f"Added {added} valid subfolder{'s' if added != 1 else ''} to the dataset TOML{suffix}.\n\n"
+                "Review the source list and save the TOML when ready.",
+                parent=self.window,
+            )
+        except Exception as exc:
+            self.status_var.set(f"Subfolder expansion failed: {exc}")
+            messagebox.showerror("Cannot add subfolders", str(exc), parent=self.window)
 
     def _apply_resolution_preset(self, preset):
         dimensions = [part.strip() for part in preset.replace("×", "x").split("x")]
@@ -1279,9 +1327,17 @@ class DatasetConfigBuilder:
             )
             captions = sum(1 for path in media if path.with_suffix(caption_extension).is_file())
             repeats = _positive_int(self.dataset_vars["num_repeats"].get(), "Repeats")
-            self.inspect_label.configure(
-                text=f"{len(media)} media · {captions} captions · {len(media) * repeats} effective samples"
+            nested = sum(
+                1
+                for path in source.rglob("*")
+                if path.is_file() and path.parent != source and path.suffix.lower() in extensions
             )
+            warning = (
+                f" · WARNING: {nested} nested media ignored by Musubi; use Add valid subfolders"
+                if nested
+                else ""
+            )
+            self.inspect_label.configure(text=f"{len(media)} media · {captions} captions · {len(media) * repeats} effective samples{warning}")
         except OSError as exc:
             self.inspect_label.configure(text=f"Cannot inspect source: {exc}")
 

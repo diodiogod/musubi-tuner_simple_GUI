@@ -218,3 +218,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 /* The native folder-drop bridge is explained without adding another control row. */
 .add-menu-hint{grid-column:1/-1;color:var(--muted);font-size:10px;line-height:1.4;padding:2px 2px 0}
+
+/* Dataset source toggles: actions stay separate from the source-selection
+   click target, while disabled sources remain visible and recoverable. */
+.dataset-source-row{display:grid;grid-template-columns:minmax(0,1fr) 28px;gap:4px;align-items:stretch;min-width:0}.dataset-source-row .dataset-source{min-width:0}.dataset-source-toggle{display:grid;place-items:center;width:28px;min-height:48px;padding:0;border:1px solid var(--line);border-radius:7px;background:var(--surface2);color:var(--muted);font-size:17px;font-weight:800;line-height:1}.dataset-source-toggle:hover,.dataset-source-toggle:focus-visible{border-color:var(--accent2);color:var(--accent)}.dataset-source-toggle.disable{color:var(--danger)}.dataset-source-toggle.disable:hover,.dataset-source-toggle.disable:focus-visible{border-color:color-mix(in srgb,var(--danger) 60%,var(--line));background:color-mix(in srgb,var(--danger) 10%,var(--surface2));color:var(--danger)}.dataset-source-row.disabled .dataset-source{border-color:color-mix(in srgb,var(--danger) 44%,var(--line));background:color-mix(in srgb,var(--danger) 7%,transparent);opacity:.78}.dataset-source-row.disabled .dataset-source:hover{border-color:var(--danger)}.dataset-source-row.disabled .source-icon{background:color-mix(in srgb,var(--danger) 14%,var(--bg));color:var(--danger)}.dataset-source-toggle.enable{color:var(--accent)}
+@media(max-width:1120px){.dataset-source-row{flex:0 0 min(273px,78vw)}}

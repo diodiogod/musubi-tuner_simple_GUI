@@ -78,6 +78,62 @@ image_directory = "existing"
     assert added["datasets"][-1]["value_origins"]["resolution"] == "general"
 
 
+def test_server_expands_dataset_subfolders(tmp_path):
+    root = tmp_path / "car"
+    (root / "1_low_quality").mkdir(parents=True)
+    (root / "4_high_quality").mkdir()
+    Image.new("RGB", (32, 24), "red").save(root / "1_low_quality" / "low.png")
+    Image.new("RGB", (32, 24), "blue").save(root / "4_high_quality" / "high.png")
+    source = f'''[[datasets]]
+image_directory = {str(root)!r}
+resolution = 512
+'''
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MusubiWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        split = request_json(root_url + "/api/dataset/split-subfolders", {"text": source, "index": 0})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert len(split["datasets"]) == 2
+    assert split["subfolder_scan"]["removed_parent"] is True
+
+
+def test_server_toggles_dataset_without_deleting_its_settings():
+    source = """[general]
+caption_extension = ".txt"
+
+[[datasets]]
+image_directory = "images"
+resolution = [512, 512]
+future_option = "preserve-me"
+"""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MusubiWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    root = f"http://127.0.0.1:{server.server_port}"
+    try:
+        disabled = request_json(
+            root + "/api/dataset/toggle-disabled",
+            {"text": source, "index": 0, "disabled": True},
+        )
+        restored = request_json(
+            root + "/api/dataset/toggle-disabled",
+            {"text": disabled["text"], "index": 0, "disabled": False},
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert disabled["datasets"] == []
+    assert len(disabled["disabled_datasets"]) == 1
+    assert restored["datasets"][0]["source"] == "images"
+    assert restored["datasets"][0]["raw_values"]["future_option"] == "preserve-me"
+
+
 def test_server_lists_serves_and_updates_dataset_media(tmp_path):
     image_dir = tmp_path / "images"
     image_dir.mkdir()
@@ -174,6 +230,7 @@ target_frames = [1]
     "path",
     [
         "/api/settings",
+        "/api/dataset/toggle-disabled",
         "/api/prompt-library/delete",
         "/api/prompts/preview",
         "/api/jobs/start",

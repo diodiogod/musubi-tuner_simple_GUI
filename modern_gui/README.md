@@ -32,7 +32,10 @@ remote-access mode in the launcher.
 - structure-preserving TOML parsing, optimistic conflict detection, and atomic
   saves using `tomlkit`;
 - inherited-aware image/video source defaults, Directory/JSONL switching,
-  ordering, safe duplication, controls, and video extraction settings;
+  ordering, safe duplication, controls, video extraction settings, and
+  one-click expansion of valid immediate media subfolders into separate TOML
+  sources; source rows can also be disabled and restored without deleting
+  their settings (disabled entries are kept as explicit GUI-owned comments);
 - paginated real-media browsing with lazy image/video previews, search,
   training-eligibility filters, and repeat-weighted epoch totals;
 - explicit atomic sidecar and JSONL caption editing with stale-write

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -55,6 +56,12 @@ VIDEO_DATASET_KEYS = {
     "source_fps",
 }
 
+# Disabled sources are kept in the TOML as a clearly-owned, commented block.
+# Ordinary comments remain untouched, and Musubi's TOML parser naturally ignores
+# the block until the GUI explicitly re-enables it.
+DISABLED_DATASET_START = "# musubi-gui: disabled dataset v1"
+DISABLED_DATASET_END = "# musubi-gui: end disabled dataset"
+
 
 class DocumentConflictError(RuntimeError):
     """Raised when a disk document changed after the UI loaded it."""
@@ -84,6 +91,129 @@ def dump_document(document: Any) -> str:
 
 def plain_document(document: Any) -> dict[str, Any]:
     return toml.loads(dump_document(document))
+
+
+def _uncomment_disabled_line(line: str) -> str:
+    """Remove the one comment marker added by ``_comment_disabled_block``."""
+
+    if line.startswith("#"):
+        line = line[1:]
+        if line.startswith(" "):
+            line = line[1:]
+    return line
+
+
+def _comment_disabled_block(text: str) -> str:
+    lines = text.splitlines()
+    commented = [f"# {line}" if line else "#" for line in lines]
+    return "\n".join(commented) + ("\n" if commented else "")
+
+
+def _split_disabled_datasets(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Extract GUI-owned commented dataset blocks before TOML parsing.
+
+    The marker is deliberately explicit so a user's normal explanatory TOML
+    comments are never interpreted as disabled sources. A malformed marked
+    block is an error rather than silently losing a dataset.
+    """
+
+    active_lines: list[str] = []
+    disabled: list[dict[str, Any]] = []
+    lines = text.splitlines(keepends=True)
+    cursor = 0
+    while cursor < len(lines):
+        if lines[cursor].strip() != DISABLED_DATASET_START:
+            active_lines.append(lines[cursor])
+            cursor += 1
+            continue
+        cursor += 1
+        block_lines: list[str] = []
+        found_end = False
+        while cursor < len(lines):
+            if lines[cursor].strip() == DISABLED_DATASET_END:
+                found_end = True
+                cursor += 1
+                break
+            block_lines.append(_uncomment_disabled_line(lines[cursor]))
+            cursor += 1
+        if not found_end:
+            raise ValueError("A disabled dataset block is missing its end marker.")
+        block_text = "".join(block_lines).strip()
+        try:
+            block_document = parse_document(block_text)
+            block_plain = plain_document(block_document)
+        except Exception as exc:
+            raise ValueError("A disabled dataset block contains invalid TOML.") from exc
+        entries = block_plain.get("datasets")
+        if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+            raise ValueError("Each disabled dataset block must contain exactly one [[datasets]] entry.")
+        disabled.append(_json_safe(entries[0]))
+    return "".join(active_lines), disabled
+
+
+def _append_disabled_datasets(text: str, disabled: list[dict[str, Any]]) -> str:
+    if not disabled:
+        return text
+    blocks = []
+    for dataset in disabled:
+        serialized = toml.dumps({"datasets": [_json_safe(dataset)]}).rstrip()
+        blocks.append(f"{DISABLED_DATASET_START}\n{_comment_disabled_block(serialized)}{DISABLED_DATASET_END}\n")
+    base = text.rstrip()
+    return (base + "\n\n" if base else "") + "\n".join(blocks)
+
+
+def _parse_document_with_disabled(text: str) -> tuple[Any, list[dict[str, Any]]]:
+    active_text, disabled = _split_disabled_datasets(text)
+    return parse_document(active_text), disabled
+
+
+def _dump_document_with_disabled(document: Any, disabled: list[dict[str, Any]]) -> str:
+    return _append_disabled_datasets(dump_document(document), disabled)
+
+
+def _dataset_summary(dataset: dict[str, Any], index: int, general: dict[str, Any]) -> dict[str, Any]:
+    kind = _dataset_kind(dataset)
+    directory_key = f"{kind}_directory"
+    jsonl_key = f"{kind}_jsonl_file"
+    source_mode = "jsonl" if dataset.get(jsonl_key) else "directory"
+    source_key = jsonl_key if source_mode == "jsonl" else directory_key
+    source = dataset.get(source_key) or ""
+    effective = {}
+    origins = {}
+    for key, default in ASCENDABLE_DEFAULTS.items():
+        if key in dataset:
+            effective[key] = dataset[key]
+            origins[key] = "dataset"
+        elif key in general:
+            effective[key] = general[key]
+            origins[key] = "general"
+        else:
+            effective[key] = default
+            origins[key] = "default"
+    known = COMMON_DATASET_KEYS | (VIDEO_DATASET_KEYS if kind == "video" else IMAGE_DATASET_KEYS)
+    return {
+        "index": index,
+        "kind": kind,
+        "source": str(source),
+        "source_mode": source_mode,
+        "source_key": source_key,
+        "resolved_source": str(resolve_configured_path(source)) if source else "",
+        "resolution": effective["resolution"],
+        "repeats": effective["num_repeats"],
+        "batch_size": effective["batch_size"],
+        "cache_directory": dataset.get("cache_directory", ""),
+        "caption_extension": effective["caption_extension"],
+        "enable_bucket": effective["enable_bucket"],
+        "bucket_no_upscale": effective["bucket_no_upscale"],
+        "target_frames": dataset.get("target_frames", []),
+        "raw_values": _json_safe(dataset),
+        "effective_values": _json_safe(effective),
+        "value_origins": origins,
+        "inherited_from_general": [key for key, origin in origins.items() if origin == "general"],
+        "advanced_keys": sorted(str(key) for key in set(dataset) - known),
+        # Kept for backward-compatible clients. This is always raw.
+        "values": _json_safe(dataset),
+    }
 
 
 def _drop_empty_cache_directories(document: Any) -> None:
@@ -133,7 +263,7 @@ def _dataset_kind(dataset: dict[str, Any]) -> str:
 
 
 def summarize_document(text: str, source_path: str = "") -> dict[str, Any]:
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     plain = plain_document(document)
     datasets = plain.get("datasets", [])
     if not isinstance(datasets, list):
@@ -141,57 +271,19 @@ def summarize_document(text: str, source_path: str = "") -> dict[str, Any]:
     general = plain.get("general", {})
     if not isinstance(general, dict):
         general = {}
-    summaries = []
-    for index, dataset in enumerate(datasets):
-        kind = _dataset_kind(dataset)
-        directory_key = f"{kind}_directory"
-        jsonl_key = f"{kind}_jsonl_file"
-        source_mode = "jsonl" if dataset.get(jsonl_key) else "directory"
-        source_key = jsonl_key if source_mode == "jsonl" else directory_key
-        source = dataset.get(source_key) or ""
-        effective = {}
-        origins = {}
-        for key, default in ASCENDABLE_DEFAULTS.items():
-            if key in dataset:
-                effective[key] = dataset[key]
-                origins[key] = "dataset"
-            elif key in general:
-                effective[key] = general[key]
-                origins[key] = "general"
-            else:
-                effective[key] = default
-                origins[key] = "default"
-        known = COMMON_DATASET_KEYS | (VIDEO_DATASET_KEYS if kind == "video" else IMAGE_DATASET_KEYS)
-        summaries.append(
-            {
-                "index": index,
-                "kind": kind,
-                "source": str(source),
-                "source_mode": source_mode,
-                "source_key": source_key,
-                "resolved_source": str(resolve_configured_path(source)) if source else "",
-                "resolution": effective["resolution"],
-                "repeats": effective["num_repeats"],
-                "batch_size": effective["batch_size"],
-                "cache_directory": dataset.get("cache_directory", ""),
-                "caption_extension": effective["caption_extension"],
-                "enable_bucket": effective["enable_bucket"],
-                "bucket_no_upscale": effective["bucket_no_upscale"],
-                "target_frames": dataset.get("target_frames", []),
-                "raw_values": _json_safe(dataset),
-                "effective_values": _json_safe(effective),
-                "value_origins": origins,
-                "inherited_from_general": [key for key, origin in origins.items() if origin == "general"],
-                "advanced_keys": sorted(str(key) for key in set(dataset) - known),
-                # Kept for backward-compatible clients. This is always raw.
-                "values": _json_safe(dataset),
-            }
-        )
+    summaries = [_dataset_summary(dataset, index, general) for index, dataset in enumerate(datasets)]
+    disabled_summaries = []
+    for disabled_index, dataset in enumerate(disabled_datasets):
+        summary = _dataset_summary(dataset, len(summaries) + disabled_index, general)
+        summary["disabled"] = True
+        summary["disabled_index"] = disabled_index
+        disabled_summaries.append(summary)
     return {
         "path": source_path,
-        "text": dump_document(document),
+        "text": _dump_document_with_disabled(document, disabled_datasets),
         "general": _json_safe(general),
         "datasets": summaries,
+        "disabled_datasets": disabled_summaries,
         "issues": [issue.as_dict() for issue in validate_document(plain, source_path)],
         "disk_revision": document_revision(source_path),
         "preservation_available": tomlkit is not None,
@@ -316,9 +408,9 @@ def save_document(path: str, text: str, expected_revision: str | None = None) ->
         raise DocumentConflictError(
             "The TOML changed on disk after it was loaded. Reload it or copy your draft before saving."
         )
-    parsed = parse_document(text)
+    parsed, disabled_datasets = _parse_document_with_disabled(text)
     _drop_empty_cache_directories(parsed)
-    normalized = dump_document(parsed)
+    normalized = _dump_document_with_disabled(parsed, disabled_datasets)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     temporary = resolved.with_suffix(resolved.suffix + ".tmp")
     temporary.write_text(normalized, encoding="utf-8")
@@ -327,7 +419,7 @@ def save_document(path: str, text: str, expected_revision: str | None = None) ->
 
 
 def update_dataset(text: str, index: int, changes: dict[str, Any], source_path: str = "") -> dict[str, Any]:
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     datasets = document.get("datasets")
     if not isinstance(datasets, list) or index < 0 or index >= len(datasets):
         raise IndexError(f"Dataset index {index} does not exist.")
@@ -384,11 +476,11 @@ def update_dataset(text: str, index: int, changes: dict[str, Any], source_path: 
             dataset.pop(key, None)
         else:
             dataset[key] = value
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def update_general(text: str, changes: dict[str, Any], source_path: str = "") -> dict[str, Any]:
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     unknown = set(changes) - GENERAL_EDITABLE_KEYS
     if unknown:
         raise ValueError(f"Unsupported general fields: {', '.join(sorted(unknown))}")
@@ -403,7 +495,7 @@ def update_general(text: str, changes: dict[str, Any], source_path: str = "") ->
             general.pop(key, None)
         else:
             general[key] = value
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def add_dataset(
@@ -415,7 +507,7 @@ def add_dataset(
 ) -> dict[str, Any]:
     if kind not in {"image", "video"}:
         raise ValueError("Dataset kind must be image or video.")
-    document = parse_document(text) if text.strip() else parse_document("")
+    document, disabled_datasets = _parse_document_with_disabled(text) if text.strip() else (parse_document(""), [])
     if "datasets" not in document:
         if tomlkit is not None:
             document["datasets"] = tomlkit.aot()
@@ -446,7 +538,7 @@ def add_dataset(
     if kind == "video":
         dataset["target_frames"] = [124] if architecture == "minimax_h3" else [1, 25]
     document["datasets"].append(dataset)
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def add_datasets(
@@ -470,19 +562,174 @@ def add_datasets(
     return summary
 
 
+def split_dataset_subfolders(text: str, index: int, source_path: str = "") -> dict[str, Any]:
+    """Expand a directory source into valid immediate child-folder sources.
+
+    Musubi scans media sources directly, not recursively. Child folders with
+    no supported media are ignored. If the selected parent has no direct media,
+    it is replaced so nested files cannot remain silently ignored.
+    """
+    document, disabled_datasets = _parse_document_with_disabled(text)
+    datasets = document.get("datasets")
+    if not isinstance(datasets, list) or index < 0 or index >= len(datasets):
+        raise IndexError(f"Dataset index {index} does not exist.")
+    dataset = datasets[index]
+    if not isinstance(dataset, dict):
+        raise ValueError("The selected dataset is not a TOML table.")
+
+    kind = _dataset_kind(dataset)
+    directory_key = f"{kind}_directory"
+    jsonl_key = f"{kind}_jsonl_file"
+    source = str(dataset.get(directory_key) or "").strip()
+    if not source or str(dataset.get(jsonl_key) or "").strip():
+        raise ValueError("Subfolder expansion requires a media-folder source, not a JSONL manifest.")
+    root = resolve_configured_path(source)
+    if not root.is_dir():
+        raise ValueError(f"The selected source folder does not exist: {root}")
+
+    extensions = IMAGE_EXTENSIONS if kind == "image" else VIDEO_EXTENSIONS
+    direct_media = [item for item in root.iterdir() if item.is_file() and item.suffix.lower() in extensions]
+    candidates: list[tuple[Path, int]] = []
+    for child in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+        if child.name.startswith("."):
+            continue
+        media_count = sum(
+            1 for item in child.iterdir() if item.is_file() and item.suffix.lower() in extensions
+        )
+        if media_count:
+            candidates.append((child, media_count))
+    if not candidates:
+        raise ValueError(f"No immediate subfolders containing supported {kind} media were found in {root}.")
+
+    def child_path(base: str, name: str) -> str:
+        separator = "\\" if "\\" in base and "/" not in base else "/"
+        return f"{base.rstrip('/\\')}{separator}{name}"
+
+    existing_sources = {
+        resolve_configured_path(str(item.get(f"{_dataset_kind(item)}_directory") or ""))
+        for item in datasets
+        if isinstance(item, dict) and str(item.get(f"{_dataset_kind(item)}_directory") or "").strip()
+    }
+    new_children: list[tuple[dict[str, Any], Path, int]] = []
+    cache_directory = str(dataset.get("cache_directory") or "").strip()
+    for child, media_count in candidates:
+        child_source = child_path(source, child.name)
+        if resolve_configured_path(child_source) in existing_sources:
+            continue
+        child_dataset = copy.deepcopy(dataset)
+        child_dataset[directory_key] = child_source
+        child_dataset.pop(jsonl_key, None)
+        if cache_directory:
+            child_dataset["cache_directory"] = child_path(cache_directory, child.name)
+        else:
+            child_dataset.pop("cache_directory", None)
+        new_children.append((child_dataset, child, media_count))
+
+    if not new_children:
+        raise ValueError("All valid subfolders are already present in this TOML.")
+
+    parent_has_direct_media = bool(direct_media)
+    if parent_has_direct_media:
+        insertion = index + 1
+        for offset, (child_dataset, _child, _count) in enumerate(new_children):
+            datasets.insert(insertion + offset, child_dataset)
+        selected_index = insertion
+    else:
+        datasets[index] = new_children[0][0]
+        for offset, (child_dataset, _child, _count) in enumerate(new_children[1:], start=1):
+            datasets.insert(index + offset, child_dataset)
+        selected_index = index
+
+    summary = summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
+    summary["subfolder_scan"] = {
+        "parent": source,
+        "kind": kind,
+        "added": [
+            {"path": child_path(source, child.name), "media_count": media_count}
+            for _dataset, child, media_count in new_children
+        ],
+        "skipped_existing": len(candidates) - len(new_children),
+        "removed_parent": not parent_has_direct_media,
+        "selected_index": selected_index,
+    }
+    return summary
+
+
+def _dataset_node_from_plain(dataset: dict[str, Any]) -> Any:
+    """Turn a plain disabled record back into a TOML table for an AoT."""
+
+    if tomlkit is None:
+        return copy.deepcopy(dataset)
+    wrapper = tomlkit.document()
+    wrapper["datasets"] = tomlkit.aot()
+    table = tomlkit.table()
+    for key, value in dataset.items():
+        table[key] = copy.deepcopy(value)
+    wrapper["datasets"].append(table)
+    return tomlkit.parse(tomlkit.dumps(wrapper))["datasets"][0]
+
+
+def _plain_dataset(dataset: Any) -> dict[str, Any]:
+    """Convert a TOMLKit table (including its typed scalar wrappers) to plain values."""
+
+    if tomlkit is None:
+        return copy.deepcopy(dataset)
+    wrapper = tomlkit.document()
+    wrapper["datasets"] = tomlkit.aot()
+    wrapper["datasets"].append(copy.deepcopy(dataset))
+    return toml.loads(tomlkit.dumps(wrapper))["datasets"][0]
+
+
+def toggle_dataset_disabled(
+    text: str,
+    index: int,
+    disabled: bool,
+    source_path: str = "",
+) -> dict[str, Any]:
+    """Disable or re-enable one source without deleting its TOML settings.
+
+    Disabled entries are serialized as GUI-owned comments at the end of the
+    document. Re-enabling appends the source after the active entries; the
+    source's complete settings and unknown fields are retained.
+    """
+
+    document, disabled_datasets = _parse_document_with_disabled(text)
+    datasets = document.get("datasets")
+    if datasets is None and not disabled:
+        datasets = tomlkit.aot() if tomlkit is not None else []
+        document["datasets"] = datasets
+    if not isinstance(datasets, list):
+        raise ValueError("The configuration has no datasets list.")
+    if disabled:
+        if index < 0 or index >= len(datasets):
+            raise IndexError(f"Dataset index {index} does not exist.")
+        removed = datasets.pop(index)
+        disabled_datasets.append(_plain_dataset(removed))
+        action = "disabled"
+    else:
+        if index < 0 or index >= len(disabled_datasets):
+            raise IndexError(f"Disabled dataset index {index} does not exist.")
+        restored = disabled_datasets.pop(index)
+        datasets.append(_dataset_node_from_plain(restored))
+        action = "enabled"
+    summary = summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
+    summary["disabled_action"] = {"action": action, "index": index}
+    return summary
+
+
 def remove_dataset(text: str, index: int, source_path: str = "") -> dict[str, Any]:
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     datasets = document.get("datasets")
     if not isinstance(datasets, list) or index < 0 or index >= len(datasets):
         raise IndexError(f"Dataset index {index} does not exist.")
     del datasets[index]
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def duplicate_dataset(text: str, index: int, source_path: str = "") -> dict[str, Any]:
     import copy
 
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     datasets = document.get("datasets")
     if not isinstance(datasets, list) or index < 0 or index >= len(datasets):
         raise IndexError(f"Dataset index {index} does not exist.")
@@ -498,11 +745,11 @@ def duplicate_dataset(text: str, index: int, source_path: str = "") -> dict[str,
     # safe copy behavior and force the user to choose a destination.
     duplicated.pop("cache_directory", None)
     datasets.insert(index + 1, duplicated)
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def move_dataset(text: str, index: int, destination: int, source_path: str = "") -> dict[str, Any]:
-    document = parse_document(text)
+    document, disabled_datasets = _parse_document_with_disabled(text)
     datasets = document.get("datasets")
     if not isinstance(datasets, list) or index < 0 or index >= len(datasets):
         raise IndexError(f"Dataset index {index} does not exist.")
@@ -511,7 +758,7 @@ def move_dataset(text: str, index: int, destination: int, source_path: str = "")
     if destination != index:
         dataset = datasets.pop(index)
         datasets.insert(destination, dataset)
-    return summarize_document(dump_document(document), source_path)
+    return summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
 
 
 def inspect_dataset_sources(text: str, source_path: str = "") -> dict[str, Any]:

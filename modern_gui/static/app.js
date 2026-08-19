@@ -1278,6 +1278,7 @@ const DATASET_HELP = {
   frame_extraction:"Controls where clips come from inside each source video.",
   multiple_target:"Enables numbered image targets used by layered-image trainers.",
   no_resize_control:"Keeps control media at its original size instead of matching the training target.",
+  split_subfolders:"Find immediate child folders containing supported media and turn each into its own TOML source. This follows Musubi's direct-folder scan; nested files are not searched recursively.",
 };
 const datasetValueText=value=>Array.isArray(value)?value.join(", "):(value??"");
 const datasetBasename=value=>String(value||"").replaceAll("\\","/").split("/").filter(Boolean).pop()||"Untitled source";
@@ -1365,6 +1366,8 @@ function renderDataset(payload, selected = state.selectedDataset) {
   $("#dataset-path").value=payload.path||$("#dataset-path").value;
   $("#dataset-source").value=payload.text||"";
   $("#dataset-count").textContent=payload.datasets.length;
+  const disabledCount=(payload.disabled_datasets||[]).length;
+  $("#dataset-count").title=`${payload.datasets.length} active source${payload.datasets.length===1?"":"s"}${disabledCount?` · ${disabledCount} disabled`:""}`;
   $("#inspect-dataset").disabled=!payload.datasets.length;
   $("#add-image-dataset").disabled=false;$("#add-video-dataset").disabled=false;
   const h3Native=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
@@ -1387,15 +1390,18 @@ function renderDatasetRail(){
   defaults.setAttribute("aria-current",state.selectedDataset===-1?"true":"false");
   if(!payload){host.className="dataset-list empty";host.textContent="Load a TOML to begin.";return}
   const knownInventories=state.datasetAudit?.datasets||Object.values(state.datasetInventories),knownEffective=knownInventories.reduce((sum,item)=>sum+Number(item.effective_samples||0),0);
-  host.classList.toggle("empty",!payload.datasets.length);
-  host.innerHTML=payload.datasets.length?payload.datasets.map((dataset,index)=>{
+  const disabledDatasets=payload.disabled_datasets||[];
+  host.classList.toggle("empty",!payload.datasets.length&&!disabledDatasets.length);
+  const activeMarkup=payload.datasets.map((dataset,index)=>{
     const inventory=state.datasetInventories[index]||state.datasetAudit?.datasets?.find(item=>item.index===index);
     const sourceIssues=(payload.issues||[]).filter(issue=>issue.dataset_index===index);
     const weight=inventory&&knownEffective?Math.round(Number(inventory.effective_samples||0)/knownEffective*100):0;
     const effective=inventory?`${inventory.trainer_usable_count} usable · ×${inventory.repeats||dataset.repeats} = ${inventory.effective_samples}${knownInventories.length===payload.datasets.length?` · ${weight}%`:""}`:`${dataset.source_mode==="jsonl"?"JSONL manifest":"Folder"} · ×${dataset.repeats}`;
     const warning=sourceIssues.some(issue=>issue.level==="error")?"error":sourceIssues.length?"warning":inventory?.missing_caption_count?"warning":"";
-    return `<button class="dataset-source ${index===state.selectedDataset?"active":""}" data-index="${index}" aria-current="${index===state.selectedDataset?"true":"false"}"><span class="source-icon">${dataset.kind==="video"?"▶":"▧"}</span><span><strong>${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}</strong><small>Source ${index+1} · ${esc(effective)}</small></span>${warning?`<i class="${warning}" title="${sourceIssues.length||inventory.missing_caption_count} item(s) need attention"></i>`:""}${inventory&&knownInventories.length===payload.datasets.length?`<b class="source-weight" style="width:${weight}%"></b>`:""}</button>`;
-  }).join(""):"No sources in this document.";
+    return `<div class="dataset-source-row"><button class="dataset-source ${index===state.selectedDataset?"active":""}" data-index="${index}" aria-current="${index===state.selectedDataset?"true":"false"}"><span class="source-icon">${dataset.kind==="video"?"▶":"▧"}</span><span><strong>${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}</strong><small>Source ${index+1} · ${esc(effective)}</small></span>${warning?`<i class="${warning}" title="${sourceIssues.length||inventory.missing_caption_count} item(s) need attention"></i>`:""}${inventory&&knownInventories.length===payload.datasets.length?`<b class="source-weight" style="width:${weight}%"></b>`:""}</button><button type="button" class="dataset-source-toggle disable" data-toggle-dataset="${index}" title="Disable this source for the next run" aria-label="Disable ${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}">×</button></div>`;
+  }).join("");
+  const disabledMarkup=disabledDatasets.map((dataset,index)=>`<div class="dataset-source-row disabled"><div class="dataset-source disabled-source" aria-disabled="true" title="This source is excluded from training"><span class="source-icon">×</span><span><strong>${esc(datasetBasename(dataset.source)||`Disabled source ${index+1}`)}</strong><small>Disabled · click ✓ to restore</small></span></div><button type="button" class="dataset-source-toggle enable" data-toggle-disabled="${index}" title="Re-enable this source for training" aria-label="Re-enable ${esc(datasetBasename(dataset.source)||`disabled source ${index+1}`)}">✓</button></div>`).join("");
+  host.innerHTML=activeMarkup+disabledMarkup||(payload.datasets.length||disabledDatasets.length?"":"No sources in this document.");
   host.querySelectorAll("[data-index]").forEach(button=>button.addEventListener("click",async()=>{
     const index=Number(button.dataset.index);
     try{
@@ -1406,6 +1412,14 @@ function renderDatasetRail(){
       $(`#dataset-list [data-index="${index}"]`)?.focus();
     }catch(error){toast(error.message,"error")}
   }));
+  host.querySelectorAll("[data-toggle-dataset]").forEach(button=>button.addEventListener("click",event=>{
+    event.stopPropagation();
+    toggleDatasetSource(Number(button.dataset.toggleDataset),true,button).catch(error=>toast(error.message,"error"));
+  }));
+  host.querySelectorAll("[data-toggle-disabled]").forEach(button=>button.addEventListener("click",event=>{
+    event.stopPropagation();
+    toggleDatasetSource(Number(button.dataset.toggleDisabled),false,button).catch(error=>toast(error.message,"error"));
+  }));
 }
 function renderDatasetHead(){
   const host=$("#dataset-source-head"),dataset=state.dataset?.datasets?.[state.selectedDataset];
@@ -1415,9 +1429,11 @@ function renderDatasetHead(){
   }
   if(!dataset){host.innerHTML="";return}
   const advanced=dataset.advanced_keys?.length?` · ${dataset.advanced_keys.length} advanced key${dataset.advanced_keys.length===1?"":"s"} preserved`:"";
-  host.innerHTML=`<div class="dataset-form-head"><div><p class="kicker">${esc(dataset.kind)} · ${esc(dataset.source_mode==="jsonl"?"JSONL MANIFEST":"MEDIA FOLDER")}</p><h2>${esc(datasetBasename(dataset.source))}</h2><small>${esc(dataset.resolved_source||dataset.source)}${esc(advanced)}</small></div><div class="dataset-actions"><button data-source-action="up" title="Move source earlier" ${dataset.index===0?"disabled":""}>↑</button><button data-source-action="down" title="Move source later" ${dataset.index===state.dataset.datasets.length-1?"disabled":""}>↓</button><button data-source-action="duplicate">Copy</button><button data-source-action="remove">Remove</button></div></div>`;
+  const splitButton=dataset.source_mode==="directory"?`<button data-source-action="split" title="Find immediate child folders containing supported media and add each as a separate TOML source">Add valid subfolders</button>`:"";
+  host.innerHTML=`<div class="dataset-form-head"><div><p class="kicker">${esc(dataset.kind)} · ${esc(dataset.source_mode==="jsonl"?"JSONL MANIFEST":"MEDIA FOLDER")}</p><h2>${esc(datasetBasename(dataset.source))}</h2><small>${esc(dataset.resolved_source||dataset.source)}${esc(advanced)}</small></div><div class="dataset-actions"><button data-source-action="up" title="Move source earlier" ${dataset.index===0?"disabled":""}>↑</button><button data-source-action="down" title="Move source later" ${dataset.index===state.dataset.datasets.length-1?"disabled":""}>↓</button>${splitButton}<button data-source-action="duplicate">Copy</button><button data-source-action="remove">Remove</button></div></div>`;
   host.querySelector('[data-source-action="up"]')?.addEventListener("click",()=>moveDatasetSource(-1));
   host.querySelector('[data-source-action="down"]')?.addEventListener("click",()=>moveDatasetSource(1));
+  host.querySelector('[data-source-action="split"]')?.addEventListener("click",()=>splitDatasetSource());
   host.querySelector('[data-source-action="duplicate"]')?.addEventListener("click",()=>mutateDataset("/api/dataset/duplicate",{index:dataset.index},dataset.index+1,{message:"Source copied. Choose a unique cache directory before training."}));
   host.querySelector('[data-source-action="remove"]')?.addEventListener("click",()=>{
     if(state.dataset.datasets.length===1)return toast("A dataset TOML needs at least one source.","error");
@@ -1606,6 +1622,36 @@ async function mutateDataset(endpoint,extra,selected=state.selectedDataset,{mess
     if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
   }catch(error){renderIssues([{level:"error",message:error.message}]);toast(error.message,"error")}
 }
+async function toggleDatasetSource(index,disabled,button){
+  try{
+    await flushDatasetDraft();
+    const previous=state.selectedDataset;
+    const payload=await withBusy(button,disabled?"Disabling…":"Enabling…",()=>api("/api/dataset/toggle-disabled",{method:"POST",body:JSON.stringify({text:$("#dataset-source").value,path:$("#dataset-path").value,index,disabled})}));
+    state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;
+    let selected=-1;
+    if(disabled){
+      if(payload.datasets.length){selected=previous===index?Math.min(index,payload.datasets.length-1):previous>index?previous-1:previous;selected=Math.max(0,Math.min(selected,payload.datasets.length-1))}
+    }else if(payload.datasets.length){selected=payload.datasets.length-1}
+    renderDataset(payload,selected);setDatasetDirty(true);
+    toast(disabled?"Source disabled for training. Its settings remain in the TOML and can be restored.":"Source re-enabled for training. Save the TOML when ready.");
+    if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
+  }catch(error){renderIssues([{level:"error",message:error.message}]);throw error}
+}
+async function splitDatasetSource(){
+  const index=state.selectedDataset;
+  if(index<0||!state.dataset?.datasets?.[index])return;
+  if(!confirm("Add every immediate subfolder containing supported media as its own TOML source?\n\nIf the parent contains no direct media, it will be replaced by those child sources. Nothing on disk will be moved or deleted."))return;
+  try{
+    await flushDatasetDraft();
+    const payload=await api("/api/dataset/split-subfolders",{method:"POST",body:JSON.stringify({text:$("#dataset-source").value,path:$("#dataset-path").value,index})});
+    const scan=payload.subfolder_scan||{},selected=Number.isInteger(Number(scan.selected_index))?Number(scan.selected_index):index;
+    state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;
+    renderDataset(payload,selected);setDatasetDirty(true);
+    const added=scan.added||[];
+    toast(`${added.length} valid subfolder${added.length===1?"":"s"} added to the TOML draft${scan.removed_parent?"; the empty parent source was replaced":""}. Save the TOML when ready.`);
+    if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
+  }catch(error){renderIssues([{level:"error",message:error.message}]);toast(error.message,"error")}
+}
 async function addDatasetFromExplorer(kind,button){
   const selected=state.dataset?.datasets?.length||0;
   state.datasetTab="settings";
@@ -1673,8 +1719,9 @@ function renderDatasetOverview(){
   let reports=state.datasetAudit?.datasets||Object.entries(state.datasetInventories).map(([index,overview])=>({index:Number(index),...overview}));
   const media=reports.reduce((sum,item)=>sum+Number(item.media_count||0),0),primaries=reports.reduce((sum,item)=>sum+Number(item.primary_count??item.media_count??0),0),captions=reports.reduce((sum,item)=>sum+Number(item.caption_count||0),0),effective=reports.reduce((sum,item)=>sum+Number(item.effective_samples||0),0);
   const scanned=reports.length,coverage=primaries?`${Math.round(captions/primaries*100)}%`:scanned?"0%":"—";
-  const issueCount=(payload.issues||[]).length+reports.reduce((sum,item)=>sum+Number(item.missing_caption_count||0)+Number(item.unreadable_count||0)+(item.error?1:0),0);
-  host.innerHTML=`<div><small>SOURCES</small><strong>${payload.datasets.length}</strong></div><div><small>MEDIA${scanned<payload.datasets.length?" SCANNED":""}</small><strong>${scanned?media:"—"}</strong></div><div><small>CAPTION COVERAGE</small><strong>${coverage}</strong></div><div><small>EFFECTIVE SAMPLES</small><strong>${scanned?effective:"—"}</strong></div><div class="${issueCount?"warning":"ok"}"><small>HEALTH</small><strong>${issueCount?`${issueCount} to review`:scanned===payload.datasets.length?"Ready":"Audit pending"}</strong></div>`;
+  const issueCount=(payload.issues||[]).length+reports.reduce((sum,item)=>sum+Number(item.missing_caption_count||0)+Number(item.unreadable_count||0)+Number(item.ignored_nested_count||0)+(item.error?1:0),0);
+  const disabledCount=(payload.disabled_datasets||[]).length;
+  host.innerHTML=`<div><small>SOURCES</small><strong>${payload.datasets.length}${disabledCount?` · ${disabledCount} off`:""}</strong></div><div><small>MEDIA${scanned<payload.datasets.length?" SCANNED":""}</small><strong>${scanned?media:"—"}</strong></div><div><small>CAPTION COVERAGE</small><strong>${coverage}</strong></div><div><small>EFFECTIVE SAMPLES</small><strong>${scanned?effective:"—"}</strong></div><div class="${issueCount?"warning":"ok"}"><small>HEALTH</small><strong>${issueCount?`${issueCount} to review`:scanned===payload.datasets.length?"Ready":"Audit pending"}</strong></div>`;
 }
 function renderIssues(issues,target="#dataset-issues"){
   const host=$(target);if(!host)return;
@@ -1689,7 +1736,7 @@ function applyDatasetAudit(payload,{focus=true,announce=""}={}){
     const h3Audio=state.settings.training_mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video")&&report.kind==="video";
     const captionBase=report.primary_count??report.media_count,coverage=captionBase?Math.round(report.caption_count/captionBase*100):0,audioAttention=h3Audio?(report.missing_audio_count||0)+(report.audio_error_count||0):0,attention=report.missing_caption_count+report.empty_caption_count+report.unreadable_caption_count+report.unreadable_count+report.ignored_nested_count+audioAttention,weight=auditEffective?Math.round(report.effective_samples/auditEffective*100):0;
     const audioBadges=h3Audio?`<span>${report.real_audio_count||0} real audio</span><span>${report.missing_audio_count||0} missing audio</span>`:"";
-    return `<article class="dataset-audit-row ${attention?"warning":"ok"}" data-audit-source="${report.index}" role="button" tabindex="0"><div class="audit-source-name"><strong>Source ${report.index+1} · ${esc(datasetBasename(state.dataset.datasets[report.index]?.source))}</strong><small>${report.trainer_usable_count} usable of ${report.media_count} · ${coverage}% captioned · ×${report.repeats} = ${report.effective_samples} · ${weight}% of epoch</small></div><div class="audit-badges"><span>${report.aspects?.landscape||0} landscape</span><span>${report.aspects?.portrait||0} portrait</span><span>${report.aspects?.square||0} square</span>${audioBadges}</div>${attention?`<p>${report.missing_caption_count?`${report.missing_caption_count} missing captions. `:""}${report.empty_caption_count?`${report.empty_caption_count} empty captions. `:""}${report.unreadable_count?`${report.unreadable_count} unreadable media. `:""}${report.ignored_nested_count?`${report.ignored_nested_count} nested files are ignored by Musubi. `:""}${h3Audio&&report.missing_audio_count?`${report.missing_audio_count} clips have no embedded or sidecar audio. `:""}${h3Audio&&report.audio_error_count?`${report.audio_error_count} audio probes failed. `:""}</p>`:`<p>All discovered media is readable and captioned${h3Audio?", with usable real audio":""}.</p>`}</article>`;
+    return `<article class="dataset-audit-row ${attention?"warning":"ok"}" data-audit-source="${report.index}" role="button" tabindex="0"><div class="audit-source-name"><strong>Source ${report.index+1} · ${esc(datasetBasename(state.dataset.datasets[report.index]?.source))}</strong><small>${report.trainer_usable_count} usable of ${report.media_count} · ${coverage}% captioned · ×${report.repeats} = ${report.effective_samples} · ${weight}% of epoch</small></div><div class="audit-badges"><span>${report.aspects?.landscape||0} landscape</span><span>${report.aspects?.portrait||0} portrait</span><span>${report.aspects?.square||0} square</span>${audioBadges}</div>${attention?`<p>${report.missing_caption_count?`${report.missing_caption_count} missing captions. `:""}${report.empty_caption_count?`${report.empty_caption_count} empty captions. `:""}${report.unreadable_count?`${report.unreadable_count} unreadable media. `:""}${report.ignored_nested_count?`${report.ignored_nested_count} nested media file${report.ignored_nested_count===1?"":"s"} are ignored by Musubi. Use “Add valid subfolders” on this source to include them. `:""}${h3Audio&&report.missing_audio_count?`${report.missing_audio_count} clips have no embedded or sidecar audio. `:""}${h3Audio&&report.audio_error_count?`${report.audio_error_count} audio probes failed. `:""}</p>`:`<p>All discovered media is readable and captioned${h3Audio?", with usable real audio":""}.</p>`}</article>`;
   }).join("")}`;
   host.querySelectorAll("[data-audit-source]").forEach(row=>{const open=()=>{state.selectedDataset=Number(row.dataset.auditSource);state.datasetTab="media";state.datasetMediaPage=1;renderDataset(state.dataset,state.selectedDataset);loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error))};row.addEventListener("click",open);row.addEventListener("keydown",event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();open()}})});
   if(focus){setDatasetTab("health",{load:false});host.tabIndex=-1;host.focus({preventScroll:true})}renderDatasetRail();renderDatasetOverview();if(announce)toast(announce);
