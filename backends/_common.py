@@ -100,7 +100,14 @@ def build_sample_args(cmd, settings):
             )
             add_arg(cmd, "--sample_every_n_steps", implied_steps)
         else:
-            add_arg(cmd, "--sample_every_n_epochs", n_epochs)
+            # The trainer's argparse option is integer-only. Browser number
+            # inputs can serialize an integer as ``1.0``; normalize that form
+            # before launching while leaving invalid values for validation.
+            try:
+                epoch_value = str(int(float(n_epochs)))
+            except (OverflowError, ValueError):
+                epoch_value = n_epochs
+            add_arg(cmd, "--sample_every_n_epochs", epoch_value)
     n_steps = str(settings.get("sample_every_n_steps") or "").strip()
     if n_steps and n_steps != "0":
         add_arg(cmd, "--sample_every_n_steps", n_steps)

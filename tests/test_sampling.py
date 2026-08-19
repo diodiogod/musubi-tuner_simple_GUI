@@ -49,3 +49,17 @@ def test_fractional_epoch_sampling_becomes_step_sampling(tmp_path):
 
     assert "--sample_every_n_epochs" not in command
     assert command[command.index("--sample_every_n_steps") + 1] == "1"
+
+
+def test_integer_valued_decimal_epoch_sampling_is_normalized():
+    command = []
+
+    build_sample_args(
+        command,
+        {
+            "sample_prompts": "prompts.txt",
+            "sample_every_n_epochs": "1.0",
+        },
+    )
+
+    assert command[command.index("--sample_every_n_epochs") + 1] == "1"
