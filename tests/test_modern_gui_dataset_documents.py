@@ -259,6 +259,29 @@ def test_save_and_load_round_trip_keeps_disabled_sources(tmp_path: Path):
     assert "# musubi-gui: disabled dataset v1" in destination.read_text(encoding="utf-8")
 
 
+def test_disabled_source_keeps_its_visual_position_and_restores_in_place():
+    source = SAMPLE + '''
+[[datasets]]
+image_directory = "second"
+resolution = 512
+
+[[datasets]]
+image_directory = "third"
+resolution = 512
+'''
+
+    disabled = toggle_dataset_disabled(source, 1, True, position=1)
+
+    assert [item["source"] for item in disabled["datasets"]] == ["images", "third"]
+    assert disabled["disabled_datasets"][0]["source"] == "second"
+    assert disabled["disabled_datasets"][0]["position"] == 1
+    assert "disabled dataset v1 position=1" in disabled["text"]
+
+    restored = toggle_dataset_disabled(disabled["text"], 0, False, position=1)
+
+    assert [item["source"] for item in restored["datasets"]] == ["images", "second", "third"]
+
+
 def test_source_inspection_reports_media_captions_and_resolutions(tmp_path: Path):
     image_dir = tmp_path / "images"
     image_dir.mkdir()

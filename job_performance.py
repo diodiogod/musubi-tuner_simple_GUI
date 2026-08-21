@@ -103,12 +103,17 @@ def cumulative_progress(job: dict[str, Any]) -> dict[str, int]:
     saved_step = _saved_step_from_artifacts(job)
     accounted_step = saved_step if saved_step is not None else step
     saved_epoch = round(total_epochs * saved_step / total) if saved_step and total and total_epochs else 0
+    # The live epoch counter can already point at the epoch currently being
+    # processed when a run is stopped. Lineage is based on durable checkpoints,
+    # so its epoch count must use the same conservative boundary as steps.
+    accounted_epoch = saved_epoch if saved_step is not None else epoch
     prior_steps = _number(job.get("continuation_prior_steps"))
     prior_epochs = _number(job.get("continuation_prior_epochs"))
     return {
         "step": step,
         "saved_step": saved_step if saved_step is not None else 0,
         "saved_epoch": saved_epoch,
+        "accounted_epoch": accounted_epoch,
         "accounted_step": accounted_step,
         "total_steps": total,
         "epoch": epoch,
@@ -117,7 +122,7 @@ def cumulative_progress(job: dict[str, Any]) -> dict[str, int]:
         "prior_epochs": prior_epochs,
         "cumulative_step": prior_steps + accounted_step,
         "cumulative_total_steps": prior_steps + total,
-        "cumulative_epoch": prior_epochs + epoch,
+        "cumulative_epoch": prior_epochs + accounted_epoch,
         "cumulative_total_epochs": prior_epochs + total_epochs,
     }
 
@@ -414,6 +419,7 @@ def performance_summary(job: dict[str, Any]) -> dict[str, Any]:
         "total_steps": total,
         "saved_step": progress["saved_step"],
         "saved_epoch": progress["saved_epoch"],
+        "accounted_epoch": progress["accounted_epoch"],
         "accounted_step": progress["accounted_step"],
         "prior_steps": progress["prior_steps"],
         "prior_epochs": progress["prior_epochs"],

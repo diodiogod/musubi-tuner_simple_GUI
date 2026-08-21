@@ -292,32 +292,41 @@ class JobSupervisor:
                     process.terminate()
             return dict(self._active)
 
-    def stop_after_next_epoch(self, enabled: bool = True) -> dict[str, Any]:
-        """Arm or disarm a graceful stop after the next completed epoch.
+    def stop_after_current_epoch(self, enabled: bool = True) -> dict[str, Any]:
+        """Arm or disarm a graceful stop at the end of the current epoch.
 
-        The trainer emits the next epoch header only after its previous epoch's
-        checkpoint and scheduled samples have finished. Watching that boundary
-        lets the GUI stop without interrupting an in-progress sample.
+        The trainer emits the following epoch header only after the current
+        epoch's checkpoint and scheduled samples have finished. We therefore
+        remember the epoch that is currently running and stop when the next
+        header arrives, without interrupting that epoch's final work. The
+        method name remains for API compatibility with older Modern UI builds.
         """
 
         with self._lock:
             if not self._active or self._active.get("status") not in {"starting", "running"}:
                 raise RuntimeError("No web GUI training job is currently running.")
             if self._active.get("kind") not in {"training", "staged_training"}:
-                raise RuntimeError("Stop-after-next-epoch is available only for training jobs.")
+                raise RuntimeError("Stop-after-current-epoch is available only for training jobs.")
             if enabled:
                 metrics = self._active.get("metrics") or {}
                 current_epoch = int(metrics.get("epoch") or 0)
                 total_epochs = int(metrics.get("total_epochs") or self._active.get("settings", {}).get("max_train_epochs") or 0)
-                target = max(1, current_epoch + 1)
-                if total_epochs and target > total_epochs:
-                    raise RuntimeError("The run is already in its final epoch and will finish naturally.")
+                # `epoch` identifies the epoch currently being optimized. The
+                # next header is emitted only after its save/sample boundary,
+                # so targeting current_epoch (rather than current+1) gives the
+                # requested "stop after this epoch" behavior.
+                target = max(1, current_epoch)
                 self._active["stop_after_epoch"] = target
                 self._active["stop_after_epoch_triggered"] = False
             else:
                 self._active["stop_after_epoch"] = None
                 self._active["stop_after_epoch_triggered"] = False
             return dict(self._active)
+
+    def stop_after_next_epoch(self, enabled: bool = True) -> dict[str, Any]:
+        """Backward-compatible alias for the corrected current-epoch action."""
+
+        return self.stop_after_current_epoch(enabled)
 
     def _append_log(self, stream: str, message: str) -> None:
         # tqdm and redirected Windows streams can emit bare carriage-return
@@ -351,7 +360,7 @@ class JobSupervisor:
                         metrics["cache_progress"] = cache_update
                 stop_after_epoch = self._active.get("stop_after_epoch")
                 if stop_after_epoch and "epoch" in update and int(update["epoch"]) > int(stop_after_epoch):
-                    # An epoch header is printed after the prior epoch's
+                    # The new epoch header is printed after the prior epoch's
                     # checkpoint and scheduled sample generation. Stop here,
                     # before the first optimization step of the following
                     # epoch, so the saved state is resumable.

@@ -1392,16 +1392,20 @@ function renderDatasetRail(){
   const knownInventories=state.datasetAudit?.datasets||Object.values(state.datasetInventories),knownEffective=knownInventories.reduce((sum,item)=>sum+Number(item.effective_samples||0),0);
   const disabledDatasets=payload.disabled_datasets||[];
   host.classList.toggle("empty",!payload.datasets.length&&!disabledDatasets.length);
-  const activeMarkup=payload.datasets.map((dataset,index)=>{
+  const activeMarkup=(dataset,index,position)=>{
     const inventory=state.datasetInventories[index]||state.datasetAudit?.datasets?.find(item=>item.index===index);
     const sourceIssues=(payload.issues||[]).filter(issue=>issue.dataset_index===index);
     const weight=inventory&&knownEffective?Math.round(Number(inventory.effective_samples||0)/knownEffective*100):0;
     const effective=inventory?`${inventory.trainer_usable_count} usable · ×${inventory.repeats||dataset.repeats} = ${inventory.effective_samples}${knownInventories.length===payload.datasets.length?` · ${weight}%`:""}`:`${dataset.source_mode==="jsonl"?"JSONL manifest":"Folder"} · ×${dataset.repeats}`;
     const warning=sourceIssues.some(issue=>issue.level==="error")?"error":sourceIssues.length?"warning":inventory?.missing_caption_count?"warning":"";
-    return `<div class="dataset-source-row"><button class="dataset-source ${index===state.selectedDataset?"active":""}" data-index="${index}" aria-current="${index===state.selectedDataset?"true":"false"}"><span class="source-icon">${dataset.kind==="video"?"▶":"▧"}</span><span><strong>${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}</strong><small>Source ${index+1} · ${esc(effective)}</small></span>${warning?`<i class="${warning}" title="${sourceIssues.length||inventory.missing_caption_count} item(s) need attention"></i>`:""}${inventory&&knownInventories.length===payload.datasets.length?`<b class="source-weight" style="width:${weight}%"></b>`:""}</button><button type="button" class="dataset-source-toggle disable" data-toggle-dataset="${index}" title="Disable this source for the next run" aria-label="Disable ${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}">×</button></div>`;
-  }).join("");
-  const disabledMarkup=disabledDatasets.map((dataset,index)=>`<div class="dataset-source-row disabled"><div class="dataset-source disabled-source" aria-disabled="true" title="This source is excluded from training"><span class="source-icon">×</span><span><strong>${esc(datasetBasename(dataset.source)||`Disabled source ${index+1}`)}</strong><small>Disabled · click ✓ to restore</small></span></div><button type="button" class="dataset-source-toggle enable" data-toggle-disabled="${index}" title="Re-enable this source for training" aria-label="Re-enable ${esc(datasetBasename(dataset.source)||`disabled source ${index+1}`)}">✓</button></div>`).join("");
-  host.innerHTML=activeMarkup+disabledMarkup||(payload.datasets.length||disabledDatasets.length?"":"No sources in this document.");
+    return `<div class="dataset-source ${index===state.selectedDataset?"active":""}" data-source-position="${position}"><button type="button" class="source-icon source-toggle included" data-toggle-dataset="${index}" data-position="${position}" aria-pressed="true" title="Included in training — click to exclude" aria-label="Exclude ${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}">✓</button><button class="source-copy" data-index="${index}" aria-current="${index===state.selectedDataset?"true":"false"}"><strong>${esc(datasetBasename(dataset.source)||`Source ${index+1}`)}</strong><small>Source ${index+1} · ${esc(effective)}</small></button>${warning?`<i class="${warning}" title="${sourceIssues.length||inventory.missing_caption_count} item(s) need attention"></i>`:""}${inventory&&knownInventories.length===payload.datasets.length?`<b class="source-weight" style="width:${weight}%"></b>`:""}</div>`;
+  };
+  const disabledMarkup=(dataset,index,position)=>`<div class="dataset-source disabled-source" data-source-position="${position}" title="This source is excluded from training"><button type="button" class="source-icon source-toggle excluded" data-toggle-disabled="${index}" data-position="${position}" aria-pressed="false" title="Excluded from training — click to restore" aria-label="Restore ${esc(datasetBasename(dataset.source)||`disabled source ${index+1}`)}">×</button><span class="source-copy"><strong>${esc(datasetBasename(dataset.source)||`Disabled source ${index+1}`)}</strong><small>Excluded from training</small></span></div>`;
+  const total=payload.datasets.length+disabledDatasets.length,slots=Array(total).fill(null),overflow=[];
+  disabledDatasets.forEach((dataset,index)=>{const position=Math.max(0,Math.min(Number(dataset.position??total-1),Math.max(0,total-1)));if(slots[position]===null)slots[position]={disabled:true,dataset,index,position};else overflow.push({disabled:true,dataset,index})});
+  let activeIndex=0,overflowIndex=0;
+  for(let position=0;position<total;position++){if(slots[position]!==null)continue;if(activeIndex<payload.datasets.length)slots[position]={disabled:false,dataset:payload.datasets[activeIndex],index:activeIndex++,position};else{const item=overflow[overflowIndex++];slots[position]={...item,position}}}
+  host.innerHTML=slots.map(item=>item.disabled?disabledMarkup(item.dataset,item.index,item.position):activeMarkup(item.dataset,item.index,item.position)).join("")||(total?"":"No sources in this document.");
   host.querySelectorAll("[data-index]").forEach(button=>button.addEventListener("click",async()=>{
     const index=Number(button.dataset.index);
     try{
@@ -1414,11 +1418,11 @@ function renderDatasetRail(){
   }));
   host.querySelectorAll("[data-toggle-dataset]").forEach(button=>button.addEventListener("click",event=>{
     event.stopPropagation();
-    toggleDatasetSource(Number(button.dataset.toggleDataset),true,button).catch(error=>toast(error.message,"error"));
+    toggleDatasetSource(Number(button.dataset.toggleDataset),true,Number(button.dataset.position),button).catch(error=>toast(error.message,"error"));
   }));
   host.querySelectorAll("[data-toggle-disabled]").forEach(button=>button.addEventListener("click",event=>{
     event.stopPropagation();
-    toggleDatasetSource(Number(button.dataset.toggleDisabled),false,button).catch(error=>toast(error.message,"error"));
+    toggleDatasetSource(Number(button.dataset.toggleDisabled),false,Number(button.dataset.position),button).catch(error=>toast(error.message,"error"));
   }));
 }
 function renderDatasetHead(){
@@ -1622,17 +1626,18 @@ async function mutateDataset(endpoint,extra,selected=state.selectedDataset,{mess
     if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
   }catch(error){renderIssues([{level:"error",message:error.message}]);toast(error.message,"error")}
 }
-async function toggleDatasetSource(index,disabled,button){
+async function toggleDatasetSource(index,disabled,position,button){
   try{
     await flushDatasetDraft();
-    const previous=state.selectedDataset;
-    const payload=await withBusy(button,disabled?"Disabling…":"Enabling…",()=>api("/api/dataset/toggle-disabled",{method:"POST",body:JSON.stringify({text:$("#dataset-source").value,path:$("#dataset-path").value,index,disabled})}));
+    const previous=state.selectedDataset,rail=$("#dataset-list"),railScroll=rail.scrollTop,railScrollLeft=rail.scrollLeft;
+    const payload=await withBusy(button,"",()=>api("/api/dataset/toggle-disabled",{method:"POST",body:JSON.stringify({text:$("#dataset-source").value,path:$("#dataset-path").value,index,disabled,position})}));
     state.datasetInventories={};state.datasetAudit=null;state.datasetMedia=null;
     let selected=-1;
     if(disabled){
       if(payload.datasets.length){selected=previous===index?Math.min(index,payload.datasets.length-1):previous>index?previous-1:previous;selected=Math.max(0,Math.min(selected,payload.datasets.length-1))}
-    }else if(payload.datasets.length){selected=payload.datasets.length-1}
-    renderDataset(payload,selected);setDatasetDirty(true);
+    }else if(payload.datasets.length){selected=Number(payload.disabled_action?.active_index??payload.datasets.length-1)}
+    state.dataset=payload;state.selectedDataset=selected;$("#dataset-source").value=payload.text||"";$("#dataset-count").textContent=payload.datasets.length;
+    renderDatasetRail();rail.scrollTop=railScroll;rail.scrollLeft=railScrollLeft;rail.querySelector(`[data-source-position="${position}"] .source-toggle`)?.focus({preventScroll:true});renderDatasetHead();renderDatasetEditor();renderDatasetOverview();renderIssues(payload.issues||[]);setDatasetTab(selected<0?"settings":state.datasetTab,{load:false});setDatasetDirty(true);
     toast(disabled?"Source disabled for training. Its settings remain in the TOML and can be restored.":"Source re-enabled for training. Save the TOML when ready.");
     if(selected>=0&&state.datasetTab==="media")loadDatasetMedia({skipFlush:true}).catch(error=>renderDatasetMediaError(error));
   }catch(error){renderIssues([{level:"error",message:error.message}]);throw error}
@@ -1931,7 +1936,7 @@ function renderActive(job) {
   if(job?.captured_thumbnails&&state.captureNoticeJob!==job.id){state.captureNoticeJob=job.id;toast(`${job.captured_thumbnails} tested prompt thumbnail${job.captured_thumbnails===1?"":"s"} added to the library.`)}
   const live = job && ["starting","running","stopping"].includes(job.status),training = live && ["training","staged_training"].includes(job.kind);
   const stopNext=$("#stop-next-epoch"),armed=Boolean(training && job?.stop_after_epoch);
-  $("#run-dot").classList.toggle("live", live); $("#stop-job").disabled = !live || job.status === "stopping"; stopNext.disabled=!training || job.status === "stopping"; stopNext.classList.toggle("active",armed); stopNext.setAttribute("aria-pressed",String(armed)); stopNext.textContent=armed?`Stop after epoch ${job.stop_after_epoch}`:"Stop after next epoch"; stopNext.title=armed?`Armed: finish epoch ${job.stop_after_epoch}, including any scheduled samples, then stop.`:"Finish the next epoch, including any scheduled samples, then stop and leave a resumable state when configured.";
+  $("#run-dot").classList.toggle("live", live); $("#stop-job").disabled = !live || job.status === "stopping"; stopNext.disabled=!training || job.status === "stopping"; stopNext.classList.toggle("active",armed); stopNext.setAttribute("aria-pressed",String(armed)); stopNext.textContent=armed?`Stopping after epoch ${job.stop_after_epoch}`:"Stop after current epoch"; stopNext.title=armed?`Armed: finish epoch ${job.stop_after_epoch}, including its checkpoint and scheduled samples, then stop.`:"Finish the current epoch, including its checkpoint and scheduled samples, then stop and leave a resumable state when configured.";
   $("#active-title").textContent = job?.name || "Training control"; $("#active-subtitle").textContent = job ? `${job.phase} · command ${job.command_index}/${job.command_count}` : "No Musubi process is running.";
   $("#active-status").textContent = (job?.status || "idle").toUpperCase();
 }
@@ -2141,6 +2146,10 @@ function jobLineageKind(job){
 }
 function jobLineageLabel(kind){return kind==="lora"?"LoRA continuation":kind==="state-recovery"?"Resumed state":kind==="state"?"State continuation":""}
 function jobIdentity(job){return `${job._source||"desktop"}:${job._history_index??job.id??job.job_id??job.name??"job"}`}
+function jobOutputIdentity(job){
+  const snapshot=job.settings_snapshot||job.settings||{},dir=String(snapshot.output_dir||job.output_dir||"").replaceAll("\\","/").replace(/\/+$/,""),name=String(snapshot.output_name||job.output_name||job.name||"");
+  return `${dir}/${name}`.toLowerCase();
+}
 function jobLineageChain(job){
   const all=state.jobs||[],chain=[],seen=new Set(),byId=new Map();
   all.forEach(item=>[item.id,item.job_id].filter(Boolean).forEach(id=>byId.set(String(id),item)));
@@ -2158,16 +2167,71 @@ function jobLineageChain(job){
   }
   return chain.reverse();
 }
+function jobLineageGroups(chain){
+  const groups=[];
+  chain.forEach(item=>{
+    const previous=groups.at(-1),sameOutput=previous&&jobOutputIdentity(previous.items[0])===jobOutputIdentity(item);
+    if(sameOutput&&jobLineageKind(item)==="state-recovery")previous.items.push(item);
+    else groups.push({items:[item]});
+  });
+  return groups;
+}
+function lineageProgress(job){
+  const snapshot=job.settings_snapshot||job.settings||{},metrics=job.metrics||{},p=job.performance||{},plannedSteps=Number(p.total_steps||metrics.total_steps||job.total_steps||snapshot.max_train_steps||0),plannedEpochs=Number(p.total_epochs||metrics.total_epochs||job.total_epochs||snapshot.max_train_epochs||0),savedSteps=Number(p.saved_step??p.accounted_step??p.step??0),savedEpochs=Number(p.saved_epoch??(plannedSteps&&plannedEpochs?Math.round(plannedEpochs*savedSteps/plannedSteps):0));
+  return {p,plannedSteps,plannedEpochs,savedSteps,savedEpochs};
+}
+function buildLineageSummary(job){
+  const chain=jobLineageChain(job),groups=jobLineageGroups(chain),selected=lineageProgress(job),title=job.name||job.output_name||job.title||"Unnamed LoRA",lines=[`Training lineage: ${title}`,`Cumulative saved training: ${Number(selected.p.cumulative_step||selected.savedSteps).toLocaleString()} steps · ${Number(selected.p.cumulative_epoch||selected.savedEpochs)} effective epochs`,""];
+  groups.forEach((group,index)=>{
+    const item=group.items.at(-1),q=lineageProgress(item),next=groups[index+1]?.items[0],selectedEpoch=Number(next?.continuation_source_epoch||0),selectedStep=Number(next?.continuation_source_step||0),usedEpoch=selectedEpoch||q.savedEpochs,usedSteps=selectedStep||(selectedEpoch&&q.plannedSteps&&q.plannedEpochs?Math.round(q.plannedSteps*Math.min(selectedEpoch,q.plannedEpochs)/q.plannedEpochs):q.savedSteps),kind=jobLineageLabel(jobLineageKind(group.items[0]))||"Base training",attempts=group.items.length>1?` · ${group.items.length} attempts (${group.items.length-1} exact resume${group.items.length===2?"":"s"})`:"",checkpoint=next?"selected checkpoint":"final saved checkpoint";
+    lines.push(`${index+1}. ${item.name||item.output_name||item.title||"Unnamed job"}`);
+    lines.push(`   ${kind}${attempts}`);
+    lines.push(`   ${checkpoint}: epoch ${usedEpoch} · ${Number(usedSteps).toLocaleString()} local steps`);
+    if(group.items.length>1){
+      const firstResume=group.items.find(attempt=>jobLineageKind(attempt)==="state-recovery"),lastResume=group.items.at(-1),lastProgress=lineageProgress(lastResume),resumeEpoch=Number(firstResume?.continuation_source_epoch||0);
+      if(resumeEpoch)lines.push(`   resumed after epoch ${resumeEpoch} · reached epoch ${lastProgress.savedEpochs} of ${lastProgress.plannedEpochs||"?"}`);
+    }
+  });
+  return lines.join("\n");
+}
+async function copyLineageSummary(job){
+  await navigator.clipboard.writeText(buildLineageSummary(job));
+  toast("Lineage summary copied to the clipboard.");
+}
+function openJobLineageDetail(job,attempts=[job]){
+  const snapshot=job.settings_snapshot||job.settings||{},metrics=job.metrics||{},p=job.performance||{},
+    name=job.name||job.output_name||job.title||"Unnamed job",kind=jobLineageKind(job),
+    saved=p.saved_step??p.accounted_step??p.step??0,planned=p.total_steps||job.total_steps||snapshot.max_train_steps||"—",
+    savedEpoch=p.saved_epoch??(Number(planned)&&Number(p.total_epochs||job.total_epochs||snapshot.max_train_epochs)?Math.round(Number(p.total_epochs||job.total_epochs||snapshot.max_train_epochs)*Number(saved)/Number(planned)):0),
+    plannedEpochs=p.total_epochs||metrics.total_epochs||job.total_epochs||snapshot.max_train_epochs||"—",
+    parent=job.continuation_parent_title||job.continuation_parent_id||"No recorded parent",comment=snapshot.training_comment||job.training_comment||job.note||job.comment||"—",
+    outputDir=snapshot.output_dir||job.output_dir||"—",outputName=snapshot.output_name||job.output_name||"—",dataset=snapshot.dataset_config||job.dataset_config||"—",
+    statePath=snapshot.resume_path||job.resume_path||"—",weights=snapshot.network_weights||job.network_weights||"—";
+  $("#job-lineage-detail-title").textContent=name;
+  $("#job-lineage-detail-subtitle").textContent=`${jobLineageLabel(kind)||"Base run"} · ${job.status||"unknown"} · click outside or × to close`;
+  const attemptRows=attempts.map((attempt,index)=>{const q=lineageProgress(attempt),source=jobLineageKind(attempt)==="state-recovery"?Number(attempt.continuation_source_epoch||0):0,added=Math.max(0,q.savedEpochs-source),target=q.plannedEpochs||"—";return [`Attempt ${index+1}`,source?`resumed after epoch ${source} · reached ${q.savedEpochs}/${target} · added ${added} epoch${added===1?"":"s"}`:`started this logical run · reached ${q.savedEpochs}/${target}`]});
+  const sections=[
+    ["Identity",[["Full job name",name],["Lineage role",jobLineageLabel(kind)||"Base run"],["Status",job.status||"—"],["Source",`${job._source||"desktop"} GUI`],["Started",job.started_at?new Date(job.started_at).toLocaleString():"—"],["Finished",job.finished_at?new Date(job.finished_at).toLocaleString():"—"]]],
+    ["Saved progress",[["Saved steps",saved],["Planned steps",planned],["Saved epochs",savedEpoch],["Planned epochs",plannedEpochs],["Previous parent",parent],["Source checkpoint",job.continuation_source_epoch?`Epoch ${job.continuation_source_epoch}`:job.continuation_source_step?`Step ${job.continuation_source_step}`:"—"]]],
+    ...(attempts.length>1?[["Resume attempts",attemptRows]]:[]),
+    ["Recipe and files",[["Training mode",job.mode||snapshot.training_mode||"—"],["Output name",outputName],["Output folder",outputDir],["Dataset TOML",dataset],["Resume state",statePath],["Starting LoRA",weights]]],
+    ["Notes",[["LoRA comment",comment]]],
+  ];
+  $("#job-lineage-detail-content").innerHTML=sections.map(([title,rows])=>`<section class="job-detail-group"><h3>${esc(title)}</h3>${rows.map(([label,value])=>`<div class="review-row"><span>${esc(label)}</span><strong>${esc(value??"—")}</strong></div>`).join("")}</section>`).join("");
+  $("#job-lineage-detail-dialog").showModal();
+}
 function renderJobLineage(job){
-  const panel=$("#job-lineage-panel"),graph=$("#job-lineage-graph"),caption=$("#job-lineage-caption"),chain=jobLineageChain(job);
+  const panel=$("#job-lineage-panel"),graph=$("#job-lineage-graph"),caption=$("#job-lineage-caption"),chain=jobLineageChain(job),groups=jobLineageGroups(chain),selected=lineageProgress(job),cumulative=Number(selected.p.cumulative_step||selected.savedSteps),cumulativeEpoch=Number(selected.p.cumulative_epoch||selected.savedEpochs);
   panel.hidden=false;
-  caption.textContent=chain.length>1?"Oldest → newest · saved checkpoints · highlighted = selected · click a parent to open its job details":"No recorded parent was found for this job";
-  graph.innerHTML=chain.map((item,index)=>{
-    const p=item.performance||{},snapshot=item.settings_snapshot||item.settings||{},kind=jobLineageKind(item),saved=p.saved_step??p.accounted_step??p.step??0,total=p.total_steps||item.total_steps||snapshot.max_train_steps||"—",epochs=p.total_epochs||item.metrics?.total_epochs||item.total_epochs||snapshot.max_train_epochs||"—",savedEpoch=p.saved_epoch??(Number(total)&&Number(epochs)?Math.round(Number(epochs)*Number(saved)/Number(total)):0),current=item===job,key=jobIdentity(item),sourceEpoch=Number(item.continuation_source_epoch||0),sourceStep=Number(item.continuation_source_step||0),edgeLabel=sourceEpoch?`from saved epoch ${sourceEpoch}`:sourceStep?`from saved step ${sourceStep}`:"continuation";
-    const node=`<article class="job-lineage-node ${current?"current":""} ${kind}" ${current?"":"data-lineage-key=\"${esc(key)}\" tabindex=\"0\" role=\"button\""}><div class="job-lineage-node-head"><strong>${esc(item.name||item.output_name||item.title||"Unnamed job")}</strong>${kind?`<span class="job-lineage-badge ${kind}">${esc(jobLineageLabel(kind))}</span>`:""}</div><small>${esc(item.status||"")} · ${esc(item.started_at?new Date(item.started_at).toLocaleDateString():"")}</small><div class="job-lineage-metrics"><span><b>${esc(saved)}</b> saved steps</span><span><b>${esc(savedEpoch)}</b> saved epochs <em>/ ${esc(epochs)} planned</em></span></div></article>`;
+  caption.textContent=`${cumulative.toLocaleString()} cumulative saved steps · ${cumulativeEpoch} effective saved epochs · exact resumes are grouped`;
+  $("#job-lineage-copy").onclick=()=>copyLineageSummary(job).catch(error=>toast(error.message,"error"));
+  graph.innerHTML=groups.map((group,index)=>{
+    const item=group.items.at(-1),first=group.items[0],q=lineageProgress(item),kind=jobLineageKind(first),current=group.items.includes(job),key=jobIdentity(item),sourceEpoch=Number(first.continuation_source_epoch||0),sourceStep=Number(first.continuation_source_step||0),edgeLabel=sourceEpoch?`from saved epoch ${sourceEpoch}`:sourceStep?`from saved step ${sourceStep}`:"continuation",resumes=group.items.filter(attempt=>jobLineageKind(attempt)==="state-recovery").length;
+    const latestSource=jobLineageKind(item)==="state-recovery"?Number(item.continuation_source_epoch||0):0,latestAdded=latestSource?Math.max(0,q.savedEpochs-latestSource):q.savedEpochs,attemptLabel=group.items.length>1?`${group.items.length} attempts · ${resumes} exact resume${resumes===1?"":"s"}`:"one attempt";
+    const node=`<article class="job-lineage-node ${current?"current":""} ${kind}" data-lineage-key="${esc(key)}" tabindex="0" role="button" title="Click to see this logical run and its attempts"><div class="job-lineage-node-head"><strong>${esc(item.name||item.output_name||item.title||"Unnamed job")}</strong>${kind?`<span class="job-lineage-badge ${kind}">${esc(group.items.length>1?"Logical run":jobLineageLabel(kind))}</span>`:""}</div><small>${esc(attemptLabel)} · ${esc(item.status||"")}</small><div class="job-lineage-metrics"><span><b>${esc(q.savedSteps.toLocaleString())}</b> saved steps</span><span><b>Epoch ${esc(q.savedEpochs)}</b> <em>of ${esc(q.plannedEpochs||"—")}</em></span></div>${latestSource?`<small class="job-lineage-resume-summary">Latest resume: after epoch ${esc(latestSource)} → added ${esc(latestAdded)}</small>`:""}</article>`;
     return `${index?`<div class="job-lineage-link" aria-label="${esc(edgeLabel)}"><span class="job-lineage-arrow" aria-hidden="true">→</span><small>${esc(edgeLabel)}</small></div>`:""}<div class="job-lineage-node-wrap">${node}</div>`;
   }).join("");
-  $$("#job-lineage-graph [data-lineage-key]").forEach(node=>{const parent=chain.find(item=>jobIdentity(item)===node.dataset.lineageKey);if(parent){const open=()=>showJobDetails(parent,{dataset:{source:parent._source||"desktop",index:parent._history_index??-1}});node.addEventListener("click",open);node.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();open()}})}});
+  $$("#job-lineage-graph [data-lineage-key]").forEach(node=>{const group=groups.find(candidate=>jobIdentity(candidate.items.at(-1))===node.dataset.lineageKey);if(group){const open=()=>openJobLineageDetail(group.items.at(-1),group.items);node.addEventListener("click",open);node.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();open()}})}});
   // Keep the graph horizontally scrollable on narrow dialogs, but make the
   // mouse wheel useful: vertical wheel movement pans the lineage instead of
   // moving the page while the pointer is over the graph.
@@ -2318,7 +2382,7 @@ $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{met
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});
 $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{state.sampleMode=button.dataset.sampleMode;$$("[data-sample-mode]").forEach(x=>x.classList.toggle("active",x===button));if(state.samples){if(state.sampleMode==="gallery")renderSampleGallery();else if(state.samples.groups.length)renderComparison(Math.min(compareState.group,state.samples.groups.length-1))}}));
 $("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});
-$("#stop-next-epoch").addEventListener("click",async event=>{const enabled=!event.currentTarget.classList.contains("active");try{const payload=await api("/api/jobs/stop-after-next-epoch",{method:"POST",body:JSON.stringify({enabled})});renderActive(payload.job);toast(enabled?`Armed: training will stop after epoch ${payload.job.stop_after_epoch}, including its scheduled samples.`:"Next-epoch stop cancelled.")}catch(e){toast(e.message,"error")}});
+$("#stop-next-epoch").addEventListener("click",async event=>{const enabled=!event.currentTarget.classList.contains("active");try{const payload=await api("/api/jobs/stop-after-epoch",{method:"POST",body:JSON.stringify({enabled})});renderActive(payload.job);toast(enabled?`Armed: training will stop at the end of epoch ${payload.job.stop_after_epoch}, after its checkpoint and scheduled samples.`:"Current-epoch stop cancelled.")}catch(e){toast(e.message,"error")}});
 $("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
 $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));
 function setTerminalToggle(button,active){button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active))}

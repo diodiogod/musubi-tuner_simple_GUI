@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from importlib.util import find_spec
@@ -61,6 +62,10 @@ VIDEO_DATASET_KEYS = {
 # the block until the GUI explicitly re-enables it.
 DISABLED_DATASET_START = "# musubi-gui: disabled dataset v1"
 DISABLED_DATASET_END = "# musubi-gui: end disabled dataset"
+DISABLED_DATASET_POSITION = "__musubi_gui_position"
+DISABLED_DATASET_START_PATTERN = re.compile(
+    r"^#\s*musubi-gui:\s*disabled dataset v1(?:\s+position=(\d+))?\s*$"
+)
 
 
 class DocumentConflictError(RuntimeError):
@@ -122,10 +127,12 @@ def _split_disabled_datasets(text: str) -> tuple[str, list[dict[str, Any]]]:
     lines = text.splitlines(keepends=True)
     cursor = 0
     while cursor < len(lines):
-        if lines[cursor].strip() != DISABLED_DATASET_START:
+        marker = DISABLED_DATASET_START_PATTERN.match(lines[cursor].strip())
+        if marker is None:
             active_lines.append(lines[cursor])
             cursor += 1
             continue
+        position = int(marker.group(1)) if marker.group(1) is not None else None
         cursor += 1
         block_lines: list[str] = []
         found_end = False
@@ -147,7 +154,10 @@ def _split_disabled_datasets(text: str) -> tuple[str, list[dict[str, Any]]]:
         entries = block_plain.get("datasets")
         if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
             raise ValueError("Each disabled dataset block must contain exactly one [[datasets]] entry.")
-        disabled.append(_json_safe(entries[0]))
+        dataset = _json_safe(entries[0])
+        if position is not None:
+            dataset[DISABLED_DATASET_POSITION] = position
+        disabled.append(dataset)
     return "".join(active_lines), disabled
 
 
@@ -156,8 +166,11 @@ def _append_disabled_datasets(text: str, disabled: list[dict[str, Any]]) -> str:
         return text
     blocks = []
     for dataset in disabled:
-        serialized = toml.dumps({"datasets": [_json_safe(dataset)]}).rstrip()
-        blocks.append(f"{DISABLED_DATASET_START}\n{_comment_disabled_block(serialized)}{DISABLED_DATASET_END}\n")
+        stored = _json_safe(dataset)
+        position = stored.pop(DISABLED_DATASET_POSITION, None)
+        serialized = toml.dumps({"datasets": [stored]}).rstrip()
+        marker = f"{DISABLED_DATASET_START} position={int(position)}" if position is not None else DISABLED_DATASET_START
+        blocks.append(f"{marker}\n{_comment_disabled_block(serialized)}{DISABLED_DATASET_END}\n")
     base = text.rstrip()
     return (base + "\n\n" if base else "") + "\n".join(blocks)
 
@@ -274,9 +287,11 @@ def summarize_document(text: str, source_path: str = "") -> dict[str, Any]:
     summaries = [_dataset_summary(dataset, index, general) for index, dataset in enumerate(datasets)]
     disabled_summaries = []
     for disabled_index, dataset in enumerate(disabled_datasets):
-        summary = _dataset_summary(dataset, len(summaries) + disabled_index, general)
+        clean_dataset = {key: value for key, value in dataset.items() if key != DISABLED_DATASET_POSITION}
+        summary = _dataset_summary(clean_dataset, len(summaries) + disabled_index, general)
         summary["disabled"] = True
         summary["disabled_index"] = disabled_index
+        summary["position"] = int(dataset.get(DISABLED_DATASET_POSITION, len(summaries) + disabled_index))
         disabled_summaries.append(summary)
     return {
         "path": source_path,
@@ -685,6 +700,7 @@ def toggle_dataset_disabled(
     index: int,
     disabled: bool,
     source_path: str = "",
+    position: int | None = None,
 ) -> dict[str, Any]:
     """Disable or re-enable one source without deleting its TOML settings.
 
@@ -703,17 +719,27 @@ def toggle_dataset_disabled(
     if disabled:
         if index < 0 or index >= len(datasets):
             raise IndexError(f"Dataset index {index} does not exist.")
-        removed = datasets.pop(index)
-        disabled_datasets.append(_plain_dataset(removed))
+        removed = _plain_dataset(datasets.pop(index))
+        removed[DISABLED_DATASET_POSITION] = max(0, int(position if position is not None else index))
+        disabled_datasets.append(removed)
         action = "disabled"
+        active_index = None
     else:
         if index < 0 or index >= len(disabled_datasets):
             raise IndexError(f"Disabled dataset index {index} does not exist.")
         restored = disabled_datasets.pop(index)
-        datasets.append(_dataset_node_from_plain(restored))
+        restored_position = max(0, int(restored.pop(DISABLED_DATASET_POSITION, position or 0)))
+        disabled_before = sum(
+            1
+            for item in disabled_datasets
+            if int(item.get(DISABLED_DATASET_POSITION, len(datasets) + len(disabled_datasets))) < restored_position
+        )
+        active_position = max(0, min(restored_position - disabled_before, len(datasets)))
+        datasets.insert(active_position, _dataset_node_from_plain(restored))
         action = "enabled"
+        active_index = active_position
     summary = summarize_document(_dump_document_with_disabled(document, disabled_datasets), source_path)
-    summary["disabled_action"] = {"action": action, "index": index}
+    summary["disabled_action"] = {"action": action, "index": index, "active_index": active_index}
     return summary
 
 

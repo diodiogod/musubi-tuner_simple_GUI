@@ -81,6 +81,24 @@ def test_shared_history_exposes_performance_log_and_comparison_ui():
     assert "function replaySettings" in app_js
 
 
+def test_lineage_nodes_open_full_closeable_details():
+    index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
+    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
+    styles_css = Path("modern_gui/static/styles.css").read_text(encoding="utf-8")
+
+    assert 'id="job-lineage-detail-dialog"' in index_html
+    assert 'id="job-lineage-detail-title"' in index_html
+    assert "function openJobLineageDetail" in app_js
+    assert "function jobLineageGroups" in app_js
+    assert "function buildLineageSummary" in app_js
+    assert "Lineage summary copied to the clipboard." in app_js
+    assert 'id="job-lineage-copy"' in index_html
+    assert 'title="Click to see this logical run and its attempts"' in app_js
+    assert "openJobLineageDetail(group.items.at(-1),group.items)" in app_js
+    assert "exact resumes are grouped" in app_js
+    assert ".job-lineage-detail-dialog" in styles_css
+
+
 def test_advanced_training_help_is_specific_and_dop_is_separate():
     index_html = Path("modern_gui/static/index.html").read_text(encoding="utf-8")
     app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")

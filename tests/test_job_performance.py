@@ -136,6 +136,27 @@ def test_saved_checkpoint_caps_accounted_steps_after_interruption(tmp_path):
     assert progress["step"] == 3263
     assert progress["saved_step"] == 3258
     assert progress["accounted_step"] == 3258
+    assert progress["accounted_epoch"] == 2
+    assert progress["cumulative_epoch"] == 2
+
+
+def test_exact_resume_cumulative_epochs_do_not_count_the_active_unsaved_epoch(tmp_path):
+    run_dir = tmp_path / "runs" / "portrait-cont"
+    run_dir.mkdir(parents=True)
+    (run_dir / "portrait-cont-000009-state").mkdir()
+    job = {
+        "status": "stopped",
+        "finished_at": "2030-01-01T00:00:00+00:00",
+        "settings": {"output_dir": str(tmp_path / "runs"), "output_name": "portrait-cont"},
+        "metrics": {"step": 6150, "total_steps": 6830, "epoch": 10, "total_epochs": 10},
+        "continuation_prior_steps": 19548,
+        "continuation_prior_epochs": 12,
+    }
+
+    progress = job_performance.cumulative_progress(job)
+
+    assert progress["saved_epoch"] == 9
+    assert progress["cumulative_epoch"] == 21
 
 
 def test_state_continuation_uses_explicit_step_checkpoint_name(tmp_path):

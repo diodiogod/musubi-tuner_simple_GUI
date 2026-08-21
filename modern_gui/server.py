@@ -107,6 +107,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/tools/accelerate-config",
         "/api/jobs/start",
         "/api/jobs/stop",
+        "/api/jobs/stop-after-epoch",
         "/api/jobs/stop-after-next-epoch",
         "/api/jobs/open-path",
         "/api/jobs/import-found",
@@ -424,6 +425,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                         int(body.get("index", -1)),
                         bool(body.get("disabled", True)),
                         body.get("path", ""),
+                        int(body["position"]) if body.get("position") is not None else None,
                     )
                 )
             if self.path == "/api/dataset/remove":
@@ -798,8 +800,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 return self._json({"job": SUPERVISOR.start(settings, bool(body.get("run_cache", True)))})
             if self.path == "/api/jobs/stop":
                 return self._json({"job": SUPERVISOR.stop()})
-            if self.path == "/api/jobs/stop-after-next-epoch":
-                return self._json({"job": SUPERVISOR.stop_after_next_epoch(bool(body.get("enabled", True)))})
+            if self.path in {"/api/jobs/stop-after-epoch", "/api/jobs/stop-after-next-epoch"}:
+                return self._json({"job": SUPERVISOR.stop_after_current_epoch(bool(body.get("enabled", True)))})
             if self.path in {"/api/jobs/prepare-continuation", "/api/jobs/prepare-recovery"}:
                 source = body.get("source", "desktop")
                 index = int(body.get("index", -1))
