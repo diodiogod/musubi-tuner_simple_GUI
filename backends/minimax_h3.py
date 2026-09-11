@@ -215,8 +215,8 @@ def build_commands(settings):
 def _build_multimodal_commands(settings):
     """Build the isolated upstream video/joint-audio trainer command."""
     if is_mixed_one_frame(settings):
-        if str(settings.get("minimax_h3_multimodal_task") or "t2va") != "t2va":
-            raise ValueError("Mixed native MiniMax image/video training currently supports T2VA only")
+        if str(settings.get("minimax_h3_multimodal_task") or "t2va") == "ref2va":
+            raise ValueError("Mixed native MiniMax image/video training currently supports T2VA or FL2VA, not Ref2VA")
         if settings.get("minimax_h3_teacher_matching"):
             raise ValueError("Mixed native one-frame training is not yet compatible with teacher matching")
     cmd = [
@@ -347,8 +347,8 @@ def _build_multimodal_cache_commands(settings, python_executable):
     commands = []
     task = settings.get("minimax_h3_multimodal_task") or "t2va"
     teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
-    if is_mixed_one_frame(settings) and (task != "t2va" or teacher_matching):
-        raise ValueError("Mixed native MiniMax image/video caching requires T2VA with teacher matching disabled")
+    if is_mixed_one_frame(settings) and (task == "ref2va" or teacher_matching):
+        raise ValueError("Mixed native MiniMax image/video caching supports T2VA or FL2VA with teacher matching disabled")
     teacher_conditions = teacher_condition_value(settings.get("minimax_h3_teacher_conditions"))
     if teacher_matching and teacher_conditions == "first,last":
         latent_task = "fl2va"

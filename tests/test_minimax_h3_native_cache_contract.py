@@ -23,6 +23,7 @@ from musubi_tuner.minimax_h3_native.media import (
 )
 from musubi_tuner.minimax_h3_native_cache_latents import (
     build_latent_tensors,
+    build_one_frame_latent_tensors,
     cache_metadata_matches,
     log_audio_presence_summary,
     record_media_paths,
@@ -31,6 +32,7 @@ from musubi_tuner.minimax_h3_native_cache_latents import (
 from musubi_tuner.dataset.bucket import BucketBatchManager
 from musubi_tuner.dataset.cache_io import (
     AUDIO_PRESENT_KEY,
+    ONE_FRAME_CONTROL_INDICES_KEY,
     ONE_FRAME_TARGET_INDEX_KEY,
     save_latent_cache_minimax_h3,
     save_text_encoder_output_cache_minimax_h3,
@@ -66,6 +68,61 @@ def test_one_frame_cache_keys_round_trip_through_bucket_collator(tmp_path: Path)
     assert batch["latents_audio"].shape == (1, 32, 2, 2)
     torch.testing.assert_close(batch["audio_present"], torch.tensor([0.0]))
     torch.testing.assert_close(batch["one_frame_target_index"], torch.tensor([24], dtype=torch.int64))
+
+
+def test_one_frame_fl2va_arbitrary_condition_keys_round_trip_through_bucket_collator(tmp_path: Path):
+    item = ItemInfo("portrait", "an image caption", (64, 64), (64, 64))
+    item.latent_cache_path = str(tmp_path / "portrait_0064x0064_mmh3.safetensors")
+    item.text_encoder_output_cache_path = str(tmp_path / "portrait_mmh3_te.safetensors")
+    tensors = {
+        "latents_1x4x4_float32": torch.zeros(24, 1, 4, 4),
+        "latents_audio_32x2x2_float32": torch.zeros(32, 2, 2),
+        AUDIO_PRESENT_KEY: torch.tensor(0.0),
+        ONE_FRAME_TARGET_INDEX_KEY: torch.tensor(24, dtype=torch.int64),
+        ONE_FRAME_CONTROL_INDICES_KEY: torch.tensor([0, 24, 48], dtype=torch.int64),
+    }
+    for index in range(3):
+        tensors[f"latents_cond_{index:03d}_1x4x4_float32"] = torch.zeros(24, 1, 4, 4)
+    save_latent_cache_minimax_h3(item, tensors, {"task": "fl2va", "one_frame_format": "minimax-h3-one-frame-v2"})
+    save_text_encoder_output_cache_minimax_h3(
+        item,
+        {
+            "varlen_mmh3_hidden_states_bfloat16": torch.zeros(3, 5120, dtype=torch.bfloat16),
+            "varlen_mmh3_token_tags_int64": torch.ones(3, dtype=torch.int64),
+        },
+        {"task": "fl2va"},
+    )
+
+    batch = BucketBatchManager({(64, 64): [item]}, batch_size=1)[0]
+    assert batch["one_frame_control_indices"].tolist() == [[0, 24, 48]]
+    assert all(f"latents_cond_{index:03d}" in batch for index in range(3))
+
+
+def test_one_frame_fl2va_builder_emits_arbitrary_conditions_and_times(monkeypatch):
+    import musubi_tuner.minimax_h3_native_cache_latents as cache_latents
+
+    monkeypatch.setattr(cache_latents, "_encode_target_video", lambda *args: torch.zeros(1, 24, 1, 4, 4))
+    monkeypatch.setattr(cache_latents, "_encode_condition_video", lambda *args: torch.zeros(1, 24, 1, 4, 4))
+    controls = [torch.zeros(64, 64, 3, dtype=torch.uint8) for _ in range(3)]
+
+    payload = build_one_frame_latent_tensors(
+        image_frames=torch.zeros(64, 64, 3, dtype=torch.uint8),
+        target_index=24,
+        video_vae=object(),
+        silence_audio_latent=torch.zeros(32, 2, 2),
+        cache_seed=0,
+        item_key="portrait",
+        video_vae_fingerprint="video",
+        audio_vae_fingerprint="audio",
+        media_fingerprints={},
+        control_frames=controls,
+        control_indices=[0, 24, 48],
+    )
+
+    assert payload.tensors[ONE_FRAME_CONTROL_INDICES_KEY].tolist() == [0, 24, 48]
+    assert all(any(key.startswith(f"latents_cond_{index:03d}_") for key in payload.tensors) for index in range(3))
+    assert payload.metadata["task"] == "fl2va"
+    assert payload.metadata["one_frame_format"] == "minimax-h3-one-frame-v2"
 
 
 @pytest.mark.parametrize(

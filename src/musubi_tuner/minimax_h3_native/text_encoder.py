@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,9 @@ def _require_visual(visuals: Mapping[object, H3TextVisual], key: object, label: 
         raise ValueError(f"MiniMax-H3 presentation is missing {label} visual data") from error
 
 
+_ONE_FRAME_CONDITION_KEY = re.compile(r"^cond_\d{3}$")
+
+
 def build_presentation(
     record: H3Record,
     task: H3Task,
@@ -101,7 +105,18 @@ def build_presentation(
     images = []
     videos = []
     if task == "fl2va":
-        for index, key in enumerate(("first", "last"), start=1):
+        present_keys = [key for key in ("first", "last") if key in visuals]
+        cond_keys = sorted(key for key in visuals if isinstance(key, str) and _ONE_FRAME_CONDITION_KEY.fullmatch(key))
+        if present_keys and cond_keys:
+            raise ValueError("MiniMax-H3 FL2VA presentation cannot mix first/last visuals with one-frame cond_ visuals")
+        if cond_keys:
+            expected = [f"cond_{index:03d}" for index in range(len(cond_keys))]
+            if cond_keys != expected:
+                raise ValueError(f"MiniMax-H3 one-frame FL2VA visuals must be contiguous {expected}, got {cond_keys}")
+            present_keys = cond_keys
+        if not present_keys:
+            raise ValueError("MiniMax-H3 FL2VA presentation requires condition visuals")
+        for index, key in enumerate(present_keys, start=1):
             visual = _require_visual(visuals, key, f"FL2VA {key}")
             if visual.frames.shape[0] != 1:
                 raise ValueError(f"MiniMax-H3 FL2VA {key} visual must contain exactly one frame")

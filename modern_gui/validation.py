@@ -128,8 +128,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             dit_name = Path(str(settings.get("minimax_h3_dit_model") or "")).name.lower()
             selected_task = str(settings.get("minimax_h3_multimodal_task") or "t2va")
             teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
-            if mixed_one_frame and selected_task != "t2va":
-                error("minimax_h3_multimodal_task", "Mixed native image/video training currently supports T2VA only.")
+            if mixed_one_frame and selected_task == "ref2va":
+                error("minimax_h3_multimodal_task", "Mixed native image/video training supports T2VA or FL2VA, not Ref2VA yet.")
             if mixed_one_frame and teacher_matching:
                 error("minimax_h3_teacher_matching", "Reference-guided teacher matching is not yet compatible with native one-frame image batches.")
             if teacher_matching:

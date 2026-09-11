@@ -343,3 +343,36 @@ def test_unbatched_target_rows_round_trip_without_confusing_row_counts_for_batch
 
     torch.testing.assert_close(unpacked_video, video)
     torch.testing.assert_close(unpacked_audio, audio)
+
+
+@pytest.mark.parametrize("condition_count", [1, 2, 3, 5])
+def test_one_frame_fl2va_assigns_arbitrary_ordered_condition_roles(condition_count):
+    conditions = tuple(H3VideoGeometry(1, 4, 4) for _ in range(condition_count))
+    roles = tuple(f"cond_{index:03d}" for index in range(condition_count))
+
+    layout = build_h3_layout(
+        task="fl2va",
+        text_length=2,
+        target_video=H3VideoGeometry(1, 4, 4),
+        target_audio_frames=2,
+        visual_conditions=conditions,
+        one_frame=True,
+        condition_roles=roles,
+        time_overrides=H3TimeOverrides(tuple(float(index * 24) for index in range(condition_count)), 12.0),
+    )
+
+    assert tuple(segment.role for segment in layout.segments if segment.kind == "visual_condition") == roles
+
+
+def test_one_frame_fl2va_rejects_noncanonical_condition_roles():
+    with pytest.raises(ValueError, match="ordered"):
+        build_h3_layout(
+            task="fl2va",
+            text_length=2,
+            target_video=H3VideoGeometry(1, 4, 4),
+            target_audio_frames=2,
+            visual_conditions=(H3VideoGeometry(1, 4, 4),) * 2,
+            one_frame=True,
+            condition_roles=("cond_000", "cond_002"),
+            time_overrides=H3TimeOverrides((0.0, 24.0), 12.0),
+        )

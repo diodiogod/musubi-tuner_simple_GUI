@@ -274,3 +274,16 @@ not contain the GUI files.
   not the official D-OPSD repository's 4/8-step trajectory with an EMA teacher.
 - FLUX.2 Dev rejects the option. Disabled mode preserves upstream Flux.2 behavior.
 - Tests: `tests/test_dop.py` and backend/Modern UI validation tests.
+
+### MiniMax H3 mixed one-frame FL2VA and dataset fixes
+
+- Selectively carries the arbitrary ordered one-frame FL2VA condition contract from upstream PR
+  `#1096`: cache roles are `cond_000`, `cond_001`, ... and each has an explicit 24-fps timeline
+  index. Mixed T2VA behavior is unchanged; one-frame Ref2VA remains deliberately unsupported.
+- Also carries the independent correctness fixes from upstream PRs `#1093` and `#1100`: JSONL
+  sources sharing a cache directory cannot ingest another split's cache files, and video latent
+  caching honors `enable_bucket` plus `bucket_no_upscale`.
+- Generation-time FL2VA condition pictures use the same cover-and-center-crop policy as training
+  controls (upstream `f6944e5`) instead of being stretched.
+- Changing ordered control pixels or times invalidates the one-frame latent cache. Existing mixed
+  T2VA recipes keep their original workflow value and remain compatible.

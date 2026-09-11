@@ -61,8 +61,8 @@ The **Video + images · official mixed T2VA** workflow adapts upstream Musubi PR
 image and video dataset sections in the same TOML. Images are encoded as true single-token H3 video
 targets; they are not duplicated into artificial clips. Video sections retain their configured full
 clips and frame extraction. Every batch is dispatched from its cached latent shape, so image and video
-buckets can train in one run. This mode currently supports T2VA only and cannot be combined with
-reference-guided teacher matching.
+buckets can train in one run. Mixed mode supports plain T2VA images and one-frame FL2VA images with
+ordered controls. Ref2VA image targets and reference-guided teacher matching remain unavailable here.
 
 ```toml
 [general]
@@ -85,6 +85,13 @@ target_frames = [22, 39, 90]
 Use a different `cache_directory` for image and video sources. The GUI adds `--one_frame` to both
 cache commands and the trainer automatically. Image caches contain an unsupervised two-frame silence
 placeholder (`audio_present=0`), while real video audio follows the normal presence-gated policy.
+
+For a mixed FL2VA image source, supply one or more ordered control images through
+`control_directory` or numbered image-JSONL `control_path` fields, set an explicit
+`fp_1f_target_index`, and set one `fp_1f_clean_indices` 24-fps timeline position per control.
+The controls become `<Picture 1>`, `<Picture 2>`, and so on in that exact order. One or two anchors
+match the released FL2VA interface; three or more are intentionally experimental. Rebuild both
+latent and text caches after changing the task, controls, or their times.
 
 The GUI supports the same media contract in both the Modern and Classic interfaces. A normal
 video folder is enough for T2VA or FL2VA. Audio may be embedded in each video or stored beside it
@@ -373,7 +380,11 @@ All entries in one run use the training `--task`. T2VA JSON entries use the comm
 ]
 ```
 
-FL2VA entries additionally use `first_frame` and `last_frame`; the common `image_path` and `end_image_path` names are accepted as aliases. Ref2VA entries use `reference_jsonl`, optional `reference_index`, and an optional `prompt` override. Ref2VA keeps the same ordered JSONL schema as caching and standalone generation.
+FL2VA video entries use `first_frame` and `last_frame`; the common `image_path` and `end_image_path`
+names are accepted as aliases. A one-frame FL2VA training sample may instead supply an ordered
+`condition_image` list plus a matching `control_index` list. Condition pictures are scaled to cover
+and center-cropped, matching training controls instead of stretching their aspect ratio. Ref2VA
+entries use `reference_jsonl`, optional `reference_index`, and an optional `prompt` override.
 
 Sample geometry must be 32-pixel aligned. Frame counts of at least 5 are rounded down to the nearest `17*n+5` value, matching the shared training-sample convention. Released durations are 5-15 seconds; `--h3_allow_experimental_sample_duration` permits shorter smoke samples. H3 sampling does not accept negative prompts, CFG, or a per-prompt generic flow shift.
 

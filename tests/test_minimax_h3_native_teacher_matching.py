@@ -49,6 +49,25 @@ def test_one_frame_runtime_batch_can_mix_with_ordinary_video_batches():
     assert video_plan.layout.time_overrides is None
 
 
+def test_one_frame_runtime_batch_accepts_three_ordered_fl2va_conditions():
+    batch = _training_batch()
+    batch["latents_audio"] = torch.zeros(1, 32, 2, 2)
+    batch["audio_present"] = torch.tensor([0.0])
+    batch["one_frame_target_index"] = torch.tensor([24], dtype=torch.int64)
+    batch["one_frame_control_indices"] = torch.tensor([[0, 24, 48]], dtype=torch.int64)
+    for index in range(3):
+        batch[f"latents_cond_{index:03d}"] = torch.zeros(1, 24, 1, 4, 4)
+
+    plan = _runtime_batch_plan(batch, torch.zeros(1, 24, 1, 4, 4), one_frame=True)
+
+    assert tuple(segment.role for segment in plan.layout.segments if segment.kind == "visual_condition") == (
+        "cond_000",
+        "cond_001",
+        "cond_002",
+    )
+    assert plan.layout.time_overrides.condition_times == (0.0, 40.0, 80.0)
+
+
 def test_process_batch_accumulates_observed_audio_supervision(monkeypatch):
     trainer = MiniMaxH3NetworkTrainer()
     args = _trainer_args()

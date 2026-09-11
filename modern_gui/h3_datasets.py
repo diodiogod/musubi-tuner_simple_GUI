@@ -215,8 +215,19 @@ def audit_h3_training_dataset(
         if is_image:
             if not allow_one_frame_images:
                 errors.append(f"Source {index} is an image dataset; select Video + images to mix native one-frame targets.")
-            elif task != "t2va":
-                errors.append(f"Source {index} is an image dataset; native one-frame targets currently require T2VA.")
+            elif task == "ref2va":
+                errors.append(f"Source {index} is an image dataset; mixed one-frame targets support T2VA or FL2VA, not Ref2VA yet.")
+            elif task == "fl2va":
+                indices = dataset.get("fp_1f_clean_indices", general.get("fp_1f_clean_indices"))
+                target_index = dataset.get("fp_1f_target_index", general.get("fp_1f_target_index"))
+                if not isinstance(indices, list) or not indices or any(not isinstance(value, int) or value < 0 for value in indices):
+                    errors.append(f"Source {index} needs fp_1f_clean_indices with one nonnegative time per FL2VA condition image.")
+                if not isinstance(target_index, int) or target_index < 0:
+                    errors.append(f"Source {index} needs an explicit nonnegative fp_1f_target_index for FL2VA.")
+                if not dataset.get("control_directory") and not dataset.get("image_jsonl_file"):
+                    errors.append(f"Source {index} needs a control directory or JSONL control paths for FL2VA conditions.")
+            elif dataset.get("control_directory") or dataset.get("fp_1f_clean_indices"):
+                errors.append(f"Source {index} has FL2VA controls but the selected task is T2VA.")
             continue
         frames = dataset.get("target_frames", general.get("target_frames", []))
         if not isinstance(frames, list) or not frames:

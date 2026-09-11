@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import hashlib
 import logging
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from musubi_tuner.minimax_h3_native.text_encoder import (
     wrap_ref_teacher_caption,
     wrap_subject_reference_caption,
 )
+from musubi_tuner.minimax_h3_native.packing import one_frame_condition_role
 from musubi_tuner.minimax_h3_native.media import (
     H3AudioSource, H3Record, H3Reference, h3_records_from_datasource, validate_subject_reference_record,
 )
@@ -222,7 +224,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "--one_frame",
         action="store_true",
         help="experimental one-frame (image) training caches: accept image datasets, whose captions are encoded"
-        " as plain T2VA presentations (currently --task t2va only)",
+        " as plain T2VA presentations or FL2VA presentations with ordered control images",
     )
     parser.add_argument(
         "--teacher_conditions",
@@ -264,8 +266,8 @@ def main() -> None:
         if args.one_frame:
             raise ValueError("--teacher_conditions does not support --one_frame yet")
         teacher_conditions = normalize_teacher_conditions(args.teacher_conditions)
-    if args.one_frame and args.task != "t2va":
-        raise ValueError("MiniMax-H3 one-frame caching currently supports --task t2va only")
+    if args.one_frame and args.task == "ref2va":
+        raise ValueError("MiniMax-H3 one-frame Ref2VA caching is not available in this downstream path yet")
 
     blueprint_generator = BlueprintGenerator(ConfigSanitizer())
     logger.info("Loading dataset config from %s", args.dataset_config)
@@ -283,6 +285,12 @@ def main() -> None:
         if isinstance(dataset, ImageDataset):
             if not args.one_frame:
                 raise ValueError("MiniMax-H3 image datasets require --one_frame (experimental one-frame training)")
+            if args.task == "t2va" and dataset.has_control:
+                raise ValueError("MiniMax-H3 T2VA image datasets do not use control images; choose FL2VA or remove controls")
+            if args.task == "fl2va" and (not dataset.has_control or dataset.fp_1f_clean_indices is None):
+                raise ValueError(
+                    "MiniMax-H3 one-frame FL2VA requires control images and fp_1f_clean_indices (one time per image)"
+                )
             image_dirs.add(dataset_cache_dir_key(dataset.cache_directory))
             continue
         if not isinstance(dataset, VideoDataset):
@@ -353,7 +361,15 @@ def main() -> None:
                 )
                 crop_start = 0
                 frame_count = 1
-                presentation = build_presentation(record, "t2va", {})
+                visuals = {}
+                if args.task == "fl2va":
+                    controls = item.control_content
+                    indices = item.fp_1f_clean_indices
+                    if not isinstance(controls, list) or not indices or len(controls) != len(indices):
+                        raise ValueError(f"MiniMax-H3 FL2VA image item has mismatched controls and indices: {item.item_key}")
+                    for index, control in enumerate(controls):
+                        visuals[one_frame_condition_role(index)] = H3TextVisual(torch.as_tensor(control)[..., :3].unsqueeze(0))
+                presentation = build_presentation(record, args.task, visuals)
             else:
                 records = records_by_dir[cache_dir_key]
                 datasource_index, crop_start = item_record_inputs(item)
@@ -363,6 +379,10 @@ def main() -> None:
                 visuals = _build_visuals(student_record, args.task, item, decoder, decoded_reference_cache)
                 presentation = build_presentation(student_record, args.task, visuals)
             record_media_fingerprints = {path: media_fingerprints[path] for path in _text_media_paths(record, args.task)}
+            if cache_dir_key in image_dirs and visuals:
+                for index, visual in enumerate(visuals.values()):
+                    pixels = visual.frames.detach().cpu().contiguous().numpy().tobytes()
+                    record_media_fingerprints[Path(f"control_{index:03d}")] = "sha256:" + hashlib.sha256(pixels).hexdigest()
             presentation_identity = presentation_fingerprint(
                 presentation,
                 record_media_fingerprints,

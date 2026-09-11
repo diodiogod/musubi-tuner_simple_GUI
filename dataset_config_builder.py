@@ -38,6 +38,8 @@ IMAGE_KEYS = (
     "multiple_target",
     "no_resize_control",
     "control_resolution",
+    "fp_1f_clean_indices",
+    "fp_1f_target_index",
 )
 VIDEO_KEYS = (
     "video_directory",
@@ -114,6 +116,28 @@ def _integer_list(value, label):
         raise ValueError(f"{label} must contain at least one whole number.")
     values = [_positive_int(piece, label) for piece in pieces]
     return values
+
+
+def _nonnegative_int(value, label, allow_blank=False):
+    value = str(value).strip()
+    if allow_blank and not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be a whole number.") from exc
+    if parsed < 0:
+        raise ValueError(f"{label} must be zero or greater.")
+    return parsed
+
+
+def _nonnegative_integer_list(value, label, allow_blank=False):
+    pieces = [piece.strip() for piece in str(value).replace(";", ",").split(",") if piece.strip()]
+    if not pieces and allow_blank:
+        return None
+    if not pieces:
+        raise ValueError(f"{label} must contain at least one whole number.")
+    return [_nonnegative_int(piece, label) for piece in pieces]
 
 
 def _set_optional(table, key, value):
@@ -219,6 +243,8 @@ class DatasetConfigBuilder:
             "no_resize_control": tk.BooleanVar(value=False),
             "control_width": tk.StringVar(),
             "control_height": tk.StringVar(),
+            "fp_1f_target_index": tk.StringVar(),
+            "fp_1f_clean_indices": tk.StringVar(),
             "target_frames": tk.StringVar(value="124" if architecture == "minimax_h3" else "1"),
             "frame_extraction": tk.StringVar(value="head"),
             "frame_stride": tk.StringVar(),
@@ -538,13 +564,27 @@ class DatasetConfigBuilder:
         )
         multiple.pack(anchor="w")
         BuilderToolTip(multiple, "Treats matching numbered files as multiple target images for one source item.")
-        no_resize = ttk.Checkbutton(
-            self.image_frame,
-            text="Do not resize control images",
-            variable=self.dataset_vars["no_resize_control"],
-        )
-        no_resize.pack(anchor="w", pady=(5, 0))
-        BuilderToolTip(no_resize, "Keeps control images at their original size instead of matching the target resolution.")
+        if self.architecture == "minimax_h3":
+            target_row = ttk.Frame(self.image_frame)
+            target_row.pack(fill="x", pady=(7, 0))
+            ttk.Label(target_row, text="FL2VA target time", width=22).pack(side="left")
+            target_entry = ttk.Entry(target_row, textvariable=self.dataset_vars["fp_1f_target_index"])
+            target_entry.pack(side="left", fill="x", expand=True)
+            BuilderToolTip(target_entry, "Required for mixed FL2VA images. Position of the target image on H3's 24 FPS timeline; zero is allowed.")
+            condition_row = ttk.Frame(self.image_frame)
+            condition_row.pack(fill="x", pady=(5, 0))
+            ttk.Label(condition_row, text="FL2VA condition times", width=22).pack(side="left")
+            condition_entry = ttk.Entry(condition_row, textvariable=self.dataset_vars["fp_1f_clean_indices"])
+            condition_entry.pack(side="left", fill="x", expand=True)
+            BuilderToolTip(condition_entry, "Comma-separated 24 FPS positions, one per ordered control image. Leave blank for T2VA. One or two anchors are standard; more are experimental.")
+        else:
+            no_resize = ttk.Checkbutton(
+                self.image_frame,
+                text="Do not resize control images",
+                variable=self.dataset_vars["no_resize_control"],
+            )
+            no_resize.pack(anchor="w", pady=(5, 0))
+            BuilderToolTip(no_resize, "Keeps control images at their original size instead of matching the target resolution.")
         row += 1
 
         advanced = ttk.LabelFrame(content, text="Optional control input", padding=7)
@@ -1037,6 +1077,10 @@ class DatasetConfigBuilder:
             control_resolution = list(table.get("control_resolution", []))
             self.dataset_vars["control_width"].set(str(control_resolution[0]) if len(control_resolution) > 0 else "")
             self.dataset_vars["control_height"].set(str(control_resolution[1]) if len(control_resolution) > 1 else "")
+            self.dataset_vars["fp_1f_target_index"].set(str(table.get("fp_1f_target_index", "")))
+            self.dataset_vars["fp_1f_clean_indices"].set(
+                ", ".join(str(value) for value in table.get("fp_1f_clean_indices", []))
+            )
             self.dataset_vars["target_frames"].set(", ".join(str(value) for value in table.get("target_frames", [1])))
             self.dataset_vars["frame_extraction"].set(str(table.get("frame_extraction", "head")))
             self.dataset_vars["frame_stride"].set(str(table.get("frame_stride", "")))
@@ -1133,24 +1177,38 @@ class DatasetConfigBuilder:
             )
         else:
             table["multiple_target"] = bool(self.dataset_vars["multiple_target"].get())
-            table["no_resize_control"] = bool(self.dataset_vars["no_resize_control"].get())
-            control_width = _positive_int(
-                self.dataset_vars["control_width"].get(),
-                "Control resolution width",
-                allow_blank=True,
-            )
-            control_height = _positive_int(
-                self.dataset_vars["control_height"].get(),
-                "Control resolution height",
-                allow_blank=True,
-            )
-            if (control_width is None) != (control_height is None):
-                raise ValueError("Enter both control-resolution dimensions or leave both empty.")
-            _set_optional(
-                table,
-                "control_resolution",
-                [control_width, control_height] if control_width is not None else None,
-            )
+            if self.architecture == "minimax_h3":
+                table.pop("no_resize_control", None)
+                table.pop("control_resolution", None)
+                _set_optional(
+                    table,
+                    "fp_1f_target_index",
+                    _nonnegative_int(self.dataset_vars["fp_1f_target_index"].get(), "FL2VA target time", allow_blank=True),
+                )
+                _set_optional(
+                    table,
+                    "fp_1f_clean_indices",
+                    _nonnegative_integer_list(self.dataset_vars["fp_1f_clean_indices"].get(), "FL2VA condition times", allow_blank=True),
+                )
+            else:
+                table["no_resize_control"] = bool(self.dataset_vars["no_resize_control"].get())
+                control_width = _positive_int(
+                    self.dataset_vars["control_width"].get(),
+                    "Control resolution width",
+                    allow_blank=True,
+                )
+                control_height = _positive_int(
+                    self.dataset_vars["control_height"].get(),
+                    "Control resolution height",
+                    allow_blank=True,
+                )
+                if (control_width is None) != (control_height is None):
+                    raise ValueError("Enter both control-resolution dimensions or leave both empty.")
+                _set_optional(
+                    table,
+                    "control_resolution",
+                    [control_width, control_height] if control_width is not None else None,
+                )
         item_id = str(self.selected_index)
         if self.dataset_tree.exists(item_id):
             self.dataset_tree.item(item_id, values=self._dataset_summary(dataset))

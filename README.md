@@ -110,9 +110,9 @@ residency for different batch sizes; fixed swapping remains the default.
 - H3 quality controls: proven Dynamic Sigma, Ostris's frozen assistant in both compact and native video training, native Teacher Matching, and an optional compact-only scheduled drift check
 - Experimental DOP, adapter weight noise, differentiable depth anchoring, and DRaFT face refinement, disabled by default
 - Focused 24 GB GPU smokes completed for previews, DOP/weight noise, depth, and the H3 DRaFT graph with the real AntelopeV2 reward; useful long-run advanced recipes remain experimental
-- Three backward-compatible workflows: the proven compact still-image trainer, native video/joint-audio training, or upstream PR #1057-style mixed image/video T2VA training
+- Three backward-compatible workflows: the proven compact still-image trainer, native video/joint-audio training, or upstream-style mixed image/video T2VA and FL2VA training
 - Official multimodal workflow supports T2VA, first/last-frame FL2VA, and reference-based Ref2VA datasets; choose joint video+audio, video-only, or experimental audio-only learning without pretending missing audio is real silence
-- Mixed T2VA accepts ordinary image and video sections in one TOML; images remain true one-frame targets while clips retain their configured frame counts
+- Mixed T2VA/FL2VA accepts image and video sections in one TOML; images remain true one-frame targets, FL2VA images may use arbitrary ordered time anchors, and clips retain their configured frame counts
 - Native T2VA optionally supports upstream teacher matching (endpoint or self-reference teacher), including preservation anchoring, decomposed magnitude/direction loss, and focus-band sampling; it remains disabled by default and requires a matching text-cache rebuild
 - Compact still-image training keeps the proven `krea2_shift` default and exposes `h3_shifted_uniform` as an experimental full-schedule alternative for community comparison
 - Modern and Classic dataset builders detect embedded/sidecar audio, create valid 24 fps H3 clips from still images plus audio, validate frame geometry, and guide Ref2VA JSONL construction (visual Ref2VA editing is in the Modern UI)

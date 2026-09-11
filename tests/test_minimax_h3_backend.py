@@ -83,12 +83,22 @@ def test_native_mixed_workflow_enables_one_frame_for_training_and_caches(tmp_pat
     assert len(caches) == 2 and all("--one_frame" in command for command in caches)
 
 
-def test_native_mixed_workflow_rejects_non_t2va(tmp_path):
+def test_native_mixed_workflow_accepts_fl2va(tmp_path):
     settings = _settings(tmp_path) | {
         "minimax_h3_training_workflow": "Video + images · official mixed T2VA",
         "minimax_h3_multimodal_task": "fl2va",
     }
-    with pytest.raises(ValueError, match="T2VA"):
+    (command,) = minimax_h3.build_commands(settings)
+    assert "--one_frame" in command
+    assert command[command.index("--task") + 1] == "fl2va"
+
+
+def test_native_mixed_workflow_rejects_ref2va(tmp_path):
+    settings = _settings(tmp_path) | {
+        "minimax_h3_training_workflow": "Video + images · official mixed T2VA",
+        "minimax_h3_multimodal_task": "ref2va",
+    }
+    with pytest.raises(ValueError, match="Ref2VA"):
         minimax_h3.build_commands(settings)
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
+from PIL import Image
 import torch
 from safetensors.torch import save_file
 
@@ -12,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from musubi_tuner.minimax_h3_native.packing import H3VideoGeometry, build_h3_layout
+from musubi_tuner.minimax_h3_native.generation_inputs import load_image_frames
 from musubi_tuner.minimax_h3_native.sampling import (
     H3_VIDEO_CRF,
     augment_condition_latents,
@@ -575,3 +578,16 @@ def test_generation_trajectory_dump_writes_sigma_schedule_and_per_step_videos(tm
     assert step_files == ["step000_base1.0000_sigv1.0000.mp4", "step001_base0.5000_sigv0.9231.mp4"]
     # the final output decode plus one decode per dumped step
     assert len(decode_calls) == 1 + args.steps
+
+
+def test_condition_image_uses_training_style_cover_crop(tmp_path):
+    pixels = np.zeros((100, 200, 3), dtype=np.uint8)
+    pixels[:, :20, 1] = 255
+    path = tmp_path / "wide.png"
+    Image.fromarray(pixels).save(path)
+
+    frames = load_image_frames(path, width=100, height=100)
+
+    assert frames.shape == (1, 100, 100, 3)
+    assert frames.dtype == torch.uint8
+    assert int(frames[..., 1].max()) == 0

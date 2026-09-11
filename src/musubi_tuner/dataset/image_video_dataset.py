@@ -324,13 +324,20 @@ class ImageDataset(BaseDataset):
         self.control_resolution = control_resolution
 
         if self.architecture == ARCHITECTURE_MINIMAX_H3:
-            if control_directory is not None or multiple_target:
-                raise ValueError("MiniMax-H3 image datasets do not support control images or multiple targets yet")
-            if fp_1f_clean_indices is not None:
+            if multiple_target:
+                raise ValueError("MiniMax-H3 image datasets do not support multiple targets")
+            if no_resize_control or control_resolution is not None:
                 raise ValueError(
-                    "MiniMax-H3 image datasets do not use fp_1f_clean_indices yet;"
-                    " only fp_1f_target_index (a 24 fps pixel-frame index) is supported"
+                    "MiniMax-H3 control images are always resized to the target bucket;"
+                    " no_resize_control and control_resolution are not supported"
                 )
+            if fp_1f_clean_indices is not None:
+                if len(fp_1f_clean_indices) < 1:
+                    raise ValueError("MiniMax-H3 fp_1f_clean_indices must have at least one entry")
+                if any(index < 0 for index in fp_1f_clean_indices):
+                    raise ValueError(f"MiniMax-H3 fp_1f_clean_indices must be nonnegative, got {fp_1f_clean_indices}")
+                if fp_1f_target_index is None:
+                    raise ValueError("MiniMax-H3 fp_1f_clean_indices requires an explicit fp_1f_target_index")
             if fp_1f_target_index is not None and fp_1f_target_index < 0:
                 raise ValueError(f"MiniMax-H3 fp_1f_target_index must be nonnegative, got {fp_1f_target_index}")
 
@@ -352,6 +359,8 @@ class ImageDataset(BaseDataset):
             control_count_per_image = None  # can be multiple control images
         elif self.architecture == ARCHITECTURE_HIDREAM_O1:
             control_count_per_image = None  # can be multiple control/reference images
+        elif self.architecture == ARCHITECTURE_MINIMAX_H3:
+            control_count_per_image = len(fp_1f_clean_indices) if fp_1f_clean_indices is not None else None
 
         if image_directory is not None:
             self.datasource = ImageDirectoryDatasource(
@@ -368,8 +377,8 @@ class ImageDataset(BaseDataset):
         self.batch_manager = None
         self.num_train_items = 0
         self.has_control = self.datasource.has_control
-        if self.architecture == ARCHITECTURE_MINIMAX_H3 and self.has_control:
-            raise ValueError("MiniMax-H3 image datasets do not support control images yet")
+        if self.architecture == ARCHITECTURE_MINIMAX_H3 and self.fp_1f_clean_indices is not None and not self.has_control:
+            raise ValueError("MiniMax-H3 fp_1f_clean_indices requires control images")
 
     def get_metadata(self):
         metadata = super().get_metadata()
@@ -533,6 +542,14 @@ class ImageDataset(BaseDataset):
         # glob cache files
         latent_cache_files = glob.glob(os.path.join(self.cache_directory, f"*_{self.architecture}.safetensors"))
 
+        valid_basenames = None
+        if isinstance(self.datasource, ImageJsonlDatasource):
+            valid_basenames = set()
+            for item in self.datasource.data:
+                path = item.get("image_path") or item.get("image_path_0")
+                if path:
+                    valid_basenames.add(os.path.splitext(os.path.basename(path))[0])
+
         # assign cache files to item info
         # (width, height) -> [ItemInfo] or (width, height, other conds...) -> [ItemInfo]
         bucketed_item_info: dict[Union[tuple[int, int], Any], list[ItemInfo]] = {}
@@ -544,6 +561,8 @@ class ImageDataset(BaseDataset):
             image_size = (image_width, image_height)
 
             item_key = "_".join(tokens[:-2])
+            if valid_basenames is not None and item_key not in valid_basenames:
+                continue
             text_encoder_output_cache_file = os.path.join(self.cache_directory, f"{item_key}_{self.architecture}_te.safetensors")
             if not os.path.exists(text_encoder_output_cache_file):
                 logger.warning(f"Text encoder output cache file not found: {text_encoder_output_cache_file}")
@@ -744,8 +763,8 @@ class VideoDataset(BaseDataset):
         return metadata
 
     def retrieve_latent_cache_batches(self, num_workers: int):
-        buckset_selector = BucketSelector(self.resolution, architecture=self.architecture)
-        self.datasource.set_bucket_selector(buckset_selector)
+        bucket_selector = BucketSelector(self.resolution, self.enable_bucket, self.bucket_no_upscale, self.architecture)
+        self.datasource.set_bucket_selector(bucket_selector)
         if self.source_fps is not None:
             self.datasource.set_source_and_target_fps(self.source_fps, self.target_fps)
         else:
@@ -896,7 +915,7 @@ class VideoDataset(BaseDataset):
                 frame_size = (video[0].shape[1], video[0].shape[0])
 
                 # resize if necessary
-                bucket_reso = buckset_selector.get_bucket_resolution(frame_size)
+                bucket_reso = bucket_selector.get_bucket_resolution(frame_size)
                 video = [resize_image_to_bucket(frame, bucket_reso) for frame in video]
 
                 # resize control if necessary
@@ -932,6 +951,10 @@ class VideoDataset(BaseDataset):
         # glob cache files
         latent_cache_files = glob.glob(os.path.join(self.cache_directory, f"*_{self.architecture}.safetensors"))
 
+        valid_basenames = None
+        if isinstance(self.datasource, VideoJsonlDatasource):
+            valid_basenames = {os.path.splitext(os.path.basename(item["video_path"]))[0] for item in self.datasource.data}
+
         # assign cache files to item info
         bucketed_item_info: dict[tuple[int, int, int], list[ItemInfo]] = {}  # (width, height, frame_count) -> [ItemInfo]
         for cache_file in latent_cache_files:
@@ -945,6 +968,8 @@ class VideoDataset(BaseDataset):
             frame_pos, frame_count = int(frame_pos), int(frame_count)
 
             item_key = "_".join(tokens[:-3])
+            if valid_basenames is not None and item_key not in valid_basenames:
+                continue
             if self.architecture == ARCHITECTURE_MINIMAX_H3:
                 text_item_key = f"{item_key}_{tokens[-3]}"
             else:

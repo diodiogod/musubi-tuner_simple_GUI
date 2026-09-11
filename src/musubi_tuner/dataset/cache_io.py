@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_PRESENT_KEY = "audio_present_float32"
 ONE_FRAME_TARGET_INDEX_KEY = "one_frame_target_index_int64"
+ONE_FRAME_CONTROL_INDICES_KEY = "one_frame_control_indices_int64"
 
 
 def append_audio_present_entry(sd: dict[str, torch.Tensor], audio_present: bool):
@@ -49,6 +50,14 @@ def append_one_frame_target_index_entry(sd: dict[str, torch.Tensor], target_inde
     if target_index < 0:
         raise ValueError(f"MiniMax-H3 one-frame target index must be nonnegative, got {target_index}")
     sd[ONE_FRAME_TARGET_INDEX_KEY] = torch.tensor(target_index, dtype=torch.int64)
+
+
+def append_one_frame_control_indices_entry(sd: dict[str, torch.Tensor], control_indices: list[int]):
+    if len(control_indices) < 1:
+        raise ValueError("MiniMax-H3 one-frame control indices must have at least one entry")
+    if any(index < 0 for index in control_indices):
+        raise ValueError(f"MiniMax-H3 one-frame control indices must be nonnegative, got {control_indices}")
+    sd[ONE_FRAME_CONTROL_INDICES_KEY] = torch.tensor(list(control_indices), dtype=torch.int64)
 
 
 def validate_audio_present_entry(sd: dict[str, torch.Tensor]) -> float:
@@ -653,7 +662,7 @@ def save_latent_cache_minimax_h3(
 
     target_pattern = re.compile(r"^latents_(\d+)x(\d+)x(\d+)_(.+)$")
     audio_pattern = re.compile(r"^latents_audio_32x2x(\d+)_(.+)$")
-    visual_pattern = re.compile(r"^latents_(?:first|last|ref_\d{3}_(?:image|video))_(\d+)x(\d+)x(\d+)_(.+)$")
+    visual_pattern = re.compile(r"^latents_(?:first|last|cond_\d{3}|ref_\d{3}_(?:image|video))_(\d+)x(\d+)x(\d+)_(.+)$")
     audio_condition_pattern = re.compile(r"^latents_ref_\d{3}_audio_32x2x(\d+)_(.+)$")
     target_count = audio_count = 0
     normalized = {}
@@ -666,6 +675,13 @@ def save_latent_cache_minimax_h3(
         if key == ONE_FRAME_TARGET_INDEX_KEY:
             if tensor.shape != torch.Size([]) or tensor.dtype != torch.int64 or tensor.item() < 0:
                 raise ValueError(f"MiniMax-H3 {ONE_FRAME_TARGET_INDEX_KEY} must be a nonnegative scalar int64 tensor")
+            normalized[key] = tensor.detach().cpu().contiguous()
+            continue
+        if key == ONE_FRAME_CONTROL_INDICES_KEY:
+            if tensor.ndim != 1 or tensor.shape[0] < 1 or tensor.dtype != torch.int64 or bool((tensor < 0).any()):
+                raise ValueError(
+                    f"MiniMax-H3 {ONE_FRAME_CONTROL_INDICES_KEY} must be a nonnegative int64 [K] tensor with K >= 1"
+                )
             normalized[key] = tensor.detach().cpu().contiguous()
             continue
         match = target_pattern.fullmatch(key)

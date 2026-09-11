@@ -102,7 +102,7 @@ const HELP = {
   minimax_h3_audio_vae: "Choose minimax_h3_audio_vae_fp32.safetensors. It is needed to build synchronized audio latents even when video-only learning is selected.",
   minimax_h3_video_only: "Enable this when you want video motion/appearance training without teaching audio. Audio is still cached as a synchronized placeholder so cache shapes remain valid.",
   minimax_h3_training_target: "Choose exactly what contributes to the training loss. Video + audio learns both. Video only ignores audio loss. Audio only is experimental: it learns only from real synchronized audio, but still requires a video clip and both VAEs because H3 processes video and audio together.",
-  minimax_h3_training_workflow: "Choose Still images for the proven compact ConvRot workflow, Video + audio for clip-only native training, or Video + images to mix full clips with true one-frame image targets from upstream PR #1057. Mixed mode currently requires T2VA and does not convert images into fake videos.",
+  minimax_h3_training_workflow: "Choose Still images for the proven compact ConvRot workflow, Video + audio for clip-only native training, or Video + images to mix full clips with true one-frame image targets. Mixed mode supports T2VA and FL2VA; images are not converted into fake videos.",
   minimax_h3_audio_loss_weight: "1.0 gives video and available audio their normal joint objective. Lower values make audio learning gentler. Zero is equivalent to video-only supervision.",
   minimax_h3_teacher_matching: "Experimental reference-guided learning. Open ? for what it does, limitations, and when to try it.",
   minimax_h3_teacher_conditions: "Same training item lets the teacher see the exact image/video being learned. Other pictures never shows the answer item to the teacher: native video uses its references list; compact image training uses control_path/control_path_N entries in an image JSONL. First and last uses native-video endpoints. These are different experiments, not quality levels.",
@@ -1586,8 +1586,10 @@ function renderDatasetEditor(){
       ${datasetField({key:"source_fps",label:"Source FPS",value:raw.source_fps??"",type:"number"})}
     `:`
       ${datasetField({key:"multiple_target",label:"Multiple targets",value:raw.multiple_target==null?"":String(raw.multiple_target),options:boolOptions})}
-      ${datasetField({key:"no_resize_control",label:"Keep control size",value:raw.no_resize_control==null?"":String(raw.no_resize_control),options:boolOptions})}
-      ${datasetField({key:"control_resolution",label:"Control resolution",value:datasetValueText(raw.control_resolution),placeholder:"width, height"})}
+      ${state.settings.training_mode==="MiniMax H3 (Experimental)"?datasetField({key:"fp_1f_target_index",label:"Target image time",value:raw.fp_1f_target_index??"",type:"number",placeholder:"0",tip:"The target image position on a 24 FPS timeline. For FL2VA, add one ordered condition time below for every control image."}):""}
+      ${state.settings.training_mode==="MiniMax H3 (Experimental)"?datasetField({key:"fp_1f_clean_indices",label:"FL2VA condition times",value:datasetValueText(raw.fp_1f_clean_indices),wide:true,placeholder:"0, 24, 48",tip:"Ordered 24 FPS positions, one per control image. Three or more anchors are experimental but supported. Leave empty for T2VA."}):""}
+      ${state.settings.training_mode!=="MiniMax H3 (Experimental)"?datasetField({key:"no_resize_control",label:"Keep control size",value:raw.no_resize_control==null?"":String(raw.no_resize_control),options:boolOptions}):""}
+      ${state.settings.training_mode!=="MiniMax H3 (Experimental)"?datasetField({key:"control_resolution",label:"Control resolution",value:datasetValueText(raw.control_resolution),placeholder:"width, height"}):""}
     `}
   </div></div>
   ${dataset.advanced_keys?.length?`<details class="preserved-fields"><summary>${dataset.advanced_keys.length} advanced field${dataset.advanced_keys.length===1?"":"s"} preserved in TOML</summary><p>${dataset.advanced_keys.map(esc).join(" · ")}</p></details>`:""}
@@ -1632,6 +1634,15 @@ function parseDatasetList(value,label){
   const text=String(value??"").trim();if(!text)return "";
   return text.split(/[,;\s]+/).filter(Boolean).map(piece=>parseDatasetNumber(piece,label,{integer:true,optional:false}));
 }
+function parseDatasetNonnegativeNumber(value,label,{optional=true}={}){
+  const text=String(value??"").trim();if(!text&&optional)return "";
+  const parsed=Number(text);if(!Number.isInteger(parsed)||parsed<0)throw new Error(`${label} must be zero or a positive whole number.`);
+  return parsed;
+}
+function parseDatasetNonnegativeList(value,label){
+  const text=String(value??"").trim();if(!text)return "";
+  return text.split(/[,;\s]+/).filter(Boolean).map(piece=>parseDatasetNonnegativeNumber(piece,label,{optional:false}));
+}
 function parseDatasetBoolean(value){return value===""?"":value==="true"}
 function collectDatasetEditorChanges(){
   const host=$("#dataset-editor"),changes={};
@@ -1655,6 +1666,8 @@ function collectDatasetEditorChanges(){
     const value=input.value;
     if(["resolution","control_resolution"].includes(key))changes[key]=parseDatasetDimensions(value,key==="resolution"?"Training resolution":"Control resolution");
     else if(key==="target_frames")changes[key]=parseDatasetList(value,"Target frames");
+    else if(key==="fp_1f_clean_indices")changes[key]=parseDatasetNonnegativeList(value,"FL2VA condition times");
+    else if(key==="fp_1f_target_index")changes[key]=parseDatasetNonnegativeNumber(value,"Target image time");
     else if(["num_repeats","batch_size","frame_stride","frame_sample","max_frames","fp_latent_window_size"].includes(key))changes[key]=parseDatasetNumber(value,key.replaceAll("_"," "));
     else if(key==="source_fps")changes[key]=parseDatasetNumber(value,"Source FPS",{integer:false});
     else if(["enable_bucket","bucket_no_upscale","multiple_target","no_resize_control"].includes(key))changes[key]=parseDatasetBoolean(value);

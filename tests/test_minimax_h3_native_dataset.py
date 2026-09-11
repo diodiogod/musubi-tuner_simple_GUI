@@ -212,3 +212,25 @@ def test_h3_training_sample_preserves_valid_frame_count(tmp_path: Path, monkeypa
     )
 
     assert captured["frame_count"] == 56
+
+
+def test_video_latent_cache_honors_disabled_bucketing(tmp_path: Path):
+    dataset = VideoDataset(
+        resolution=(1792, 768), caption_extension=".txt", batch_size=1, num_repeats=1,
+        enable_bucket=False, bucket_no_upscale=False, target_frames=[5],
+        video_directory=str(tmp_path), cache_directory=str(tmp_path), architecture=ARCHITECTURE_MINIMAX_H3,
+    )
+    assert list(dataset.retrieve_latent_cache_batches(1)) == []
+    selector = dataset.datasource.bucket_selector
+    assert selector.bucket_resolutions == [(1792, 768)]
+    assert selector.get_bucket_resolution((3840, 1080)) == (1792, 768)
+
+
+def test_video_latent_cache_keeps_area_buckets_when_enabled(tmp_path: Path):
+    dataset = VideoDataset(
+        resolution=(1792, 768), caption_extension=".txt", batch_size=1, num_repeats=1,
+        enable_bucket=True, bucket_no_upscale=False, target_frames=[5],
+        video_directory=str(tmp_path), cache_directory=str(tmp_path), architecture=ARCHITECTURE_MINIMAX_H3,
+    )
+    assert list(dataset.retrieve_latent_cache_batches(1)) == []
+    assert len(dataset.datasource.bucket_selector.bucket_resolutions) > 1

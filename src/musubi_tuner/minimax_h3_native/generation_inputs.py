@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 import torch
 
+from musubi_tuner.dataset.media_utils import resize_image_to_bucket
 from musubi_tuner.minimax_h3_native.audio_vae import encode_audio_mode
 from musubi_tuner.minimax_h3_native.media import (
     H3Record,
@@ -15,7 +16,7 @@ from musubi_tuner.minimax_h3_native.media import (
     load_h3_jsonl_records,
     waveform_samples,
 )
-from musubi_tuner.minimax_h3_native.packing import H3ReferenceGeometry, H3VideoGeometry
+from musubi_tuner.minimax_h3_native.packing import H3ReferenceGeometry, H3VideoGeometry, one_frame_condition_role
 from musubi_tuner.minimax_h3_native.text_encoder import H3TextVisual
 from musubi_tuner.minimax_h3_native.video_vae import VIDEO_VAE_ENCODE_DTYPE, encode_video_condition
 from musubi_tuner.minimax_h3_native_cache_latents import PyAVH3MediaDecoder
@@ -68,10 +69,10 @@ def dummy_record(prompt: str) -> H3Record:
 
 
 def load_image_frames(path: str | Path, *, width: int, height: int) -> torch.Tensor:
+    """Fit a condition like the training dataset: scale to cover, then center crop."""
     with Image.open(path) as image:
-        image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
-        pixels = torch.from_numpy(np.asarray(image).copy())
-    return pixels.unsqueeze(0)
+        pixels = resize_image_to_bucket(np.asarray(image.convert("RGB")), (width, height))
+    return torch.from_numpy(np.ascontiguousarray(pixels)).unsqueeze(0)
 
 
 def prepare_pixels(frames: torch.Tensor) -> torch.Tensor:
@@ -97,13 +98,28 @@ def load_generation_record(args) -> H3Record:
     return record
 
 
+def fl_condition_entries(args) -> tuple[tuple[str, str], ...]:
+    """Return ordered FL2VA (role, path) entries for video or one-frame generation."""
+    first_frame = getattr(args, "first_frame", None)
+    last_frame = getattr(args, "last_frame", None)
+    condition_images = getattr(args, "condition_image", None) or ()
+    if getattr(args, "frame_count", None) != 1:
+        if condition_images:
+            raise ValueError("MiniMax-H3 condition_image applies only to one-frame FL2VA samples")
+        return tuple((role, path) for role, path in (("first", first_frame), ("last", last_frame)) if path)
+    if condition_images and (first_frame or last_frame):
+        raise ValueError("MiniMax-H3 one-frame FL2VA takes condition images or first/last aliases, not both")
+    paths = list(condition_images) if condition_images else [path for path in (first_frame, last_frame) if path]
+    return tuple((one_frame_condition_role(index), path) for index, path in enumerate(paths))
+
+
 def decode_generation_visuals(args, record: H3Record, decoder: PyAVH3MediaDecoder):
     raw_visuals = {}
     text_visuals = {}
     if args.task == "t2va":
         return raw_visuals, text_visuals
     if args.task == "fl2va":
-        for role, path in (("first", args.first_frame), ("last", args.last_frame)):
+        for role, path in fl_condition_entries(args):
             frames = load_image_frames(path, width=args.width, height=args.height)
             raw_visuals[role] = frames
             text_visuals[role] = H3TextVisual(frames)
@@ -149,7 +165,7 @@ def encode_visual_conditions(args, record, raw_visuals, video_vae):
         return H3VideoGeometry(*latent.shape[2:])
 
     if args.task == "fl2va":
-        for role in ("first", "last"):
+        for role, _ in fl_condition_entries(args):
             visual_geometries.append(encode_visual(raw_visuals[role]))
     elif args.task == "ref2va":
         for index, reference in enumerate(record.references):

@@ -87,6 +87,16 @@ class H3ReferenceGeometry:
                     raise ValueError(f"MiniMax-H3 reference video audio has {self.audio_frames} frames, expected {expected}")
 
 
+def one_frame_condition_role(index: int) -> str:
+    if index < 0:
+        raise ValueError(f"MiniMax-H3 one-frame condition index must be nonnegative, got {index}")
+    return f"cond_{index:03d}"
+
+
+def one_frame_condition_roles(count: int) -> tuple[str, ...]:
+    return tuple(one_frame_condition_role(index) for index in range(count))
+
+
 @dataclass(frozen=True)
 class H3TimeOverrides:
     """Explicit RoPE times for a one-frame layout, relative to the target-block cursor."""
@@ -271,15 +281,21 @@ def build_h3_layout(
         raise ValueError("MiniMax-H3 T2VA layout does not accept condition rows")
     if task == "fl2va":
         if references:
-            raise ValueError("MiniMax-H3 FL2VA layout requires exactly first and last visual conditions")
+            raise ValueError("MiniMax-H3 FL2VA layout does not accept reference rows")
         if one_frame:
-            if not 1 <= len(visual_conditions) <= 2:
-                raise ValueError("MiniMax-H3 one-frame FL2VA layout requires one or two visual conditions")
+            if not visual_conditions:
+                raise ValueError("MiniMax-H3 one-frame FL2VA layout requires at least one visual condition")
             if time_overrides is None or len(time_overrides.condition_times) != len(visual_conditions):
                 raise ValueError("MiniMax-H3 one-frame FL2VA layout requires one condition time override per condition")
-        elif len(visual_conditions) != 2:
-            raise ValueError("MiniMax-H3 FL2VA layout requires exactly first and last visual conditions")
-        roles = _fl_condition_roles(condition_roles, len(visual_conditions))
+            roles = one_frame_condition_roles(len(visual_conditions))
+            if condition_roles is not None and tuple(condition_roles) != roles:
+                raise ValueError(
+                    f"MiniMax-H3 one-frame FL2VA condition roles are the ordered {roles}, got {tuple(condition_roles)}"
+                )
+        else:
+            if not 1 <= len(visual_conditions) <= 2:
+                raise ValueError("MiniMax-H3 video FL2VA layout requires one or two visual conditions")
+            roles = _fl_condition_roles(condition_roles, len(visual_conditions))
         for role, condition in zip(roles, visual_conditions):
             if condition != H3VideoGeometry(1, target_video.height, target_video.width):
                 raise ValueError(f"MiniMax-H3 FL2VA {role} condition must be one target-sized latent frame, got {condition}")

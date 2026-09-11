@@ -67,6 +67,26 @@ def test_t2va_and_fl2va_presentations_are_non_chat_golden_strings(tmp_path: Path
     assert fl2va.videos == ()
 
 
+def test_one_frame_fl2va_presentation_numbers_arbitrary_conditions_in_order(tmp_path: Path):
+    record = _record(tmp_path)
+    presentation = build_presentation(
+        record,
+        "fl2va",
+        {"cond_002": _visual(1), "cond_000": _visual(1), "cond_001": _visual(1)},
+    )
+
+    assert presentation.text == (
+        f"<Picture 1>: {IMAGE_PLACEHOLDER}<Picture 2>: {IMAGE_PLACEHOLDER}"
+        f"<Picture 3>: {IMAGE_PLACEHOLDER}{record.caption}"
+    )
+    assert len(presentation.images) == 3
+
+
+def test_one_frame_fl2va_presentation_rejects_condition_gaps(tmp_path: Path):
+    with pytest.raises(ValueError, match="contiguous"):
+        build_presentation(_record(tmp_path), "fl2va", {"cond_000": _visual(1), "cond_002": _visual(1)})
+
+
 def test_ref2va_presentation_preserves_jsonl_order_and_timestamp_format(tmp_path: Path):
     image = tmp_path / "face.png"
     video = tmp_path / "motion.mp4"

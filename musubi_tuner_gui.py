@@ -801,14 +801,14 @@ class MusubiTunerGUI:
         self._add_widget(
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_training_workflow", "Training Media Type:",
             "Still images uses this GUI's proven compact ConvRot workflow. Video + audio uses only clips. Video + images "
-            "uses upstream PR #1057's native one-frame targets so ordinary image datasets and full video clips can train "
-            "together without converting images into fake videos. Existing projects keep their saved workflow.",
+            "uses native one-frame targets so ordinary image datasets and full clips can train together. Mixed T2VA uses "
+            "plain images; mixed FL2VA accepts ordered control images with fp_1f_clean_indices times.",
             kind='combobox', options=["Still images · compact ConvRot", "Video + audio · official multimodal", "Video + images · official mixed T2VA"],
         )
         self._add_widget(
             self.hidden_frames['minimax_h3_model_paths'], "minimax_h3_multimodal_task", "Video Model Task:",
-            "Used only for Video + audio. t2va learns from text and target clips. fl2va also conditions on first and last "
-            "frames. ref2va uses reference image/video/audio entries supplied through a dataset JSONL.",
+            "Used by native video and mixed workflows. T2VA image sources are plain targets. FL2VA image sources use "
+            "ordered control images plus fp_1f_clean_indices; video sources use first/last frames. Ref2VA remains video-only.",
             kind='combobox', options=["t2va", "fl2va", "ref2va"],
         )
         self._add_widget(
@@ -9252,8 +9252,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             h3_protection = minimax_h3_backend.quality_protection_components(settings)
             if multimodal:
                 mixed_one_frame = str(settings.get("minimax_h3_training_workflow") or "").startswith("Video + images")
-                if mixed_one_frame and settings.get("minimax_h3_multimodal_task") != "t2va":
-                    messagebox.showerror("Validation Error", "Mixed native image/video training currently supports T2VA only.")
+                if mixed_one_frame and settings.get("minimax_h3_multimodal_task") == "ref2va":
+                    messagebox.showerror("Validation Error", "Mixed native image/video training supports T2VA or FL2VA, not Ref2VA yet.")
                     return
                 if mixed_one_frame and settings.get("minimax_h3_teacher_matching"):
                     messagebox.showerror("Validation Error", "Reference-guided teacher matching is not yet compatible with native one-frame image batches.")
