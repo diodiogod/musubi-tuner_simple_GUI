@@ -185,6 +185,8 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `training/accelerator_setup.py` - Accelerate setup helpers
 - `training/sampling_prompts.py` - prompt-driven sample support
 - `training/timesteps.py` - timestep logic
+- `training/automatic_swap.py` - opt-in H3 complete-microbatch VRAM profiling and workload classification
+- `modules/automatic_swap_policy.py` / `modules/automatic_offloading.py` - process-local automatic residency budget and frozen-weight H2D transitions; fixed swapping remains the default
 - `training/weight_noise.py` - isolated adapter-only Gaussian weight-noise implementation used by the Krea trainer hook
 - `training/dop.py` - shared caption replacement/signature validation, temporary adapter bypass, and preservation-loss implementation used by Krea 2 and FLUX.2 Klein
 

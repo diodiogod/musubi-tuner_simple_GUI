@@ -1357,6 +1357,23 @@ class MusubiTunerGUI:
         self._add_widget(memory_frame, "max_data_loader_n_workers", "Max Data Loader Workers:", "Number of CPU threads to load data. '2' is a safe default. Higher values can speed up loading but use more RAM.", validate_num=True)
         self._add_widget(memory_frame, "offload_inactive_dit", "Offload Inactive DiT Model", "When training both models in a combined run, offloads the inactive DiT model to CPU to save VRAM. Disables 'Blocks to Swap'.", kind='checkbox', command=self.update_button_states)
         self._add_widget(memory_frame, "blocks_to_swap", "Blocks to Swap:", "Number of DiT blocks to offload to CPU memory to save VRAM. Can slow down training. (e.g., 10)", validate_num=True)
+        self._add_widget(memory_frame, "minimax_h3_block_memory_mode", "H3 Block Memory Management:",
+                         "Fixed uses your Blocks to Swap value. Automatic measures complete training steps and keeps more frozen model blocks on the GPU for smaller batches, or streams more for larger batches. It uses more system RAM. It does not change resolution, crop clips, or disable quality protection; oversized clips can still run out of memory.",
+                         kind="combobox", options=["Fixed blocks (existing)", "Automatic (experimental)"], command=self.update_button_states)
+        self.hidden_frames["h3_auto_swap_options"] = ttk.Frame(memory_frame)
+        auto_options = self.hidden_frames["h3_auto_swap_options"]
+        auto_advanced = ttk.Frame(auto_options)
+        self.hidden_frames["h3_auto_swap_advanced"] = auto_advanced
+        auto_expanded = tk.BooleanVar(value=False)
+        for key, label, tip in (
+            ("reserve_gb", "VRAM Safety Margin (GiB):", "Leave this much extra room for temporary GPU work and other applications. Start with 2. Increasing this is safer but may stream more blocks and slow training."),
+            ("min_blocks", "Minimum Streamed Blocks:", "Advanced: automatic mode never streams fewer than this many blocks. Start with 2. This is a limit, not a fixed count."),
+            ("max_blocks", "Maximum Streamed Blocks:", "Advanced: unfamiliar batch sizes start at this conservative count. Start with 48. Even maximum swapping cannot eliminate the memory needed for video calculations."),
+        ):
+            self._add_widget(auto_options if key == "reserve_gb" else auto_advanced,
+                             "minimax_h3_auto_swap_" + key, label, tip, validate_num=True)
+        ttk.Checkbutton(auto_options, text="Show advanced automatic memory limits", variable=auto_expanded,
+                        command=lambda: auto_advanced.pack(fill="x") if auto_expanded.get() else auto_advanced.pack_forget()).pack(anchor="w")
         self._add_widget(
             memory_frame,
             "compile",
@@ -7396,7 +7413,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         blocks_to_swap_widget = self.entries["blocks_to_swap"]
         offload_widget.config(state="normal" if is_wan else "disabled")
         is_offloading = is_wan and offload_widget.var.get()
-        blocks_to_swap_widget.config(state="disabled" if is_offloading else "normal")
+        auto_swap = is_minimax_h3 and self.entries["minimax_h3_block_memory_mode"].get() == "Automatic (experimental)"
+        self.entries["minimax_h3_block_memory_mode"].config(state="readonly" if is_minimax_h3 else "disabled")
+        if auto_swap:
+            self.hidden_frames["h3_auto_swap_options"].pack(fill="x")
+        else:
+            self.hidden_frames["h3_auto_swap_options"].pack_forget()
+        blocks_to_swap_widget.config(state="disabled" if is_offloading or auto_swap else "normal")
         if is_offloading and blocks_to_swap_widget.cget('state') == 'normal':
             blocks_to_swap_widget.delete(0, tk.END)
 
@@ -7861,6 +7884,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_text_encoder_attn_mode": "sdpa", "minimax_h3_guidance_uncond_cache": "",
             "minimax_h3_tokenizer": "MiniMaxAI/MiniMax-H3", "minimax_h3_convrot_bwd_mode": "bf16",
             "minimax_h3_text_encoder_blocks_to_swap": "50",
+            "minimax_h3_block_memory_mode": "Fixed blocks (existing)",
+            "minimax_h3_auto_swap_reserve_gb": "2.0",
+            "minimax_h3_auto_swap_min_blocks": "2",
+            "minimax_h3_auto_swap_max_blocks": "48",
             "minimax_h3_text_cache_dtype": "bfloat16",
             "minimax_h3_training_preview_mode": "Five-frame video (recommended)",
             "minimax_h3_guidance_distillation_protection": True,
@@ -9196,7 +9223,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 messagebox.showerror("Validation Error", "MiniMax H3 H2D-only block swapping requires Gradient Checkpointing.")
                 return
             try:
-                blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
+                swap_value = settings.get("minimax_h3_auto_swap_max_blocks", "48") if settings.get("minimax_h3_block_memory_mode") == "Automatic (experimental)" else settings.get("blocks_to_swap")
+                blocks_to_swap = int(str(swap_value or "0").strip())
             except ValueError:
                 messagebox.showerror("Validation Error", "MiniMax H3 Blocks to Swap must be an integer between 1 and 48.")
                 return

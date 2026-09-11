@@ -12,6 +12,10 @@ MINIMAX_H3_MODE = "MiniMax H3 (Experimental)"
 MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE]
 STRUCTURED_KEYS = {"sample_prompts_data", "staged_training_config", "face_refinement_config"}
 MINIMAX_H3_DEFAULTS = {
+    "minimax_h3_block_memory_mode": "Fixed blocks (existing)",
+    "minimax_h3_auto_swap_reserve_gb": "2.0",
+    "minimax_h3_auto_swap_min_blocks": "2",
+    "minimax_h3_auto_swap_max_blocks": "48",
     "minimax_h3_training_workflow": "Still images · compact ConvRot",
     "minimax_h3_multimodal_task": "t2va",
     "minimax_h3_dit_model": "",
@@ -90,6 +94,10 @@ MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
 }
 
 FIELD_LABELS = {
+    "minimax_h3_block_memory_mode": "Block Memory Management",
+    "minimax_h3_auto_swap_reserve_gb": "VRAM Safety Margin (GiB)",
+    "minimax_h3_auto_swap_min_blocks": "Minimum Streamed Blocks",
+    "minimax_h3_auto_swap_max_blocks": "Maximum Streamed Blocks",
     "minimax_h3_training_workflow": "Training Media Type",
     "minimax_h3_multimodal_task": "Video Model Task",
     "minimax_h3_video_vae": "Official MiniMax Video VAE",
@@ -156,6 +164,7 @@ SECTION_TITLES = {
 }
 
 CHOICES = {
+    "minimax_h3_block_memory_mode": ["Fixed blocks (existing)", "Automatic (experimental)"],
     "training_mode": MODES,
     "starting_point_mode": ["new", "weights", "state"],
     "network_type": ["LoRA", "LoHa", "LoKr"],
@@ -309,6 +318,8 @@ def _humanize(key: str) -> str:
 
 
 def _section_for(key: str) -> str:
+    if key == "minimax_h3_block_memory_mode" or key.startswith("minimax_h3_auto_swap_"):
+        return "runtime"
     if key in {"training_mode", "dataset_config", "project_root", "output_dir", "output_name", "appearance_mode"}:
         return "essentials"
     if key in PATH_KEYS and key not in {"dataset_config", "project_root", "output_dir", "network_weights", "resume_path"}:

@@ -402,6 +402,16 @@ def _add_memory_args(parser: argparse.ArgumentParser) -> None:
         help="number of blocks to swap in the model, max XXX / モデル内のブロックの数、最大XXX",
     )
     parser.add_argument(
+        "--auto_block_swap", action="store_true",
+        help="Experimental H3 automatic frozen-block residency; requires gradient checkpointing. Fixed swapping remains the default.",
+    )
+    parser.add_argument("--auto_swap_reserve_gb", type=float, default=2.0,
+                        help="Automatic swapping VRAM safety margin in GiB; does not guarantee every clip fits.")
+    parser.add_argument("--auto_swap_min_blocks", type=int, default=2,
+                        help="Minimum blocks streamed in H3 automatic mode.")
+    parser.add_argument("--auto_swap_max_blocks", type=int, default=48,
+                        help="Maximum blocks streamed for unfamiliar or expensive training batches.")
+    parser.add_argument(
         "--use_pinned_memory_for_block_swap",
         action="store_true",
         help="use pinned memory for block swapping, which may speed up data transfer between CPU and GPU but uses more shared GPU memory on Windows"

@@ -30,6 +30,19 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Experimental H3 automatic block residency
+
+- `modules/automatic_offloading.py` independently extends Musubi H2D streaming with
+  frozen CPU masters and graph-boundary residency changes. Fixed mode is unchanged.
+- `modules/automatic_swap_policy.py` owns CUDA-independent budgets;
+  `training/automatic_swap.py` profiles complete microbatches and quality cadences.
+- The shared trainer has opt-in begin/end measurement around primary/auxiliary
+  backward and optimizer updates, plus configuration metadata and tracker metrics.
+  Preserve these boundaries on future imports; previews must not enter the profile.
+- Both GUI forms and `backends/minimax_h3.py` expose the disabled-by-default mode.
+  See `docs/h3_automatic_memory.md`. ComfyUI is a design reference, not an imported
+  implementation or a runtime dependency.
+
 ### Deterministic single-GPU GUI launches
 
 - GUI backend commands in `backends/wan.py`, `backends/flux2.py`, and

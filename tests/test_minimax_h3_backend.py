@@ -42,6 +42,32 @@ def test_training_command_enforces_direct_int8_safe_path(tmp_path):
     assert command[command.index("--h3_guidance_distillation_sigma_min") + 1] == "0.15"
 
 
+@pytest.mark.parametrize("workflow", ["Still images · compact ConvRot", "Video + audio · official multimodal"])
+def test_automatic_swapping_command_is_opt_in_and_preserves_fixed_count(tmp_path, workflow):
+    settings = _settings(tmp_path)
+    settings["minimax_h3_training_workflow"] = workflow
+    settings["minimax_h3_block_memory_mode"] = "Automatic (experimental)"
+    command = minimax_h3.build_commands(settings)[0]
+    assert "--auto_block_swap" in command
+    assert command[command.index("--blocks_to_swap") + 1] == "30"
+    assert command[command.index("--auto_swap_reserve_gb") + 1] == "2.0"
+    settings["minimax_h3_block_memory_mode"] = "Fixed blocks (existing)"
+    assert "--auto_block_swap" not in minimax_h3.build_commands(settings)[0]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("minimax_h3_auto_swap_reserve_gb", "nan"),
+    ("minimax_h3_auto_swap_reserve_gb", "-1"),
+    ("minimax_h3_auto_swap_min_blocks", "0"),
+    ("minimax_h3_auto_swap_max_blocks", "49"),
+    ("compile", True),
+])
+def test_automatic_invalid_settings_fail_before_launch(tmp_path, key, value):
+    settings = _settings(tmp_path) | {"minimax_h3_block_memory_mode": "Automatic (experimental)", key: value}
+    with pytest.raises(ValueError, match="Automatic H3"):
+        minimax_h3.build_commands(settings)
+
+
 def test_native_mixed_workflow_enables_one_frame_for_training_and_caches(tmp_path):
     settings = _settings(tmp_path) | {
         "minimax_h3_training_workflow": "Video + images · official mixed T2VA",

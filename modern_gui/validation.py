@@ -338,11 +338,17 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             if settings.get("minimax_h3_base_preservation_reference") == "Base + assistant" and not h3_protection["assistant"]:
                 error("minimax_h3_base_preservation_reference", "Base + assistant reference requires the Ostris assistant to be enabled.")
         try:
-            blocks_to_swap = int(str(settings.get("blocks_to_swap") or "0").strip())
+            swap_value = settings.get("minimax_h3_auto_swap_max_blocks", "48") if settings.get("minimax_h3_block_memory_mode") == "Automatic (experimental)" else settings.get("blocks_to_swap")
+            blocks_to_swap = int(str(swap_value or "0").strip())
         except ValueError:
             blocks_to_swap = 0
         if not 1 <= blocks_to_swap <= 48:
             error("blocks_to_swap", "Use 1–48 swapped blocks for MiniMax H3; 30 is the conservative 24 GB default.")
+        from backends.minimax_h3 import validate_automatic_swap_settings
+        try:
+            validate_automatic_swap_settings(settings)
+        except ValueError as exc:
+            error("minimax_h3_block_memory_mode", str(exc))
         warning(
             "training_mode",
             "Experimental image-only path: direct pruned ConvRot INT8 base and batch size 1. A 1024px rank-16 two-epoch run and its LoRA were validated on a 24 GB RTX 4090; previews and advanced regularizers remain experimental, so start them with a short run.",

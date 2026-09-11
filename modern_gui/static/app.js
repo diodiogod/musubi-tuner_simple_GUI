@@ -77,6 +77,10 @@ function schemaFields(sectionIds) {
   return state.schema.sections.filter(s => sectionIds.includes(s.id)).flatMap(s => s.fields);
 }
 const HELP = {
+  minimax_h3_block_memory_mode: "Automatic keeps more frozen blocks on the GPU for smaller batches and streams more for larger batches. Fixed preserves your existing swap count.",
+  minimax_h3_auto_swap_reserve_gb: "Extra VRAM headroom for temporary work and other apps. Start with 2 GiB. More is safer but may slow training.",
+  minimax_h3_auto_swap_min_blocks: "Advanced lower limit, not a fixed count. Start with 2.",
+  minimax_h3_auto_swap_max_blocks: "New batch sizes start at this conservative limit. Start with 48. Oversized clips may still not fit.",
   training_mode: "Selects the Musubi model family and changes which files, defaults, and specialized training tools are available.",
   dataset_config: "A Musubi dataset TOML describing image or video directories, captions, resolution buckets, repeats, and cache locations.",
   output_name: "The stable name used for checkpoints, samples, logs, staged artifacts, continuation, and recovery.",
@@ -160,6 +164,7 @@ const HELP = {
 };
 const LONG_HELP = new Set(["training_mode","starting_point_mode","timestep_sampling","dop_enabled","flux2_reference_guided","flux2_reference_conditions","krea2_projector_diff","krea2_generalization_preset","krea2_depth_anchor_gradient_weight","krea2_depth_anchor_grad_checkpoint","krea2_keep_depth_helpers_on_gpu","blocks_to_swap","fp8_base","minimax_h3_dit_model","minimax_h3_convrot_bwd_mode","minimax_h3_training_preview_mode","minimax_h3_foundation_lora_enabled","minimax_h3_foundation_lora","minimax_h3_quality_protection_preset","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_dynamic_sigma_every_n_steps","minimax_h3_training_assistant","minimax_h3_base_preservation_enabled","minimax_h3_base_preservation_loss_weight","minimax_h3_base_preservation_every_n_steps","minimax_h3_base_preservation_reference","minimax_h3_guidance_distillation_scale","minimax_h3_guidance_distillation_schedule","minimax_h3_guidance_distillation_sigma_min","minimax_h3_teacher_matching","minimax_h3_teacher_conditions","recache_latents","recache_text","sample_every_n_epochs","sample_every_n_steps","sample_at_first","save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
 const LONG_HELP_COPY = {
+  minimax_h3_block_memory_mode: "Short clips usually need less working memory, so more frozen model weights can stay on the GPU. Longer or larger clips need more room for training calculations. Automatic mode measures completed training steps and adjusts between batches.\n\nIt does not change resolution, crop clips, modify your LoRA, or turn off quality protection. It uses more system RAM for frozen weight copies. The first steps of a new size are conservative. Even maximum swapping cannot make every clip fit; lower resolution or frame count if the training calculations alone need too much memory.\n\nFixed mode remains the default. Automatic is experimental and requires gradient checkpointing.",
   minimax_h3_teacher_matching: "Like what H3 produces from your reference pictures and want to capture that behavior in a LoRA? Try reference-guided learning. A frozen teacher sees extra image information, while the LoRA learns to reproduce that prediction from the caption alone, so the reference is not required when using the finished LoRA.\n\nThis is an experimental alternative to the established Dynamic Sigma and assistant-based quality protection—not the recommended default. It can inherit both the teacher's strengths and mistakes, takes an additional model pass, may use more memory, and is not proven to outperform ordinary training. This implementation follows the practical Ostris/Musubi off-policy approach, not the paper's much heavier multi-step EMA on-policy algorithm.\n\nEnabling it requires rebuilding the Caption/Text Cache because the teacher needs visual-aware Qwen rows. Start with a short comparison and keep an ordinary-training baseline.",
   minimax_h3_teacher_conditions: "Choose what extra visual information the frozen teacher receives. Same training item shows it the exact image or video being learned. Other pictures of subject uses separate reference pictures, so the teacher never sees the answer item. First and last video frames uses the video's endpoints.\n\nThese are different experiments, not increasing quality levels. Availability depends on the H3 training target and dataset format.",
   training_mode: "The model family controls far more than the visible model path. It selects the correct Musubi training script, cache commands, supported precision options, sampling behavior, and mode-specific settings.\n\nChoose the family of the base model you will actually train. Changing it later preserves your other recipe values, but you should review every model path and the Method step again.",
@@ -293,6 +298,10 @@ function fieldControl(field, {wide = false} = {}) {
   input.id = id;
   input.disabled = (field.disabled_modes || []).includes(state.settings.training_mode);
   if (input.disabled) input.title = "Fixed by the selected experimental training mode";
+  if(field.key==="blocks_to_swap" && state.settings.training_mode==="MiniMax H3 (Experimental)" && state.settings.minimax_h3_block_memory_mode==="Automatic (experimental)"){
+    input.disabled=true;
+    input.title="Saved fixed count; Automatic mode chooses the effective count for each batch.";
+  }
   const description = document.createElement("span");
   description.id = descriptionId; description.className = "sr-only"; description.textContent = helpFor(field);
   input.setAttribute("aria-describedby", descriptionId);
@@ -337,7 +346,7 @@ function fieldControl(field, {wide = false} = {}) {
       toast("Other-picture Klein teacher selected the required Image/Latent Cache rebuild for control_path references.");
     }
     if(field.key==="minimax_h3_quality_protection_preset"&&applyH3QualityPreset(input.value))return;
-    if(field.key==="minimax_h3_training_workflow"){
+    if(["minimax_h3_training_workflow","minimax_h3_block_memory_mode"].includes(field.key)){
       sync();renderGuided();renderAllSettings();return;
     }
     if(field.key.startsWith("minimax_h3_")&&[
@@ -552,6 +561,18 @@ function renderGuided() {
   const kreaDepthCompute=$("#krea-depth-compute");kreaDepthCompute.hidden=mode!=="Krea 2";
   appendFields($("#krea-depth-fields"),kreaDepthComputeKeys);
   appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
+  if(mode==="MiniMax H3 (Experimental)"){
+    LONG_HELP.add("minimax_h3_block_memory_mode");
+    $("#performance-fields").append(fieldControl(findField("minimax_h3_block_memory_mode")));
+    if(state.settings.minimax_h3_block_memory_mode==="Automatic (experimental)"){
+      $("#performance-fields").append(fieldControl(findField("minimax_h3_auto_swap_reserve_gb")));
+      const advanced=document.createElement("details");
+      const summary=document.createElement("summary");summary.textContent="Advanced automatic memory limits";
+      const limits=document.createElement("div");advanced.append(summary,limits);$("#performance-fields").append(advanced);
+      appendFields(limits,["minimax_h3_auto_swap_min_blocks","minimax_h3_auto_swap_max_blocks"]);
+      $("#performance-fields").querySelectorAll('[data-key="blocks_to_swap"] input').forEach(input=>input.disabled=true);
+    }
+  }
   renderReview();
   renderPlan();
   renderFaceWorkspace();

@@ -124,11 +124,13 @@ class BlockSwapConfig:
     h2d_only: bool = False  # frozen-base (LoRA / LoHa / LoKr) only: H2D-only streaming, no device->host copy
     ring_size: int = 2  # (h2d_only) number of GPU ring buffers for streamed blocks; 2 = double buffering
     debug: bool = False
+    automatic: bool = False
 
     @classmethod
     def from_args(cls, args, device: torch.device, supports_backward: bool) -> "BlockSwapConfig":
         """Build from a parsed-args namespace, tolerating scripts whose parser lacks the optional knobs."""
-        h2d_only = getattr(args, "block_swap_h2d_only", False)
+        automatic = getattr(args, "auto_block_swap", False)
+        h2d_only = getattr(args, "block_swap_h2d_only", False) or automatic
 
         # H2D-only streams frozen weights into a reused GPU ring buffer and loads them with an in-place copy_,
         # which bumps the autograd version of the saved weight view. Gradient checkpointing re-reads the weight
@@ -146,6 +148,8 @@ class BlockSwapConfig:
             )
 
         ring_size = getattr(args, "block_swap_ring_size", 2)
+        if automatic and ring_size != 2:
+            raise ValueError("Automatic H3 swapping currently requires --block_swap_ring_size 2")
         if ring_size < 1:
             raise ValueError("--block_swap_ring_size must be >= 1")
 
@@ -155,6 +159,7 @@ class BlockSwapConfig:
             use_pinned_memory=getattr(args, "use_pinned_memory_for_block_swap", False),
             h2d_only=h2d_only,
             ring_size=ring_size,
+            automatic=automatic,
         )
 
 
@@ -164,6 +169,14 @@ def create_offloader(block_type: str, blocks: list[nn.Module], num_blocks: int, 
     implementation from ``config``; ``enable_block_swap`` only supplies the per-block-list arguments, so a new
     offloader type plugs in here without touching any architecture.
     """
+    if config.automatic:
+        if block_type != "minimax-h3":
+            raise ValueError("Automatic block swapping is currently supported only for MiniMax H3")
+        from musubi_tuner.modules.automatic_offloading import AutomaticLoRAStreamOffloader
+        return AutomaticLoRAStreamOffloader(
+            block_type, blocks, num_blocks, config.supports_backward, config.device,
+            use_pinned_memory=config.use_pinned_memory, debug=config.debug,
+        )
     if config.h2d_only:
         # H2D-only streaming for frozen-base (LoRA) training: keep a CPU master, copy Host->Device only.
         return LoRAStreamOffloader(

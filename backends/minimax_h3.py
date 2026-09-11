@@ -1,12 +1,41 @@
 """Command construction for compact still-image and official multimodal MiniMax-H3 training."""
 
 from pathlib import Path
+import math
 
 from backends._common import setting_or_default
 
 DEFAULT_H3_TRAINING_ASSISTANT = (
     "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors"
 )
+
+
+def add_automatic_swap_args(cmd, settings, add_arg):
+    validate_automatic_swap_settings(settings)
+    if settings.get("minimax_h3_block_memory_mode") != "Automatic (experimental)":
+        return
+    add_arg(cmd, "--auto_block_swap", True)
+    for setting, flag, default in (
+        ("minimax_h3_auto_swap_reserve_gb", "--auto_swap_reserve_gb", "2.0"),
+        ("minimax_h3_auto_swap_min_blocks", "--auto_swap_min_blocks", "2"),
+        ("minimax_h3_auto_swap_max_blocks", "--auto_swap_max_blocks", "48"),
+    ):
+        add_arg(cmd, flag, setting_or_default(settings, setting, default))
+
+
+def validate_automatic_swap_settings(settings):
+    if settings.get("minimax_h3_block_memory_mode") != "Automatic (experimental)":
+        return
+    try:
+        reserve = float(setting_or_default(settings, "minimax_h3_auto_swap_reserve_gb", "2.0"))
+        minimum = int(setting_or_default(settings, "minimax_h3_auto_swap_min_blocks", "2"))
+        maximum = int(setting_or_default(settings, "minimax_h3_auto_swap_max_blocks", "48"))
+        if not math.isfinite(reserve) or reserve < 0 or not 2 <= minimum <= maximum <= 48:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ValueError("Automatic H3 memory needs a finite nonnegative safety margin and 2 <= minimum <= maximum <= 48 blocks") from None
+    if settings.get("compile"):
+        raise ValueError("Automatic H3 memory is not yet compatible with Torch Compile; disable Compile or use Fixed blocks")
 
 
 def teacher_condition_value(value):
@@ -119,6 +148,7 @@ def build_commands(settings):
             settings.get("minimax_h3_foundation_lora_multiplier") or "1.0",
         )
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
+    add_automatic_swap_args(cmd, settings, add_arg)
     add_arg(cmd, "--block_swap_h2d_only", True)
     add_arg(cmd, "--block_swap_ring_size", settings.get("block_swap_ring_size"))
     add_arg(cmd, "--use_pinned_memory_for_block_swap", settings.get("use_pinned_memory_for_block_swap"))
@@ -224,6 +254,7 @@ def _build_multimodal_commands(settings):
             settings.get("minimax_h3_foundation_lora_multiplier") or "1.0",
         )
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
+    add_automatic_swap_args(cmd, settings, add_arg)
     add_arg(cmd, "--convrot_int8_bwd", settings.get("minimax_h3_convrot_bwd_mode") or "bf16")
     teacher_matching = bool(settings.get("minimax_h3_teacher_matching"))
     protection = quality_protection_components(settings)

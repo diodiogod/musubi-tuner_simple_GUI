@@ -131,7 +131,9 @@ def training_settings_summary(settings: dict[str, Any]) -> str:
             parts.append(f"projector={Path(projector).name}@{strength}")
 
     blocks = str(settings.get("blocks_to_swap") or "").strip()
-    if blocks and blocks != "0":
+    if settings.get("training_mode") == "MiniMax H3 (Experimental)" and settings.get("minimax_h3_block_memory_mode") == "Automatic (experimental)":
+        parts.append("swap=automatic")
+    elif blocks and blocks != "0":
         parts.append(f"swap={blocks}")
     return "Settings: " + "; ".join(parts)
 

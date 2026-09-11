@@ -1525,6 +1525,15 @@ class NetworkTrainer:
     def _load_dit_and_swap(self, args, accelerator, dit_weight_dtype):
         # load DiT model
         blocks_to_swap = args.blocks_to_swap if args.blocks_to_swap else 0
+        if getattr(args, "auto_block_swap", False):
+            if args.compile:
+                raise ValueError("Automatic H3 block swapping currently requires Torch Compile disabled")
+            from musubi_tuner.modules.automatic_swap_policy import SwapBudget
+            SwapBudget(minimum=args.auto_swap_min_blocks, maximum=args.auto_swap_max_blocks,
+                       reserve_bytes=int(args.auto_swap_reserve_gb * 1024**3))
+            if args.auto_swap_max_blocks > 48:
+                raise ValueError("H3 automatic swapping currently supports a maximum of 48 blocks")
+            blocks_to_swap = args.auto_swap_max_blocks
         self.blocks_to_swap = blocks_to_swap
         loading_device = "cpu" if blocks_to_swap > 0 else accelerator.device
 
@@ -1933,6 +1942,13 @@ class NetworkTrainer:
                 vae_name = os.path.basename(vae_name)
             metadata["ss_vae_name"] = vae_name
 
+        if getattr(args, "auto_block_swap", False):
+            metadata.update({
+                "ss_h3_auto_block_swap": True,
+                "ss_h3_auto_swap_reserve_gb": args.auto_swap_reserve_gb,
+                "ss_h3_auto_swap_min_blocks": args.auto_swap_min_blocks,
+                "ss_h3_auto_swap_max_blocks": args.auto_swap_max_blocks,
+            })
         metadata = {k: str(v) for k, v in metadata.items()}
 
         # make minimum metadata for filtering
@@ -2084,6 +2100,11 @@ class NetworkTrainer:
 
         optimizer_train_fn()  # Set training mode
 
+        automatic_swap = None
+        if getattr(args, "auto_block_swap", False):
+            from musubi_tuner.training.automatic_swap import AutomaticSwapController
+            automatic_swap = AutomaticSwapController(accelerator.unwrap_model(transformer).offloader, args)
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
@@ -2104,6 +2125,8 @@ class NetworkTrainer:
                 latents = batch["latents"]
 
                 with accelerator.accumulate(training_model):
+                    if automatic_swap is not None:
+                        automatic_swap.begin(batch, global_step)
                     accelerator.unwrap_model(network).on_step_start()
 
                     latents = self.scale_shift_latents(latents)
@@ -2156,6 +2179,8 @@ class NetworkTrainer:
                     optimizer.zero_grad(set_to_none=True)
 
                     self.on_post_optimizer_step(args, accelerator, network, transformer, accelerator.sync_gradients, global_step)
+                    if automatic_swap is not None:
+                        automatic_swap.end(accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped, loss_metrics)
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -2224,6 +2249,8 @@ class NetworkTrainer:
                     logs.update(loss_metrics)
                     logs.update(grad_metrics)
                     logs.update(self.extra_step_logs(args, logs))
+                    if automatic_swap is not None:
+                        logs.update(automatic_swap.logs)
                     accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:

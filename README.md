@@ -98,6 +98,10 @@ DOP guide: [docs/dop.md](./docs/dop.md)
 
 ### MiniMax H3 (Experimental)
 
+An opt-in [automatic block-memory mode](docs/h3_automatic_memory.md) is available
+in both GUIs. It measures complete training steps and adjusts frozen-block
+residency for different batch sizes; fixed swapping remains the default.
+
 - Still-image LoRA over the frozen ~20.97 GB pruned ConvRot INT8 FL2VA checkpoint
 - Does not require the ~66 GB BF16 transformer
 - 24 GB-oriented safe defaults: rank 16, BF16 LoRA/backward, gradient checkpointing, and 30 H2D-only swapped blocks
