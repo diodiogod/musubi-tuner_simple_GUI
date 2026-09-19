@@ -62,6 +62,14 @@ not contain the GUI files.
   `krea2_train_network.py`, and `krea2_generate_image.py`.
 - These predate the perceptual-training work and must not be overwritten by an
   upstream snapshot.
+- Upstream v0.3.5 activation CPU offloading is selectively retained in
+  `krea2_mmdit.py`. Turbo previews support both the older full-DiT swap and the
+  newer frozen Turbo-LoRA composition; only the full-DiT swap conflicts with
+  block swapping. GUI recipes default to neither and keep both paths explicit.
+- Krea LoRA targeting remains backward-compatible at all Linear layers. The GUI
+  additionally exposes experimental skip-text-fusion and attention-only presets;
+  do not silently change existing recipes while the community stability report
+  remains unresolved upstream.
 
 ### MiniMax H3 pruned ConvRot image-only path
 
@@ -120,6 +128,9 @@ not contain the GUI files.
 - The single-token VAE decode correction from draft PR #1054 is applied to both native and compact VAE modules; the compact sampler's existing duplication remains compatible.
 - PR #1063's int64 ConvRot row-address fix is imported in the shared Triton kernels to prevent long/high-resolution packed sequences from wrapping int32 offsets and corrupting memory.
 - H3 native and compact MP4 writers explicitly use x264 CRF 16; PyAV's implicit low-bitrate default visibly destroys preview detail.
+- Both compact and native H3 use the explicit FP32-accumulating split-half RoPE
+  expansion proposed in upstream issue #1122 instead of batched 2x2 matmul.
+  Preserve numerical-equivalence coverage when importing future H3 model code.
 - PR #1065's teacher-loss correction is imported: a reduced magnitude weight applies only to conditioned teaching steps, while preservation anchors retain the full norm-restoring magnitude term.
 - `h3_shifted_uniform` is a downstream compact-training experiment: uniform base draws mapped through H3 shift 12. Do not silently replace the established `krea2_shift` default without comparative user evidence.
 

@@ -37,6 +37,7 @@
     "lr_scheduler_min_lr_ratio": "5e-5",
     "mixed_precision": "fp16",
     "gradient_checkpointing": true,
+    "gradient_checkpointing_cpu_offload": false,
     "persistent_data_loader_workers": true,
     "gradient_accumulation_steps": "1",
     "max_data_loader_n_workers": "2",

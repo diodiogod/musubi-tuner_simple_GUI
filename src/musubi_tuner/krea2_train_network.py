@@ -18,6 +18,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
+from safetensors.torch import load_file
 from tqdm import tqdm
 from einops import rearrange, repeat
 
@@ -32,6 +33,7 @@ from musubi_tuner.hv_train_network import (
 )
 from musubi_tuner.krea2 import krea2_utils
 from musubi_tuner.krea2 import krea2_sampling
+from musubi_tuner.networks import lora_krea2
 from musubi_tuner.qwen_image import qwen_image_utils
 from musubi_tuner.utils import model_utils
 from musubi_tuner.training.dop import compute_dop_loss, dop_enabled, validate_dop_config
@@ -58,6 +60,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         self._weight_noise = None
         self._weight_noise_logs = {}
         self._dop_step_context = None
+        self._turbo_lora_network = None
 
     # region model specific
 
@@ -103,6 +106,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
         # checkpoint and run inference on the distilled Turbo. --turbo_dit makes sample
         # generation during training swap the base weights to Turbo (LoRA, hooked on the live
         # Linears, applies on top automatically) and use the Turbo sampling schedule.
+        turbo_lora = getattr(args, "turbo_lora", None)
+        if args.turbo_dit and turbo_lora:
+            raise ValueError("--turbo_dit and --turbo_lora are mutually exclusive; choose one Turbo preview source.")
         if args.turbo_dit_cache and not args.turbo_dit:
             raise ValueError("--turbo_dit_cache (M1, resident Turbo weights) requires --turbo_dit.")
         # Turbo sample generation swaps the base weights from outside the model, which is unsafe
@@ -117,8 +123,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
                 "the block-swap offloader manages the base weights and an external swap would mix RAW/Turbo. "
                 "Use Turbo sampling without block swap (VRAM permitting), or omit --turbo_dit to sample on RAW."
             )
-        if args.turbo_dit and not args.sample_prompts:
-            logger.warning("--turbo_dit is set but --sample_prompts is not; Turbo is only used for sample generation.")
+        if (args.turbo_dit or turbo_lora) and not args.sample_prompts:
+            logger.warning("--turbo_dit/--turbo_lora is set but --sample_prompts is not; Turbo is only used for samples.")
 
     def _get_depth_vae_device(self, args, training_device: torch.device) -> torch.device:
         if self._depth_vae_device is None:
@@ -147,7 +153,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         assert args.text_encoder is not None, "--text_encoder is required for sample generation during training"
         logger.info(f"cache Text Encoder outputs for sample prompt: {sample_prompts}")
         prompts = load_prompts(sample_prompts)
-        if args.turbo_dit:
+        if args.turbo_dit or getattr(args, "turbo_lora", None):
             for prompt_dict in prompts:
                 prompt_dict.setdefault("sample_steps", 8)
                 prompt_dict.setdefault("cfg_scale", 1.0)
@@ -249,7 +255,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         x2 = (1280 // align) ** 2
         # The distilled Turbo checkpoint was trained at a fixed mu=1.15; the RAW checkpoint
         # uses resolution-aware mu interpolation. When sampling on Turbo (--turbo_dit), pin mu.
-        turbo_mu = 1.15 if args.turbo_dit else None
+        turbo_mu = 1.15 if (args.turbo_dit or getattr(args, "turbo_lora", None)) else None
         ts = krea2_sampling.timesteps(img.shape[1], sample_steps, x1, x2, y1=0.5, y2=1.15, mu=turbo_mu)
 
         for tcurr, tprev in tqdm(zip(ts[:-1], ts[1:]), total=len(ts) - 1, desc="Denoising steps"):
@@ -380,6 +386,27 @@ class Krea2NetworkTrainer(NetworkTrainer):
         for k, t in self._named_live_tensors(model).items():
             t.data = src[k]
 
+    def _build_turbo_lora_network(self, args: argparse.Namespace, accelerator: Accelerator, model):
+        """Attach a frozen Turbo delta for previews without mutating RAW weights."""
+        logger.info("Krea 2: loading Turbo LoRA for sampling from %s", args.turbo_lora)
+        weights_sd = load_file(args.turbo_lora)
+        turbo_network = lora_krea2.create_arch_network_from_weights(
+            getattr(args, "turbo_lora_multiplier", 1.0), weights_sd, unet=model, for_inference=True
+        )
+        turbo_network.apply_to(None, model, apply_text_encoder=False, apply_unet=True)
+        turbo_network.load_weights(args.turbo_lora)
+        turbo_network.requires_grad_(False)
+        turbo_network.to(accelerator.device)
+        turbo_network.set_enabled(False)
+        self._turbo_lora_network = turbo_network
+        return turbo_network
+
+    def _build_network(self, args, accelerator, transformer, vae, weight_dtype):
+        network = super()._build_network(args, accelerator, transformer, vae, weight_dtype)
+        if network is not None and getattr(args, "turbo_lora", None):
+            self._build_turbo_lora_network(args, accelerator, transformer)
+        return network
+
     def _apply_sample_projector_diff(self, model, args):
         if not args.projector_diff:
             return
@@ -402,6 +429,10 @@ class Krea2NetworkTrainer(NetworkTrainer):
 
     def on_before_sample_images(self, accelerator, args, epoch, steps, vae, transformer, network, sample_parameters, dit_dtype):
         # Swap RAW -> Turbo base weights for sample generation (LoRA stays hooked and applies on top).
+        if getattr(args, "turbo_lora", None):
+            logger.info("Krea 2: enabling Turbo LoRA for sampling")
+            self._turbo_lora_network.set_enabled(True)
+            return
         if not args.turbo_dit:
             return
         # Depth training leaves the VAE and frozen depth model on the GPU between steps. They are
@@ -454,6 +485,10 @@ class Krea2NetworkTrainer(NetworkTrainer):
             clean_memory_on_device(accelerator.device)
     def on_after_sample_images(self, accelerator, args, epoch, steps, vae, transformer, network, sample_parameters, dit_dtype):
         # Restore RAW base weights after sampling.
+        if getattr(args, "turbo_lora", None):
+            logger.info("Krea 2: disabling Turbo LoRA after sampling")
+            self._turbo_lora_network.set_enabled(False)
+            return
         if not args.turbo_dit:
             return
         model = accelerator.unwrap_model(transformer)
@@ -785,6 +820,18 @@ def krea2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="M1 memory mode for --turbo_dit: keep the (fp8-quantized at startup) Turbo weights resident in "
         "CPU RAM (~1x extra CPU, faster Turbo swap-in); RAW is restored from disk after previews. Default (M2) streams Turbo from disk each "
         "sample step (re-quantizing if fp8) for ~0x steady CPU at the cost of per-validation load time.",
+    )
+    parser.add_argument(
+        "--turbo_lora",
+        type=str,
+        default=None,
+        help="Turbo LoRA safetensors path. Applies only to scheduled previews on RAW and can be used with block swap.",
+    )
+    parser.add_argument(
+        "--turbo_lora_multiplier",
+        type=float,
+        default=1.0,
+        help="Multiplier for the preview-only Turbo LoRA delta.",
     )
     parser.add_argument(
         "--projector_diff",

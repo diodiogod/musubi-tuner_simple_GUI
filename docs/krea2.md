@@ -155,6 +155,8 @@ accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 src/mus
 
 By default, the Krea 2 LoRA targets **all Linear layers** in the DiT (264 layers: attention, MLP, the text-fusion transformer, and the projection MLPs). This matches the model authors' recommended default configuration (rank/alpha 32). The modulation and RMSNorm parameters are raw tensors (not Linear modules), so they are never wrapped — no exclusion is needed.
 
+The GUI exposes three presets without changing old recipes: **All linear layers** keeps that upstream default; **Skip text fusion** experimentally excludes `txtfusion` and `txtmlp` after community reports of unstable text-fusion updates; **Attention only** additionally excludes the main MLP and projection layers. The latter two are experimental targeting choices, not established universal quality improvements.
+
 Because the default already targets everything, both `exclude_patterns` and `include_patterns` are free for you to narrow the target set, passed via `--network_args`:
 
 - **Attention-only** (the authors' "long training run" config — increase rank and focus on the attention projections to preserve prompt adherence):
@@ -183,7 +185,7 @@ Because the default already targets everything, both `exclude_patterns` and `inc
 
 - `--fp8_base` and `--fp8_scaled` reduce DiT memory usage. **Both must be specified together** (plain fp8 without scaled is rejected, because it would cast the norms to fp8 and break the model). fp8 is applied to the 28 main blocks only; the text-fusion transformer stays bf16.
 - `--blocks_to_swap N` offloads some of the main blocks to CPU. The maximum is **26** (28 blocks − 2).
-- `--gradient_checkpointing` is available for memory savings. See [HunyuanVideo documentation](./hunyuan_video.md#memory-optimization) for details.
+- `--gradient_checkpointing` is available for memory savings. `--gradient_checkpointing_cpu_offload` now also offloads checkpointed activations correctly for Krea 2; it can save VRAM at the cost of CPU transfers and speed. See [HunyuanVideo documentation](./hunyuan_video.md#memory-optimization) for details.
 
 <details>
 <summary>日本語</summary>
@@ -235,6 +237,8 @@ To generate sample images during training, specify `--text_encoder` (Qwen3-VL-4B
 By default, samples are generated on the RAW model being trained, using CFG (specify a negative prompt and a CFG scale via `--l` in the sample prompt; CFG-off output is blurry, which is expected for the K2 RAW model).
 
 **Recommended: generate samples on the Turbo model.** Since the recommended workflow is RAW-train → Turbo-infer, you can preview results closer to actual use by sampling on the distilled Turbo model. Pass `--turbo_dit path/to/turbo_dit`. The trained LoRA is applied on top of the Turbo weights automatically (no second network, no merge). When `--turbo_dit` is set, the Turbo schedule is used (fixed `mu = 1.15`); in your sample prompt set CFG off and a low step count, e.g. `--l 1 --s 8`.
+
+As a lower-memory alternative, `--turbo_lora path/to/turbo_lora.safetensors` attaches an extracted RAW-to-Turbo delta as a second frozen adapter. It is enabled only for previews, while the user's trainable LoRA remains active. Unlike a full `--turbo_dit` swap, this works with block swapping. Use `--turbo_lora_multiplier 1.0` unless the adapter author recommends another strength. `--turbo_lora` and `--turbo_dit` are mutually exclusive.
 
 ```text
 A fox in the snow.  --w 1024 --h 1024 --s 8 --l 1 --d 0

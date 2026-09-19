@@ -209,6 +209,35 @@ def test_build_krea_preview_uses_turbo_and_batch_file(tmp_path: Path):
     assert second_prompt_file.read_text(encoding="utf-8") == "replacement\nbatch"
 
 
+def test_build_krea_preview_composes_turbo_lora_and_trained_lora(tmp_path: Path):
+    paths = {}
+    for name in ("raw.safetensors", "turbo_lora.safetensors", "vae.safetensors", "text.safetensors"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        paths[name] = str(path)
+    run = tmp_path / "preview"
+    run.mkdir()
+    trained = run / "preview.safetensors"
+    trained.write_bytes(b"lora")
+
+    command, _ = build_krea_preview(
+        {
+            "training_mode": "Krea 2", "krea2_dit_model": paths["raw.safetensors"],
+            "krea2_turbo_lora": paths["turbo_lora.safetensors"], "krea2_turbo_lora_multiplier": "0.8",
+            "vae_model": paths["vae.safetensors"], "krea2_text_encoder": paths["text.safetensors"],
+            "output_dir": str(tmp_path), "output_name": "preview", "attention_mechanism": "sdpa",
+        },
+        [{"prompt": "portrait", "enabled": True}],
+    )
+
+    assert command[command.index("--dit") + 1] == paths["raw.safetensors"]
+    assert "--turbo" in command
+    weights_at = command.index("--lora_weight")
+    multipliers_at = command.index("--lora_multiplier")
+    assert command[weights_at + 1 : multipliers_at] == [paths["turbo_lora.safetensors"], str(trained)]
+    assert command[multipliers_at + 1 :] == ["0.8", "1.0"]
+
+
 def test_build_minimax_h3_preview_uses_compact_models_and_latest_lora(tmp_path: Path):
     paths = {}
     for name in ("dit.safetensors", "vae.safetensors", "te.safetensors"):

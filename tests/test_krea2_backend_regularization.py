@@ -5,6 +5,34 @@ from musubi_tuner.krea2_train_network import krea2_setup_parser
 
 
 class Krea2BackendRegularizationTests(unittest.TestCase):
+    def test_turbo_lora_and_target_preset_are_forwarded(self):
+        settings = {
+            "mixed_precision": "bf16", "krea2_dit_model": "raw.safetensors", "vae_model": "vae.safetensors",
+            "dataset_config": "dataset.toml", "krea2_text_encoder": "text.safetensors",
+            "krea2_turbo_lora": "turbo.safetensors", "krea2_turbo_lora_multiplier": "0.9",
+            "krea2_lora_target_preset": "Skip text fusion (experimental)",
+            "network_dim_low": "32", "network_alpha_low": "32", "network_type": "LoRA",
+            "output_dir": "out", "output_name": "run",
+        }
+        command = build_commands(settings | {"_preview_only": True})[0]
+        self.assertIn("--turbo_lora", command)
+        self.assertIn("turbo.safetensors", command)
+        self.assertIn("--network_args", command)
+        network_arg = command[command.index("--network_args") + 1]
+        self.assertIn("txtfusion", network_arg)
+        self.assertIn("txtmlp", network_arg)
+
+    def test_attention_only_preset_excludes_main_mlp(self):
+        settings = {
+            "krea2_dit_model": "raw.safetensors", "vae_model": "vae.safetensors", "dataset_config": "dataset.toml",
+            "krea2_lora_target_preset": "Attention only (long-run safe)",
+            "network_dim_low": "32", "network_alpha_low": "32", "network_type": "LoRA",
+            "output_dir": "out", "output_name": "run", "_preview_only": True,
+        }
+        command = build_commands(settings)[0]
+        network_arg = command[command.index("--network_args") + 1]
+        self.assertIn("mlp", network_arg)
+        self.assertIn("txtfusion", network_arg)
     def _settings(self):
         return {
             "mixed_precision": "bf16", "output_dir": ".", "output_name": "test",

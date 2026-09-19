@@ -72,6 +72,10 @@ MINIMAX_H3_DEFAULTS = {
 }
 KREA2_DEPTH_DEFAULTS = {
     "krea2_depth_vae_device": "training",
+    "gradient_checkpointing_cpu_offload": False,
+    "krea2_turbo_lora": "",
+    "krea2_turbo_lora_multiplier": "1.0",
+    "krea2_lora_target_preset": "All linear layers (upstream default)",
 }
 FLUX2_REFERENCE_DEFAULTS = {
     "flux2_reference_guided": False,
@@ -145,6 +149,9 @@ FIELD_LABELS = {
     "flux2_reference_conditions": "Teacher Information",
     "flux2_reference_sigma_max": "Teacher Cutoff Sigma",
     "flux2_reference_direct_loss_weight": "Direct Dataset Learning Contribution",
+    "krea2_turbo_lora": "Turbo LoRA for Previews",
+    "krea2_turbo_lora_multiplier": "Turbo LoRA Strength",
+    "krea2_lora_target_preset": "Krea2 Trainable Layers",
 }
 
 SECTION_TITLES = {
@@ -179,6 +186,11 @@ CHOICES = {
     "log_with": ["none", "tensorboard", "wandb"],
     "krea2_weight_noise_mode": ["relative", "absolute"],
     "krea2_generalization_preset": ["Off (Baseline)", "Weight Noise Only", "Balanced Experimental"],
+    "krea2_lora_target_preset": [
+        "All linear layers (upstream default)",
+        "Skip text fusion (experimental)",
+        "Attention only (long-run safe)",
+    ],
     "minimax_h3_convrot_bwd_mode": ["bf16", "int8"],
     "minimax_h3_training_workflow": [
         "Still images · compact ConvRot",
@@ -228,6 +240,7 @@ PATH_KEYS = {
     "krea2_dit_model",
     "krea2_text_encoder",
     "krea2_turbo_dit",
+    "krea2_turbo_lora",
     "krea2_projector_diff",
     "minimax_h3_foundation_lora",
     "minimax_h3_dit_model",
@@ -326,7 +339,7 @@ def _section_for(key: str) -> str:
         return "models"
     if key in {"starting_point_mode", "network_weights", "resume_path"}:
         return "starting_point"
-    if key.startswith("network_") or key in {"network_type", "lokr_factor"}:
+    if key.startswith("network_") or key in {"network_type", "lokr_factor", "krea2_lora_target_preset"}:
         return "network"
     if key.startswith(("learning_", "optimizer", "lr_", "max_train", "save_every", "gradient_accumulation", "max_grad", "seed")):
         return "optimization"
@@ -347,6 +360,7 @@ def _section_for(key: str) -> str:
     if key in {
         "mixed_precision",
         "gradient_checkpointing",
+        "gradient_checkpointing_cpu_offload",
         "persistent_data_loader_workers",
         "max_data_loader_n_workers",
         "blocks_to_swap",

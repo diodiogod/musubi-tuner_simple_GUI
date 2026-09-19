@@ -5,6 +5,16 @@ from backends._common import (
 )
 
 
+KREA2_TARGET_PRESET_ARGS = {
+    "Skip text fusion (experimental)": [
+        "exclude_patterns=['.*txtfusion[.].*','.*txtmlp[.].*']",
+    ],
+    "Attention only (long-run safe)": [
+        "exclude_patterns=['.*[.]mlp[.].*','first','last[.]linear','tmlp[.].*','txtmlp[.].*','tproj[.]1','txtfusion[.].*']",
+    ],
+}
+
+
 def build_commands(settings):
     """Returns a single accelerate launch command for Krea 2 training."""
     cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
@@ -17,6 +27,8 @@ def build_commands(settings):
     add_arg(cmd, "--text_encoder", settings.get("krea2_text_encoder"), is_path=True)
     add_arg(cmd, "--turbo_dit", settings.get("krea2_turbo_dit"), is_path=True)
     add_arg(cmd, "--turbo_dit_cache", settings.get("krea2_turbo_dit_cache"))
+    add_arg(cmd, "--turbo_lora", settings.get("krea2_turbo_lora"), is_path=True)
+    add_arg(cmd, "--turbo_lora_multiplier", settings.get("krea2_turbo_lora_multiplier"))
     add_arg(cmd, "--projector_diff", settings.get("krea2_projector_diff"), is_path=True)
     add_arg(cmd, "--projector_diff_strength", settings.get("krea2_projector_diff_strength"))
     add_arg(cmd, "--weight_noise_sigma", settings.get("krea2_weight_noise_sigma"))
@@ -31,7 +43,8 @@ def build_commands(settings):
         cmd.append("--no-depth_anchor_grad_checkpoint")
     add_arg(cmd, "--keep_depth_helpers_on_gpu", settings.get("krea2_keep_depth_helpers_on_gpu"))
 
-    build_network_args(cmd, settings, "networks.lora_krea2")
+    target_args = KREA2_TARGET_PRESET_ARGS.get(settings.get("krea2_lora_target_preset"), [])
+    build_network_args(cmd, settings, "networks.lora_krea2", target_args)
     build_attention_arg(cmd, settings)
 
     add_arg(cmd, "--fp8_base", settings.get("fp8_base"))

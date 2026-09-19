@@ -774,6 +774,18 @@ class MusubiTunerGUI:
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit", "Turbo DiT (Optional):", "Optional distilled Turbo DiT safetensors path. Used only for sample generation during training to preview Turbo inference behavior.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_path=True)
         self._add_widget(self.hidden_frames['krea2_model_paths'], "krea2_turbo_dit_cache", "Cache Turbo DiT in RAM", "Keeps only the optional Turbo weights in CPU RAM so entering each preview is faster. The RAW training model is safely restored from disk afterward. Uses roughly one extra model's worth of system RAM and is only relevant when Turbo DiT is set.", kind='checkbox')
         self._add_widget(
+            self.hidden_frames['krea2_model_paths'], "krea2_turbo_lora", "Turbo LoRA for Previews (Optional):",
+            "Recommended low-memory alternative to Turbo DiT. Applies a frozen RAW-to-Turbo LoRA only while "
+            "generating previews, alongside the LoRA being trained. It does not alter training and works with block swap. "
+            "Do not select both a Turbo DiT and a Turbo LoRA.",
+            kind='path_entry', options=[("Safetensors", "*.safetensors")], is_path=True,
+        )
+        self._add_widget(
+            self.hidden_frames['krea2_model_paths'], "krea2_turbo_lora_multiplier", "Turbo LoRA Strength:",
+            "Strength of the preview-only Turbo delta. Use 1.0 for the published extracted Turbo LoRA unless its author recommends otherwise.",
+            validate_num=True,
+        )
+        self._add_widget(
             self.hidden_frames['krea2_model_paths'], "krea2_projector_diff", "Projector Patch (Optional):",
             "A small Krea-specific correction patch such as krea2filterbypass3.safetensors. It directly adjusts only "
             "the model's projector weights before training; it is not a normal LoRA and it does not continue or merge "
@@ -1067,6 +1079,15 @@ class MusubiTunerGUI:
         network_type_frame = ttk.LabelFrame(network_container, text="Network Type"); network_type_frame.pack(fill="x", pady=(0, 5))
         self._add_widget(network_type_frame, "network_type", "Network Type:", "LoRA: standard, efficient. LoHa: uses Hadamard product, often better quality — use lower ranks (4-32). LoKr: uses Kronecker product, more expressive.", kind='combobox', options=["LoRA", "LoHa", "LoKr"], command=self.update_button_states)
 
+        self.hidden_frames['krea2_lora_targets'] = ttk.Frame(network_container)
+        self._add_widget(
+            self.hidden_frames['krea2_lora_targets'], "krea2_lora_target_preset", "Krea2 Trainable Layers:",
+            "All linear layers preserves the current Musubi/AI Toolkit behavior. Skip text fusion is an experimental "
+            "community mitigation for unstable text-fusion updates. Attention only also excludes the main MLPs and is "
+            "the conservative choice for long runs or LoRAs that need to stack, but may learn some concepts more slowly.",
+            kind='combobox', options=["All linear layers (upstream default)", "Skip text fusion (experimental)", "Attention only (long-run safe)"],
+        )
+
         self.hidden_frames['lokr_factor'] = ttk.Frame(network_container)
         self._add_widget(self.hidden_frames['lokr_factor'], "lokr_factor", "LoKr Factor:", "Controls how LoKr splits weight dimensions via Kronecker factorization. -1 = auto (recommended). Positive values force a specific factor (e.g., 4, 8).", validate_num=False)
 
@@ -1351,6 +1372,12 @@ class MusubiTunerGUI:
         memory_frame = ttk.LabelFrame(frame, text="Memory & Performance"); memory_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(memory_frame, "mixed_precision", "Mixed Precision:", "Use 'fp16' or 'bf16' to reduce VRAM usage and speed up training. 'fp16' is common, 'bf16' is better on newer GPUs.", kind='combobox', options=["no", "fp16", "bf16"])
         self._add_widget(memory_frame, "gradient_checkpointing", "Gradient Checkpointing", "Drastically reduces VRAM usage by re-calculating gradients on the backward pass. Highly recommended.", kind='checkbox', default_val=True)
+        self._add_widget(
+            memory_frame, "gradient_checkpointing_cpu_offload", "Offload Checkpointed Activations to CPU",
+            "Moves saved checkpoint activations to system RAM between forward and backward. This can reduce VRAM, "
+            "especially for Krea 2, but CPU transfers make training slower. Requires Gradient Checkpointing.",
+            kind='checkbox', default_val=False,
+        )
         self._add_widget(memory_frame, "expandable_cuda_segments", "Expandable CUDA Memory Segments", "Passes PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to new training processes. This can reduce allocator-fragmentation OOMs, but does not reduce the model's true VRAM requirement.", kind='checkbox')
         self._add_widget(memory_frame, "persistent_data_loader_workers", "Persistent Data Loader Workers", "Keeps data loader processes alive between epochs to speed up data loading, at the cost of slightly higher RAM usage.", kind='checkbox')
         self._add_widget(memory_frame, "gradient_accumulation_steps", "Gradient Accumulation Steps:", "Simulates a larger batch size by accumulating gradients over several steps. E.g., a batch size of 1 with 4 accumulation steps simulates a batch size of 4.", validate_num=True)
@@ -2406,6 +2433,9 @@ class MusubiTunerGUI:
 
         settings = self.get_settings()
         mode = settings.get("training_mode", "Wan 2.2")
+        if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
+            messagebox.showerror("Validation Error", "Activation CPU offload requires Gradient Checkpointing.")
+            return
         if mode not in ("Krea 2", "MiniMax H3 (Experimental)"):
             messagebox.showinfo("Not Available", "Sample test generation is available for Krea 2 and experimental MiniMax H3.")
             return
@@ -2520,8 +2550,13 @@ class MusubiTunerGUI:
             raise ValueError("Missing required Krea 2 paths for test sampling:\n- " + "\n- ".join(missing))
 
         python_executable = sys.executable or "python"
-        is_turbo = bool(settings.get("krea2_turbo_dit"))
+        turbo_lora = str(settings.get("krea2_turbo_lora") or "").strip()
+        if settings.get("krea2_turbo_dit") and turbo_lora:
+            raise ValueError("Choose either a full Turbo DiT or a Turbo LoRA for preview, not both.")
+        is_turbo = bool(settings.get("krea2_turbo_dit") or turbo_lora)
         dit_path = settings.get("krea2_turbo_dit") if is_turbo else settings.get("krea2_dit_model")
+        if turbo_lora:
+            dit_path = settings.get("krea2_dit_model")
         if not dit_path or not os.path.exists(dit_path):
             raise ValueError("The selected Krea 2 inference DiT path does not exist.")
 
@@ -2579,8 +2614,16 @@ class MusubiTunerGUI:
                 command.extend(["--projector_diff_strength", strength])
 
         network_weights = self._resolve_krea2_preview_lora(settings)
+        lora_weights = []
+        lora_multipliers = []
+        if turbo_lora:
+            lora_weights.append(turbo_lora)
+            lora_multipliers.append(str(settings.get("krea2_turbo_lora_multiplier") or "1.0"))
         if network_weights:
-            command.extend(["--lora_weight", network_weights])
+            lora_weights.append(network_weights)
+            lora_multipliers.append("1.0")
+        if lora_weights:
+            command.extend(["--lora_weight", *lora_weights, "--lora_multiplier", *lora_multipliers])
 
         if len(prompt_items) == 1:
             prompt_data = prompt_items[0]
@@ -2718,7 +2761,10 @@ class MusubiTunerGUI:
         is_krea2 = mode == "Krea 2"
         is_h3 = mode == "MiniMax H3 (Experimental)"
         is_image_mode = is_krea2 or is_h3
-        is_krea2_turbo = is_krea2 and bool(self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
+        is_krea2_turbo = is_krea2 and bool(
+            (self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
+            or (self.entries.get("krea2_turbo_lora") and self.entries["krea2_turbo_lora"].get().strip())
+        )
         field_tooltips = {
             "guidance": "Classifier-free guidance scale. For Krea 2 RAW, leaving it empty uses the default 5.5. For Turbo previews, 1.0 is usually the safer value.",
             "mu": "Direct timestep-shift value. If you set Mu, it overrides Y1 and Y2 for this prompt.",
@@ -5625,8 +5671,16 @@ class MusubiTunerGUI:
             settings["krea2_dit_model"] = dit_path
             settings["krea2_text_encoder"] = text_encoder
             settings["krea2_turbo_dit"] = self._command_option(command, "--turbo_dit")
+            settings["krea2_turbo_lora"] = self._command_option(command, "--turbo_lora")
+            settings["krea2_turbo_lora_multiplier"] = self._command_option(command, "--turbo_lora_multiplier") or "1.0"
             settings["krea2_projector_diff"] = self._command_option(command, "--projector_diff")
             settings["krea2_projector_diff_strength"] = self._command_option(command, "--projector_diff_strength")
+            if "txtfusion" in command and "mlp" in command:
+                settings["krea2_lora_target_preset"] = "Attention only (long-run safe)"
+            elif "txtfusion" in command:
+                settings["krea2_lora_target_preset"] = "Skip text fusion (experimental)"
+            else:
+                settings["krea2_lora_target_preset"] = "All linear layers (upstream default)"
         elif mode == "Flux.2":
             settings["flux2_dit_model"] = dit_path
             settings["flux2_text_encoder"] = text_encoder
@@ -5641,6 +5695,7 @@ class MusubiTunerGUI:
 
         flag_map = {
             "--gradient_checkpointing": "gradient_checkpointing",
+            "--gradient_checkpointing_cpu_offload": "gradient_checkpointing_cpu_offload",
             "--persistent_data_loader_workers": "persistent_data_loader_workers",
             "--save_state": "save_state",
             "--fp8_base": "fp8_base",
@@ -5680,6 +5735,7 @@ class MusubiTunerGUI:
             "lr_scheduler_min_lr_ratio",
             "mixed_precision",
             "gradient_checkpointing",
+            "gradient_checkpointing_cpu_offload",
             "persistent_data_loader_workers",
             "gradient_accumulation_steps",
             "max_data_loader_n_workers",
@@ -7380,6 +7436,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_lokr = net_type and net_type.get() == "LoKr"
         if is_lokr: self.hidden_frames['lokr_factor'].pack(fill='x', pady=(0, 3))
         else: self.hidden_frames['lokr_factor'].pack_forget()
+        if is_krea2: self.hidden_frames['krea2_lora_targets'].pack(fill='x', pady=(0, 3))
+        else: self.hidden_frames['krea2_lora_targets'].pack_forget()
 
         # Low/high noise lora params only shown in Wan mode
         if is_wan and show_low: self.hidden_frames['low_noise_lora_params'].pack(fill='x', expand=True, pady=(0, 5))
@@ -7873,6 +7931,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "flux2_reference_guided": False, "flux2_reference_conditions": "Same training item (self-reference)",
             "flux2_reference_sigma_max": "0.75", "flux2_reference_direct_loss_weight": "0.0",
             "krea2_dit_model": "", "krea2_text_encoder": "", "krea2_turbo_dit": "", "krea2_turbo_dit_cache": False,
+            "krea2_turbo_lora": "", "krea2_turbo_lora_multiplier": "1.0",
+            "krea2_lora_target_preset": "All linear layers (upstream default)",
             "krea2_projector_diff": "", "krea2_projector_diff_strength": "1.0",
             "minimax_h3_training_workflow": "Still images · compact ConvRot", "minimax_h3_multimodal_task": "t2va",
             "minimax_h3_dit_model": "", "minimax_h3_text_encoder": "",
@@ -7932,7 +7992,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "compile_dynamic": "auto", "compile_fullgraph": False, "compile_cache_size_limit": "32",
             "num_timestep_buckets": "", "timestep_boundary": "875", "discrete_flow_shift": "3.0", "preserve_distribution_shape": False,
             "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
-            "gradient_checkpointing": True, "expandable_cuda_segments": False, "persistent_data_loader_workers": True, "save_state": True,
+            "gradient_checkpointing": True, "gradient_checkpointing_cpu_offload": False,
+            "expandable_cuda_segments": False, "persistent_data_loader_workers": True, "save_state": True,
             "rename_final_artifacts_to_epoch": True,
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "starting_point_mode": "new", "resume_path": "", "network_weights": "",
@@ -9181,6 +9242,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 return
             if settings.get("krea2_turbo_dit_cache") and not settings.get("krea2_turbo_dit"):
                 messagebox.showerror("Validation Error", "Turbo DiT cache requires a Turbo DiT model path in Krea 2 mode.")
+                return
+            if settings.get("krea2_turbo_dit") and settings.get("krea2_turbo_lora"):
+                messagebox.showerror("Validation Error", "Choose either a full Turbo DiT or a Turbo LoRA for previews, not both.")
+                return
+            if settings.get("krea2_turbo_lora") and not os.path.isfile(settings["krea2_turbo_lora"]):
+                messagebox.showerror("Validation Error", "The selected Krea 2 Turbo LoRA file does not exist.")
                 return
             if settings.get("krea2_turbo_dit") and (settings.get("blocks_to_swap") or "").strip() not in ("", "0"):
                 messagebox.showerror("Validation Error", "Krea 2 Turbo DiT sampling is not compatible with Blocks to Swap. Clear one of them.")

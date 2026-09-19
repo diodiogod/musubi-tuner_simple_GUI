@@ -24,6 +24,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error(key, f"{label} is required.")
 
     mode = settings.get("training_mode", "Wan 2.2")
+    if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
+        error("gradient_checkpointing_cpu_offload", "Activation CPU offload requires Gradient Checkpointing.")
     configured_stages = [
         stage
         for stage in settings.get("staged_training_config", [])
@@ -96,6 +98,16 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error("fp8_scaled", "Krea 2 FP8 Base requires FP8 Scaled.")
         if settings.get("krea2_turbo_dit_cache") and not settings.get("krea2_turbo_dit"):
             error("krea2_turbo_dit", "Turbo DiT caching requires a Turbo checkpoint.")
+        if settings.get("krea2_turbo_dit") and settings.get("krea2_turbo_lora"):
+            error("krea2_turbo_lora", "Choose either a full Turbo DiT or a Turbo LoRA for previews, not both.")
+        if settings.get("krea2_turbo_lora") and not Path(str(settings["krea2_turbo_lora"])).expanduser().is_file():
+            error("krea2_turbo_lora", "The selected Turbo LoRA file does not exist.")
+        try:
+            turbo_strength = float(settings.get("krea2_turbo_lora_multiplier") or 1.0)
+            if turbo_strength != turbo_strength or turbo_strength in {float("inf"), float("-inf")}:
+                raise ValueError
+        except (TypeError, ValueError):
+            error("krea2_turbo_lora_multiplier", "Turbo LoRA Strength must be a finite number.")
         if settings.get("krea2_turbo_dit") and str(settings.get("blocks_to_swap") or "").strip() not in {"", "0"}:
             error("blocks_to_swap", "Krea Turbo sampling cannot be combined with Blocks to Swap.")
     elif mode == "MiniMax H3 (Experimental)":

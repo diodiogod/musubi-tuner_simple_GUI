@@ -54,17 +54,22 @@ def build_output_dir(settings, suffix=""):
     return str(output_dir), settings["output_name"] + suffix
 
 
-def build_network_args(cmd, settings, default_lora_module):
+def build_network_args(cmd, settings, default_lora_module, extra_network_args=None):
     net_map = {"LoHa": "networks.loha", "LoKr": "networks.lokr"}
     net_type = settings.get("network_type", "LoRA")
     module = net_map.get(net_type, default_lora_module)
     add_arg(cmd, "--network_module", module)
     add_arg(cmd, "--network_dim", settings.get("network_dim_low"))
     add_arg(cmd, "--network_alpha", settings.get("network_alpha_low"))
+    network_args = []
     if net_type == "LoKr":
         factor = (settings.get("lokr_factor") or "").strip()
         if factor and factor != "-1":
-            add_arg(cmd, "--network_args", f"factor={factor}")
+            network_args.append(f"factor={factor}")
+    network_args.extend(extra_network_args or [])
+    if network_args:
+        cmd.append("--network_args")
+        cmd.extend(network_args)
     return net_type
 
 
@@ -138,6 +143,7 @@ def build_common_train_args(cmd, settings):
     add_arg(cmd, "--learning_rate", settings.get("learning_rate"))
     add_arg(cmd, "--max_grad_norm", settings.get("max_grad_norm"))
     add_arg(cmd, "--gradient_checkpointing", settings.get("gradient_checkpointing"))
+    add_arg(cmd, "--gradient_checkpointing_cpu_offload", settings.get("gradient_checkpointing_cpu_offload"))
     add_arg(cmd, "--gradient_accumulation_steps", settings.get("gradient_accumulation_steps"))
     add_arg(cmd, "--max_data_loader_n_workers", settings.get("max_data_loader_n_workers"))
     add_arg(cmd, "--persistent_data_loader_workers", settings.get("persistent_data_loader_workers"))

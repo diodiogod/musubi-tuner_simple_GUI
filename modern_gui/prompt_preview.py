@@ -121,6 +121,9 @@ def build_krea_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
     if not enabled:
         raise ValueError("Enable at least one sample prompt.")
     turbo = str(settings.get("krea2_turbo_dit") or "").strip()
+    turbo_lora = str(settings.get("krea2_turbo_lora") or "").strip()
+    if turbo and turbo_lora:
+        raise ValueError("Choose either a full Turbo DiT or a Turbo LoRA for preview, not both.")
     dit = Path(turbo) if turbo else Path(str(settings["krea2_dit_model"]))
     if not dit.is_file():
         raise ValueError("The selected Krea 2 inference DiT does not exist.")
@@ -137,7 +140,7 @@ def build_krea_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
         "--text_encoder", str(settings["krea2_text_encoder"]),
         "--save_path", str(save_path), "--attn_mode", str(attention),
     ]
-    if turbo:
+    if turbo or turbo_lora:
         command.append("--turbo")
     if len(enabled) == 1:
         prompt = enabled[0]
@@ -163,8 +166,16 @@ def build_krea_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
         if str(settings.get("krea2_projector_diff_strength") or "").strip():
             command.extend(["--projector_diff_strength", str(settings["krea2_projector_diff_strength"])])
     lora = resolve_preview_lora(settings)
+    lora_weights = []
+    lora_multipliers = []
+    if turbo_lora:
+        lora_weights.append(turbo_lora)
+        lora_multipliers.append(str(settings.get("krea2_turbo_lora_multiplier") or "1.0"))
     if lora:
-        command.extend(["--lora_weight", lora, "--lora_multiplier", str(preview_lora_multiplier(settings))])
+        lora_weights.append(lora)
+        lora_multipliers.append(str(preview_lora_multiplier(settings)))
+    if lora_weights:
+        command.extend(["--lora_weight", *lora_weights, "--lora_multiplier", *lora_multipliers])
     return command, save_path
 
 

@@ -17,3 +17,6 @@ AGENTS.md
 .claude/
 .gemini/
 .private/
+
+# Local agent operational data
+/.agents/

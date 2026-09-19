@@ -387,10 +387,21 @@ class AdalnProj(nn.Module):
 
 def _apply_rope_split_half(hidden_states: torch.Tensor, rotation_table: torch.Tensor) -> torch.Tensor:
     pairs = rotation_table.shape[-3]
-    rotary = torch.stack((hidden_states[..., :pairs], hidden_states[..., pairs : 2 * pairs]), dim=-1)
-    rotary = torch.matmul(rotation_table, rotary.unsqueeze(-1)).squeeze(-1)
-    rotary = torch.cat((rotary[..., 0], rotary[..., 1]), dim=-1)
-    return torch.cat((rotary, hidden_states[..., 2 * pairs :]), dim=-1)
+    # Expanded complex rotation avoids the enormous batch-dispatch overhead of
+    # 2x2 matmul while retaining matmul's FP32 accumulation (upstream #1122).
+    cosine = rotation_table[..., 0, 0].float()
+    sine = rotation_table[..., 1, 0].float()
+    first = hidden_states[..., :pairs].float()
+    second = hidden_states[..., pairs : 2 * pairs].float()
+    dtype = hidden_states.dtype
+    return torch.cat(
+        (
+            (first * cosine - second * sine).to(dtype),
+            (first * sine + second * cosine).to(dtype),
+            hidden_states[..., 2 * pairs :],
+        ),
+        dim=-1,
+    )
 
 
 class Attention(nn.Module):
