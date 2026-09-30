@@ -1604,9 +1604,11 @@ class NetworkTrainer:
                 net_kwargs[key] = value
 
         if args.dim_from_weights:
-            logger.info(f"Loading network from weights: {args.dim_from_weights}")
-            weights_sd = load_file(args.dim_from_weights)
-            network, _ = network_module.create_arch_network_from_weights(1, weights_sd, unet=transformer)
+            if not args.network_weights:
+                raise ValueError("--dim_from_weights requires --network_weights")
+            logger.info(f"Loading network from weights: {args.network_weights}")
+            weights_sd = load_file(args.network_weights)
+            network = network_module.create_arch_network_from_weights(1, weights_sd, unet=transformer, **net_kwargs)
         else:
             # We use the name create_arch_network for compatibility with LyCORIS
             if hasattr(network_module, "create_arch_network"):
@@ -2065,18 +2067,30 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
+        last_sampled_step = None
+
         def _do_sample(epoch_arg, steps_arg):
+            nonlocal last_sampled_step
+            if epoch_arg is not None and epoch_arg > 0 and steps_arg == last_sampled_step:
+                return
             if not should_sample_images(args, steps_arg, epoch_arg):
                 return
+            preview_started = time.time()
             self.on_before_sample_images(
                 accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
             )
             try:
                 self.sample_images(accelerator, args, epoch_arg, steps_arg, vae, transformer, sample_parameters, dit_dtype)
+                last_sampled_step = steps_arg
             finally:
                 self.on_after_sample_images(
                     accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
                 )
+                # Pause tqdm's clock so preview loading/rendering does not inflate s/it or ETA.
+                duration = time.time() - preview_started
+                if not progress_bar.disable:
+                    progress_bar.start_t += duration
+                    progress_bar.last_print_t += duration
 
         # For --sample_at_first
         if global_step == 0 and should_sample_images(args, global_step, epoch=0):

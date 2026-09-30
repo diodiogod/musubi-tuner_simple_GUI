@@ -7,7 +7,7 @@ from typing import Optional, TYPE_CHECKING
 import torch
 from PIL import Image
 
-from musubi_tuner.dataset.audio_utils import AudioSource, AudioSpec, decode_audio, resolve_audio_source
+from musubi_tuner.dataset.audio_utils import AudioSource, AudioSpec, DecodedAudio, decode_audio, resolve_audio_source
 from musubi_tuner.dataset.media_utils import glob_images, glob_videos, load_video, VIDEO_EXTENSIONS
 
 if TYPE_CHECKING:
@@ -519,14 +519,19 @@ class VideoDatasource(ContentDatasource):
         """Returns (video_path, explicit_audio_path) for audio source resolution."""
         raise NotImplementedError
 
-    def get_audio_waveform(self, idx: int) -> Optional[torch.Tensor]:
-        """Decodes the full waveform [C, L] for the item, or None if it has no audio source."""
+    def get_audio_waveform(self, idx: int) -> Optional[DecodedAudio]:
+        """Decodes the item's full audio (waveform [C, L] plus timeline repairs), or None if it has no audio source."""
         if self.audio_spec is None or self.audio_sources is None:
             raise ValueError("Audio is not enabled for this datasource; call set_audio_spec first")
         source = self.audio_sources[idx]
         if source is None:
             return None
-        return decode_audio(source, sample_rate=self.audio_spec.sample_rate, channels=self.audio_spec.channels)
+        return decode_audio(
+            source,
+            sample_rate=self.audio_spec.sample_rate,
+            channels=self.audio_spec.channels,
+            max_discontinuity_seconds=self.audio_spec.max_discontinuity_seconds,
+        )
 
     def _create_video_fetcher(self, index: int):
         if self.audio_spec is not None:

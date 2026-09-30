@@ -6,8 +6,18 @@ import math
 from backends._common import setting_or_default
 
 DEFAULT_H3_TRAINING_ASSISTANT = (
-    "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors"
+    "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v3.safetensors"
 )
+
+H3_ASSISTANT_PRESETS = {
+    "H3 v3": DEFAULT_H3_TRAINING_ASSISTANT,
+    "Ref2VA v2": "ostris/minimax_h3_training_adapter/minimax_h3_ref2va_training_adapter_v2.safetensors",
+}
+
+
+def assistant_source(settings):
+    preset = settings.get("minimax_h3_training_assistant_preset", "Custom path")
+    return H3_ASSISTANT_PRESETS.get(preset) or settings.get("minimax_h3_training_assistant") or DEFAULT_H3_TRAINING_ASSISTANT
 
 
 def add_automatic_swap_args(cmd, settings, add_arg):
@@ -170,7 +180,7 @@ def build_commands(settings):
         add_arg(
             cmd,
             "--h3_training_assistant",
-            settings.get("minimax_h3_training_assistant") or DEFAULT_H3_TRAINING_ASSISTANT,
+            assistant_source(settings),
         )
     add_arg(cmd, "--h3_base_preservation_enabled", protection["base"])
     if protection["base"]:
@@ -275,7 +285,7 @@ def _build_multimodal_commands(settings):
             add_arg(
                 cmd,
                 "--h3_training_assistant",
-                settings.get("minimax_h3_training_assistant") or DEFAULT_H3_TRAINING_ASSISTANT,
+                assistant_source(settings),
             )
     if not teacher_matching and protection["dynamic"]:
         add_arg(cmd, "--h3_guidance_loss_scale", settings.get("minimax_h3_guidance_distillation_scale") or "4.0")
@@ -319,6 +329,7 @@ def build_cache_commands(settings, python_executable):
             settings.get("minimax_h3_teacher_conditions")
         ) == "subject_ref":
             add_arg(latent_command, "--teacher_conditions", "subject_ref")
+        add_arg(latent_command, "--skip_broken", settings.get("minimax_h3_cache_skip_broken", False))
         commands.append(latent_command)
     if settings.get("recache_text"):
         command = [
@@ -366,6 +377,18 @@ def _build_multimodal_cache_commands(settings, python_executable):
         ])
         add_arg(commands[-1], "--allow_experimental_duration", settings.get("minimax_h3_allow_experimental_duration"))
         add_arg(commands[-1], "--one_frame", is_mixed_one_frame(settings))
+        add_arg(commands[-1], "--skip_broken", settings.get("minimax_h3_cache_skip_broken", False))
+        for key, flag, default in (
+            ("minimax_h3_audio_max_discontinuity", "--audio_max_discontinuity", "0.05"),
+            ("minimax_h3_audio_max_missing", "--audio_max_missing", "0.2"),
+        ):
+            value = setting_or_default(settings, key, default)
+            try:
+                if not math.isfinite(float(value)) or float(value) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be a finite nonnegative number of seconds") from None
+            add_arg(commands[-1], flag, value)
     if settings.get("recache_text"):
         command = [
             python_executable, "src/musubi_tuner/minimax_h3_native_cache_text_encoder_outputs.py",

@@ -30,6 +30,20 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Selective v0.3.6 update (2026-09-29)
+
+- Reviewed upstream main f8a1b03; this is a selective import, not a new whole-tree baseline.
+- Both H3 cache paths skip decoder tensors entirely and retain strict encoder checkpoint validation.
+- Shared media decoding carries audio repairs and video-aligned origins. Native reference audio
+  receives the same per-run tolerance settings. Optional skip-broken caching defaults off.
+- Imported LoRA rank-dropout, LoKr dimension reconstruction, alpha scalar, and FP8 fallback fixes.
+- Transformers 5 CLIP/tokenizer compatibility and explicit Krea text positions preserve existing
+  downstream FP8/projector behavior. Dependency pins follow upstream v0.3.6.
+- New H3 v3 / Ref2VA v2 helper presets do not rewrite saved explicit v1 helper paths or change
+  Dynamic Sigma defaults. Preview time is excluded from the shared training progress clock.
+- Compatibility checks use tools/verify_runtime_versions.py before testing an isolated upgraded
+  runtime. This prevents a passing test run on old libraries being reported as an upgrade pass.
+
 ### Experimental H3 automatic block residency
 
 - `modules/automatic_offloading.py` independently extends Musubi H2D streaming with

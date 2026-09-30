@@ -22,7 +22,7 @@ import musubi_tuner.cache_latents as cache_latents
 from musubi_tuner.dataset import config_utils
 from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
 from musubi_tuner.dataset.audio_utils import decode_audio as decode_audio_waveform
-from musubi_tuner.dataset.audio_utils import slice_audio_window
+from musubi_tuner.dataset.audio_utils import slice_audio_window, add_audio_tolerance_arguments, apply_audio_tolerance_arguments
 from musubi_tuner.dataset.cache_io import (
     append_audio_present_entry,
     append_one_frame_control_indices_entry,
@@ -126,6 +126,7 @@ class PyAVH3MediaDecoder:
 
     def __init__(self, terminal_tolerance_samples: int = AUDIO_TERMINAL_TOLERANCE_SAMPLES):
         self.terminal_tolerance_samples = terminal_tolerance_samples
+        self.audio_spec = H3_AUDIO_SPEC
 
     def decode_audio(
         self,
@@ -137,14 +138,19 @@ class PyAVH3MediaDecoder:
     ) -> torch.Tensor:
         if start_sample < 0 or sample_count <= 0:
             raise ValueError("MiniMax-H3 audio window must have a nonnegative start and positive length")
-        waveform = decode_audio_waveform(source, sample_rate=AUDIO_SAMPLE_RATE, channels=2)
+        decoded = decode_audio_waveform(
+            source, sample_rate=AUDIO_SAMPLE_RATE, channels=2,
+            max_discontinuity_seconds=self.audio_spec.max_discontinuity_seconds,
+        )
         return slice_audio_window(
-            waveform,
+            decoded.waveform,
             start_sample=start_sample,
             sample_count=sample_count,
             pad_tolerance=self.terminal_tolerance_samples,
             require_exact=require_exact,
             context=str(source.path),
+            repairs=decoded.repairs,
+            max_repair_samples=self.audio_spec.max_missing_samples,
         )
 
     def decode_reference_visual(
@@ -604,6 +610,7 @@ def setup_parser() -> argparse.ArgumentParser:
         help="allow target crops outside the released 5-15 second duration range",
     )
     parser.add_argument("--disable_mmap", action="store_true", help="disable memory-mapped safetensors loading")
+    add_audio_tolerance_arguments(parser)
     return parser
 
 
@@ -619,7 +626,8 @@ def main() -> None:
     logger.info("Loading dataset config from %s", args.dataset_config)
     user_config = config_utils.load_user_config(args.dataset_config)
     blueprint = blueprint_generator.generate(user_config, args, architecture=ARCHITECTURE_MINIMAX_H3)
-    dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group, audio_spec=H3_AUDIO_SPEC)
+    audio_spec = apply_audio_tolerance_arguments(H3_AUDIO_SPEC, args)
+    dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group, audio_spec=audio_spec)
     datasets = dataset_group.datasets
     if args.one_frame and args.task == "ref2va":
         raise ValueError("MiniMax-H3 one-frame Ref2VA caching is not available in this downstream path yet")
@@ -684,6 +692,7 @@ def main() -> None:
         device=device,
         dtype=VIDEO_VAE_ENCODE_DTYPE,
         disable_mmap=args.disable_mmap,
+        load_decoder=False,
     )
     logger.info("Loading MiniMax-H3 audio VAE from %s", args.audio_vae)
     audio_vae = load_audio_vae(args.audio_vae, device=device, dtype=torch.float32, disable_mmap=args.disable_mmap)
@@ -694,6 +703,7 @@ def main() -> None:
         silence_audio_latent = encode_one_frame_silence_latent(audio_vae)
 
     decoder = PyAVH3MediaDecoder()
+    decoder.audio_spec = audio_spec
     skip_matching_cache = args.skip_existing
     args.skip_existing = False
     presence_counts: Counter[bool] = Counter()

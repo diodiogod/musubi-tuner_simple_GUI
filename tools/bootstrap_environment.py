@@ -28,7 +28,7 @@ LOG = ROOT / "logs" / "setup.log"
 BOOTSTRAP_VERSION = "1"
 REQUIRED_IMPORTS = ("torch", "accelerate", "bitsandbytes", "transformers", "diffusers", "safetensors")
 CUDA_MINIMUMS = {
-    "cu124": ("torch>=2.5.1", "torchvision>=0.20.1"),
+    "cu124": ("torch>=2.6.0", "torchvision>=0.21.0"),
     "cu128": ("torch>=2.7.1", "torchvision>=0.22.1"),
     "cu130": ("torch>=2.9.1", "torchvision>=0.24.1"),
     "cu132": ("torch>=2.12.0", "torchvision>=0.27.0"),
@@ -63,8 +63,12 @@ def run_logged(command: Sequence[str]) -> None:
 
 def environment_healthy(python: Path) -> bool:
     imports = ", ".join(REQUIRED_IMPORTS)
+    # Check the declared runtime pins as well as imports. A manually prepared old
+    # environment must not be adopted and marked current after a dependency upgrade.
+    pins = re.findall(r'"([A-Za-z0-9_-]+)==([^"]+)"', PYPROJECT.read_text(encoding="utf-8").split("[project.optional-dependencies]")[0])
+    version_check = f"import importlib.metadata as metadata; assert all(metadata.version(name) == version for name, version in {pins!r})"
     check = subprocess.run(
-        [str(python), "-c", f"import {imports}; assert torch.__version__"],
+        [str(python), "-c", f"import {imports}; assert torch.__version__; {version_check}"],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -96,7 +100,7 @@ def environment_available(python: Path) -> bool:
 
 
 def installed_torch_usable(python: Path, nvidia_available: bool) -> bool:
-    expression = "import torch; " + ("assert torch.cuda.is_available()" if nvidia_available else "assert torch.__version__")
+    expression = "import torch; from packaging.version import Version; assert Version(torch.__version__.split('+')[0]) >= Version('2.6.0'); " + ("assert torch.cuda.is_available()" if nvidia_available else "assert torch.__version__")
     return subprocess.run(
         [str(python), "-c", expression],
         cwd=ROOT,
@@ -130,7 +134,7 @@ def choose_torch_channel(driver_cuda: tuple[int, int] | None) -> str:
 
 def install_torch(python: Path, channel: str) -> None:
     if channel == "cpu":
-        packages = ("torch>=2.5.1", "torchvision>=0.20.1")
+        packages = ("torch>=2.6.0", "torchvision>=0.21.0")
         index = "https://download.pytorch.org/whl/cpu"
     else:
         packages = CUDA_MINIMUMS[channel]

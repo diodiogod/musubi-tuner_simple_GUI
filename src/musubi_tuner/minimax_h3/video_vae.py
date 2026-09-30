@@ -628,6 +628,8 @@ class MiniMaxH3VideoVAE(nn.Module):
         return self.decode(latents)
 
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "encoder_only", False):
+            raise RuntimeError("This H3 VAE is encoder-only; reload with load_decoder=True to decode.")
         latent_mean = self.latents_mean.view(1, -1, 1, 1, 1).to(latents)
         latent_std = self.latents_std.view(1, -1, 1, 1, 1).to(latents)
         latents = latents * latent_std + latent_mean
@@ -673,15 +675,26 @@ def load_video_vae(
     device: str | torch.device = "cpu",
     dtype: torch.dtype = torch.float16,
     disable_mmap: bool = False,
+    *,
+    load_decoder: bool = True,
 ) -> MiniMaxH3VideoVAE:
+    """Load strictly, skipping decoder weights entirely for encode-only caching."""
     from musubi_tuner.minimax_h3.checkpoint import load_safetensors_module, resolve_safetensors_files
 
-    files = resolve_safetensors_files(path)
+    def factory():
+        vae = MiniMaxH3VideoVAE()
+        if not load_decoder:
+            vae.decoder = None
+            vae.post_quant_conv = None
+            vae.encoder_only = True
+        return vae
+
     return load_safetensors_module(
-        MiniMaxH3VideoVAE,
-        files,
+        factory,
+        resolve_safetensors_files(path),
         device=device,
         dtype=dtype,
         key_prefixes=("first_stage_model.", "video_vae.", "vae."),
         disable_mmap=disable_mmap,
+        ignore_key=(lambda key: key.startswith(("decoder.", "post_quant_conv."))) if not load_decoder else None,
     )

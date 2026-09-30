@@ -326,17 +326,18 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                     ),
                 )
         if h3_protection["assistant"]:
-            assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()
+            from backends.minimax_h3 import assistant_source
+            assistant = str(assistant_source(settings)).strip()
             assistant_path = Path(assistant).expanduser() if assistant else None
             is_hf_file = bool(re.fullmatch(r"[^/\\]+/[^/\\]+/[^/\\]+\.safetensors", assistant))
             if not assistant or not ((assistant_path and assistant_path.is_file()) or is_hf_file):
                 error(
                     "minimax_h3_training_assistant",
-                    "Choose a local .safetensors helper or use owner/repository/file.safetensors. The Ostris v1 helper is filled in by default.",
+                    "Choose a local .safetensors helper or use owner/repository/file.safetensors, or select a matching helper-version preset.",
                 )
             warning(
                 "minimax_h3_quality_protection_method",
-                "The Ostris MiniMax H3 training assistant v1 is still experimental. It is frozen during training and excluded from previews and saved LoRAs; validate it with a short run first.",
+                "The Ostris helper is frozen during training and excluded from previews and saved LoRAs. New helper-only presets remain experimental; assess quality on your dataset.",
             )
         if h3_protection["base"]:
             try:

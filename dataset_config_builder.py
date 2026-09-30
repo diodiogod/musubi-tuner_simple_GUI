@@ -447,6 +447,7 @@ class DatasetConfigBuilder:
         resolution = ttk.Frame(content)
         resolution.grid(row=row, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Label(resolution, text="Resolution", width=18).pack(side="left")
+        BuilderToolTip(resolution, "This source has its own training size. You can mix high-resolution photos with lower-resolution clips by adding separate dataset sources. Longer clips need more VRAM; use a lower resolution for their source.")
         ttk.Entry(resolution, textvariable=self.dataset_vars["width"], width=8).pack(side="left")
         ttk.Label(resolution, text=" × ").pack(side="left")
         ttk.Entry(resolution, textvariable=self.dataset_vars["height"], width=8).pack(side="left")

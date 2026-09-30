@@ -89,7 +89,7 @@ class LoRAModule(torch.nn.Module):
                 torch.nn.init.zeros_(lora_up.weight)
 
         if type(alpha) == torch.Tensor:
-            alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
+            alpha = alpha.detach().float().cpu().item()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
         self.scale = alpha / self.lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))  # for save/load
@@ -104,6 +104,10 @@ class LoRAModule(torch.nn.Module):
         # frozen base everywhere (e.g. the MiniMax-H3 teacher-matching forward)
         self.enabled = True
 
+        # Used by _rank_dropout_mask to locate the rank dim in lx; saved now since
+        # org_module is deleted in apply_to() before forward() ever runs.
+        self._rank_dropout_is_conv = org_module.__class__.__name__ in ("Conv2d", "Conv3d")
+
     def _autocast_enabled_for(self, x):
         if not x.is_floating_point():
             return False
@@ -111,6 +115,23 @@ class LoRAModule(torch.nn.Module):
             return torch.is_autocast_enabled(x.device.type)
         except TypeError:
             return torch.is_autocast_enabled()
+
+    def _rank_dropout_mask(self, lx: torch.Tensor) -> torch.Tensor:
+        """Build a per-rank keep/drop mask shaped to broadcast against lx.
+
+        Where the rank dim sits in lx depends on the wrapped module: Conv puts it at
+        dim=1 (channels), Linear always puts it last, no matter how many leading
+        dims lx has (e.g. a 4D (b, l, d, rank) input, as in krea2's text-fusion
+        projector).
+        """
+        mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
+        extra_dims = lx.dim() - 2
+        if extra_dims <= 0:
+            return mask
+        if self._rank_dropout_is_conv:
+            return mask.view(mask.shape[0], mask.shape[1], *([1] * extra_dims))
+        else:
+            return mask.view(mask.shape[0], *([1] * extra_dims), mask.shape[1])
 
     def _lora_input(self, x):
         if self.split_dims is None:
@@ -159,14 +180,7 @@ class LoRAModule(torch.nn.Module):
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
-                mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
-                if len(lx.size()) == 3:
-                    mask = mask.unsqueeze(1)  # for Text Encoder
-                elif len(lx.size()) == 4:
-                    mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
-                elif len(lx.size()) == 5:
-                    mask = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # for Conv3d
-                lx = lx * mask
+                lx = lx * self._rank_dropout_mask(lx)
 
                 # scaling for rank dropout: treat as if the rank is changed
                 scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
@@ -186,13 +200,7 @@ class LoRAModule(torch.nn.Module):
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
-                masks = [torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout for lx in lxs]
-                for i in range(len(lxs)):
-                    if len(lx.size()) == 3:
-                        masks[i] = masks[i].unsqueeze(1)
-                    elif len(lx.size()) == 4:
-                        masks[i] = masks[i].unsqueeze(-1).unsqueeze(-1)
-                    lxs[i] = lxs[i] * masks[i]
+                lxs = [lx * self._rank_dropout_mask(lx) for lx in lxs]
 
                 # scaling for rank dropout: treat as if the rank is changed
                 scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability

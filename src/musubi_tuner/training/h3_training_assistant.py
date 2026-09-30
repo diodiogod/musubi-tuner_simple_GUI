@@ -1,7 +1,7 @@
 """Frozen MiniMax-H3 adapter and sparse base-preservation helpers.
 
 The assistant mechanism follows Ostris AI Toolkit's live, unmerged training
-adapter design. The published v1 adapter remains active while the user's
+adapter design. The selected adapter remains active while the user's
 LoRA trains, is disabled for samples, and is never written into user outputs.
 
 Foundation LoRAs use the same live-hook mechanism but have different semantics:
@@ -21,7 +21,7 @@ from safetensors.torch import load_file
 
 DEFAULT_ASSISTANT = (
     "ostris/minimax_h3_training_adapter/"
-    "minimax_h3_training_adapter_v1.safetensors"
+    "minimax_h3_training_adapter_v3.safetensors"
 )
 
 

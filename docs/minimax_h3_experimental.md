@@ -1,5 +1,20 @@
 # MiniMax H3 image-only LoRA (experimental)
 
+Caching now loads only the video VAE encoder, skipping the large unused decoder.
+This changes memory use, not the cached image content or FP32 posterior policy.
+Both GUIs offer **Training Helper Version**: standard **H3 v3**, **Ref2VA v2**,
+or **Custom path** for an existing file. Use the helper matching your base model;
+the compact FL2VA path uses standard H3. Explicit older helper paths are preserved.
+The newer Ostris helpers are intended to work without contrastive guidance;
+our Dynamic Sigma and drift protection remain separately configurable.
+The newer helper is optional and has not been validated through a full LoRA run here.
+**Experimental Helper Only** selects the new helper and turns off Dynamic Sigma and
+drift checking. **Proven Quality** remains the default; other combinations remain editable.
+
+Each dataset source can override its resolution: for example photos at 1024 and
+longer clips at 512 in the native mixed workflow. Preview time is excluded from
+the training progress bar's speed and ETA.
+
 This page describes the compact still-image workflow that accepts the pruned ConvRot INT8 DiT.
 For official video, joint audio, FL2VA, and Ref2VA training in either GUI, see
 [MiniMax-H3 video and audio training](minimax_h3.md).

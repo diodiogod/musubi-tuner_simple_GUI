@@ -1605,9 +1605,10 @@ class MusubiTunerGUI:
             "minimax_h3_quality_protection_preset",
             "Quality Protection Preset:",
             "Presets apply editable starting values. Proven Quality uses Dynamic Sigma every step. Balanced and Strong "
-            "combine Ostris's assistant with Dynamic Sigma every 10 or 4 steps. Maximum also enables the drift check.",
+            "combine Ostris's assistant with Dynamic Sigma every 10 or 4 steps. Maximum also enables the drift check. "
+            "Experimental Helper Only selects the newer helper and disables both extra preservation passes; it may be faster, but quality must be judged on your dataset.",
             kind="combobox",
-            options=["Proven Quality", "Experimental Balanced", "Experimental Strong", "Maximum Protection", "Custom"],
+            options=["Proven Quality", "Experimental Helper Only", "Experimental Balanced", "Experimental Strong", "Maximum Protection", "Custom"],
             command=self._on_h3_quality_preset_changed,
         )
         self._add_widget(
@@ -1664,8 +1665,21 @@ class MusubiTunerGUI:
             "minimax_h3_training_assistant",
             "Ostris Training Assistant:",
             "The default owner/repository/file downloads automatically from Hugging Face once and is reused from cache. "
-            "You may instead paste a local .safetensors path. The v1 helper is still experimental, so validate it with a short run.",
+            "You may instead paste a local .safetensors path. H3 v3 is the latest standard helper; Ref2VA needs its own v2 helper. "
+            "Ostris now defaults to these helpers without contrastive guidance. Our Dynamic Sigma and drift protection remain independently optional; helper-only quality is not guaranteed.",
         )
+        self._add_widget(
+            self.hidden_frames['minimax_h3_guidance_protection'],
+            "minimax_h3_training_assistant_preset", "Training Helper Version:",
+            "Choose a helper matching your base model. Custom path preserves the file selected below. H3 v3 and Ref2VA v2 are newer Ostris helpers, intended to work without contrastive guidance; you can still combine them with our protection.",
+            kind="combobox", options=["Custom path", "H3 v3", "Ref2VA v2"], default_val="Custom path",
+        )
+        for key, label, tip, kind in (
+            ("minimax_h3_cache_skip_broken", "Skip Broken Media During Caching", "Skip unreadable images or clips instead of stopping caching. Skipped files are logged and will not train until repaired.", "checkbox"),
+            ("minimax_h3_audio_max_discontinuity", "Audio Timestamp Repair Limit (seconds):", "Native video/audio caching: repair gaps or overlaps up to 0.05 seconds. Keep the default unless you checked the damaged clip.", "entry"),
+            ("minimax_h3_audio_max_missing", "Missing Audio Limit per Clip (seconds):", "Native video/audio caching: allow up to 0.2 seconds of missing or repaired audio per training clip. Beyond this the clip fails or is skipped.", "entry"),
+        ):
+            self._add_widget(self.hidden_frames['minimax_h3_model_paths'], key, label, tip, kind=kind)
         self._add_widget(
             self.hidden_frames['minimax_h3_guidance_protection'],
             "minimax_h3_base_preservation_enabled",
@@ -1704,7 +1718,7 @@ class MusubiTunerGUI:
         ToolTip(
             h3_guidance_attribution,
             "The dynamic method was adapted independently for Musubi. Assistant modes consume Ostris's published "
-            "minimax_h3_training_adapter_v1.safetensors as a frozen live helper and do not merge it into user outputs.",
+            "minimax_h3_training_adapter_v3.safetensors as a frozen live helper and do not merge it into user outputs.",
         )
         h3_reference_guided_frame.pack(fill="x", padx=10, pady=(6, 10))
 
@@ -7530,6 +7544,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.entries["minimax_h3_training_assistant"].configure(
                     state="normal" if self.entries["minimax_h3_training_assistant_enabled"].var.get() and not teacher_active else "disabled"
                 )
+                self.entries["minimax_h3_training_assistant_preset"].configure(
+                    state="readonly" if self.entries["minimax_h3_training_assistant_enabled"].var.get() and not teacher_active else "disabled"
+                )
             else:
                 self.hidden_frames['minimax_h3_guidance_protection'].pack_forget()
                 self.hidden_frames['minimax_h3_depth_compute'].pack_forget()
@@ -7591,12 +7608,16 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         preset = self.entries["minimax_h3_quality_protection_preset"].get()
         values = {
             "Proven Quality": (False, True, "1", False),
+            "Experimental Helper Only": (True, False, "1", False),
             "Experimental Balanced": (True, True, "10", False),
             "Experimental Strong": (True, True, "4", False),
             "Maximum Protection": (True, True, "1", True),
         }.get(preset)
         if values:
             assistant, dynamic, cadence, base = values
+            if preset == "Experimental Helper Only":
+                helper = "Ref2VA v2" if self.entries["minimax_h3_multimodal_task"].get() == "ref2va" else "H3 v3"
+                self.entries["minimax_h3_training_assistant_preset"].set(helper)
             self.entries["minimax_h3_training_assistant_enabled"].var.set(assistant)
             self.entries["minimax_h3_dynamic_sigma_enabled"].var.set(dynamic)
             self.entries["minimax_h3_base_preservation_enabled"].var.set(base)
@@ -7940,6 +7961,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_training_target": "Video + audio",
             "minimax_h3_allow_experimental_duration": False,
             "minimax_h3_audio_loss_weight": "1.0", "minimax_h3_shift_video": "12.0", "minimax_h3_shift_audio": "3.0",
+            "minimax_h3_cache_skip_broken": False,
+            "minimax_h3_audio_max_discontinuity": "0.05",
+            "minimax_h3_audio_max_missing": "0.2",
+            "minimax_h3_training_assistant_preset": "Custom path",
             "minimax_h3_visual_cond_clean": "0.999", "minimax_h3_audio_cond_clean": "1.0",
             "minimax_h3_text_encoder_attn_mode": "sdpa", "minimax_h3_guidance_uncond_cache": "",
             "minimax_h3_tokenizer": "MiniMaxAI/MiniMax-H3", "minimax_h3_convrot_bwd_mode": "bf16",
@@ -7965,7 +7990,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_teacher_direct_loss_weight": "0.0",
             "minimax_h3_timestep_focus_min": "0.4", "minimax_h3_timestep_focus_max": "0.8",
             "minimax_h3_timestep_focus_prob": "0.5",
-            "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors",
+            "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v3.safetensors",
             "minimax_h3_foundation_lora_enabled": False,
             "minimax_h3_foundation_lora": "",
             "minimax_h3_foundation_lora_multiplier": "1.0",
@@ -9349,7 +9374,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     )
                     return
             if h3_protection["assistant"]:
-                assistant = str(settings.get("minimax_h3_training_assistant") or "").strip()
+                from backends.minimax_h3 import assistant_source
+                assistant = str(assistant_source(settings)).strip()
                 is_hf_file = bool(re.fullmatch(r"[^/\\]+/[^/\\]+/[^/\\]+\.safetensors", assistant))
                 if not assistant or not (os.path.isfile(assistant) or is_hf_file):
                     messagebox.showerror(

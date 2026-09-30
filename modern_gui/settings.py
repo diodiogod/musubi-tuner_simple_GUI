@@ -24,6 +24,10 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_video_only": False,
     "minimax_h3_training_target": "Video + audio",
     "minimax_h3_allow_experimental_duration": False,
+    "minimax_h3_cache_skip_broken": False,
+    "minimax_h3_audio_max_discontinuity": "0.05",
+    "minimax_h3_audio_max_missing": "0.2",
+    "minimax_h3_training_assistant_preset": "Custom path",
     "minimax_h3_audio_loss_weight": "1.0",
     "minimax_h3_shift_video": "12.0",
     "minimax_h3_shift_audio": "3.0",
@@ -58,7 +62,7 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_guidance_distillation_scale": "4.0",
     "minimax_h3_guidance_distillation_schedule": "sigma",
     "minimax_h3_guidance_distillation_sigma_min": "0.15",
-    "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors",
+    "minimax_h3_training_assistant": "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v3.safetensors",
     "minimax_h3_foundation_lora_enabled": False,
     "minimax_h3_foundation_lora": "",
     "minimax_h3_foundation_lora_multiplier": "1.0",
@@ -110,6 +114,10 @@ FIELD_LABELS = {
     "minimax_h3_training_target": "What Should This LoRA Learn?",
     "minimax_h3_allow_experimental_duration": "Allow Clips Outside Official 5–15 Seconds",
     "minimax_h3_audio_loss_weight": "Audio Learning Strength",
+    "minimax_h3_cache_skip_broken": "Skip Broken Media During Caching",
+    "minimax_h3_audio_max_discontinuity": "Audio Timestamp Repair Limit (seconds)",
+    "minimax_h3_audio_max_missing": "Missing Audio Limit per Clip (seconds)",
+    "minimax_h3_training_assistant_preset": "Training Helper Version",
     "minimax_h3_teacher_matching": "Use Reference-Guided Learning",
     "minimax_h3_teacher_conditions": "Teacher Information",
     "minimax_h3_teacher_condition_sigma_max": "Teacher Cutoff Sigma",
@@ -206,10 +214,12 @@ CHOICES = {
     ],
     "minimax_h3_text_encoder_attn_mode": ["sdpa", "flash_attention_2", "eager"],
     "minimax_h3_text_cache_dtype": ["bfloat16", "float32"],
+    "minimax_h3_training_assistant_preset": ["Custom path", "H3 v3", "Ref2VA v2"],
     "minimax_h3_depth_vae_device": ["training", "secondary"],
     "minimax_h3_training_preview_mode": ["Five-frame video (recommended)", "One frame (low memory)"],
     "minimax_h3_quality_protection_preset": [
         "Proven Quality",
+        "Experimental Helper Only",
         "Experimental Balanced",
         "Experimental Strong",
         "Maximum Protection",
@@ -331,6 +341,8 @@ def _humanize(key: str) -> str:
 
 
 def _section_for(key: str) -> str:
+    if key in {"minimax_h3_cache_skip_broken", "minimax_h3_audio_max_discontinuity", "minimax_h3_audio_max_missing"}:
+        return "runtime"
     if key == "minimax_h3_block_memory_mode" or key.startswith("minimax_h3_auto_swap_"):
         return "runtime"
     if key in {"training_mode", "dataset_config", "project_root", "output_dir", "output_name", "appearance_mode"}:

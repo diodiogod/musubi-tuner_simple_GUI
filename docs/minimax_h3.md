@@ -1,5 +1,19 @@
 # MiniMax-H3
 
+### GUI caching updates (September 2026)
+
+Both GUIs expose **Skip Broken Media During Caching** (off by default), plus
+native audio timestamp-repair and missing-audio limits (0.05 / 0.2 seconds).
+Skipped files are logged and excluded from training. Repairing a small timestamp
+gap preserves synchronization; it does not replace genuinely missing audio.
+Rebuild latent caches for embedded-audio videos whose streams start at different
+times: older caches anchored audio to its own start instead of the first video frame.
+Ordinary still-image and text caches do not need rebuilding for this change.
+
+Latent caching loads only the video VAE encoder. Generation still loads the full
+VAE decoder. Dataset source resolution overrides allow photos and clips to use
+different training resolutions in the same mixed run.
+
 > GUI fork note: choose **MiniMax H3 (Experimental)**, then set **Training Media Type** to
 > **Video + audio · official multimodal**, or choose **Video + images · official mixed T2VA**
 > to combine native one-frame image targets with full clips. Existing image-only recipes remain on the compact

@@ -89,7 +89,7 @@ def main() -> None:
     if not args.vae:
         raise ValueError("MiniMax-H3 video VAE checkpoint is required")
     logger.info("Loading MiniMax-H3 video VAE from %s", args.vae)
-    vae = load_video_vae(args.vae, device=device, dtype=dtype, disable_mmap=args.disable_mmap)
+    vae = load_video_vae(args.vae, device=device, dtype=dtype, disable_mmap=args.disable_mmap, load_decoder=False)
     vae.requires_grad_(False).eval()
 
     def encode(batch: list[ItemInfo]):
