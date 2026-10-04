@@ -4,6 +4,12 @@
   "tag": "main (post-v0.3.4)",
   "commit": "8934cfb",
   "audited_on": "2026-07-22",
+  "latest_selective_review": {
+    "date": "2026-10-04",
+    "main": "f8a1b03",
+    "dev": "f5fe5d17",
+    "pending_pr_fixes": [1149]
+  },
   "vendored_path": "src/musubi_tuner",
   "protected_downstream_paths": [
     "src/musubi_tuner/krea2/krea2_encoder.py",

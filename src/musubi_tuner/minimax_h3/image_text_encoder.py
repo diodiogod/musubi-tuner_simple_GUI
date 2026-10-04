@@ -328,7 +328,9 @@ def load_minimax_h3_te(path: str, device="cuda", compute_dtype=torch.float32,
 
     tokenizer_source = tokenizer_dir or DEFAULT_PROCESSOR_ID
     tokenizer_kwargs = {"subfolder": OFFICIAL_PROCESSOR_SUBFOLDER} if tokenizer_source == DEFAULT_PROCESSOR_ID else {}
-    tok = AutoTokenizer.from_pretrained(tokenizer_source, **tokenizer_kwargs)
+    from musubi_tuner.utils.hf_cache import from_pretrained_cache_first
+
+    tok = from_pretrained_cache_first(AutoTokenizer, tokenizer_source, **tokenizer_kwargs)
     encoder = MiniMaxH3TextEncoder(
         model, tok, device=device, compute_dtype=compute_dtype, stream_offloader=stream_offloader
     )

@@ -30,6 +30,21 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Selective reliability update (2026-10-04)
+
+- Upstream main remains `f8a1b03`; dev `f5fe5d17` adds FL2VA dataset documentation.
+  Imported the split-output cache correction from pending Musubi PR #1149.
+- Fizgig `4816478e` / `815648b2` inform the shared preview recovery guard: setup is
+  covered by restoration, RNG and training mode are restored, and a single-process
+  preview OOM disables subsequent previews only after successful restoration.
+  Other errors, distributed OOMs, and restoration failures remain fatal.
+- Fizgig `81419aa3` informs RAM admission for pinned masters and bounded staging.
+  Pin failures or tight RAM fall back to pageable storage with synchronous copies.
+- Fizgig `06907aaa` informs cached-snapshot loading for both H3 text encoder paths.
+  Explicit local paths, revisions, subfolders, and offline requests are preserved.
+- CPU regression coverage: `tests/test_upstream_october_safeguards.py`. No training
+  objective, quality protection default, model family, or dependency changes.
+
 ### Selective v0.3.6 update (2026-09-29)
 
 - Reviewed upstream main f8a1b03; this is a selective import, not a new whole-tree baseline.

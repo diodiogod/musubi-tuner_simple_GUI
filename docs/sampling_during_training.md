@@ -4,6 +4,12 @@
 
 By preparing a prompt file, you can generate sample images during training.
 
+In this GUI fork's shared LoRA trainer, a preview that runs out of memory disables
+further previews for that run and training continues after its model state is
+successfully restored. The log explains when this happens. Reduce preview size
+or frame count before the next run. This recovery applies to single-process
+training; other errors and failed restoration still stop the run.
+
 Please be aware that it consumes a considerable amount of VRAM, so be careful when generating sample images for videos with a large number of frames. Also, since it takes time to generate, adjust the frequency of sample image generation as needed.
 
 <details>

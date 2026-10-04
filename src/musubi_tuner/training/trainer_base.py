@@ -2068,24 +2068,45 @@ class NetworkTrainer:
                 os.remove(old_ckpt_file)
 
         last_sampled_step = None
+        from musubi_tuner.training.preview_recovery import PreviewRecovery
+
+        preview_recovery = PreviewRecovery()
 
         def _do_sample(epoch_arg, steps_arg):
             nonlocal last_sampled_step
+            if preview_recovery.disabled:
+                return
             if epoch_arg is not None and epoch_arg > 0 and steps_arg == last_sampled_step:
                 return
             if not should_sample_images(args, steps_arg, epoch_arg):
                 return
             preview_started = time.time()
-            self.on_before_sample_images(
-                accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
-            )
-            try:
-                self.sample_images(accelerator, args, epoch_arg, steps_arg, vae, transformer, sample_parameters, dit_dtype)
-                last_sampled_step = steps_arg
-            finally:
+            preview_model = accelerator.unwrap_model(transformer)
+            was_training = preview_model.training
+
+            def restore_preview():
                 self.on_after_sample_images(
                     accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
                 )
+                preview_model.switch_block_swap_for_training()
+                if getattr(preview_model, "_orig_mod", None) is not preview_model:
+                    preview_model.train(was_training)
+                clean_memory_on_device(accelerator.device)
+
+            try:
+                if preview_recovery.run(
+                    lambda: self.on_before_sample_images(
+                        accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
+                    ),
+                    lambda: self.sample_images(
+                        accelerator, args, epoch_arg, steps_arg, vae, transformer, sample_parameters, dit_dtype
+                    ),
+                    restore_preview,
+                    device=accelerator.device,
+                    single_process=accelerator.num_processes == 1,
+                ):
+                    last_sampled_step = steps_arg
+            finally:
                 # Pause tqdm's clock so preview loading/rendering does not inflate s/it or ETA.
                 duration = time.time() - preview_started
                 if not progress_bar.disable:

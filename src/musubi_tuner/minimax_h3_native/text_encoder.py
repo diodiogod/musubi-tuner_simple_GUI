@@ -257,7 +257,9 @@ def load_h3_processor():
     # repository root, where the H3 release keeps a diffusers model_index.json instead of a config
     from transformers import Qwen3VLProcessor
 
-    return Qwen3VLProcessor.from_pretrained(H3_REPO_ID, subfolder=PROCESSOR_SUBFOLDER)
+    from musubi_tuner.utils.hf_cache import from_pretrained_cache_first
+
+    return from_pretrained_cache_first(Qwen3VLProcessor, H3_REPO_ID, subfolder=PROCESSOR_SUBFOLDER)
 
 
 def load_h3_text_encoder(
@@ -278,7 +280,9 @@ def load_h3_text_encoder(
             "--text_encoder_blocks_to_swap requires a CUDA device. / --text_encoder_blocks_to_swap には CUDA デバイスが必要です。"
         )
 
-    config = Qwen3VLConfig.from_pretrained(H3_REPO_ID, subfolder=TEXT_ENCODER_CONFIG_SUBFOLDER)
+    from musubi_tuner.utils.hf_cache import from_pretrained_cache_first
+
+    config = from_pretrained_cache_first(Qwen3VLConfig, H3_REPO_ID, subfolder=TEXT_ENCODER_CONFIG_SUBFOLDER)
     if config.text_config.hidden_size != TEXT_WIDTH:
         raise ValueError(f"MiniMax-H3 Qwen3-VL hidden size must be {TEXT_WIDTH}, got {config.text_config.hidden_size}")
     config.text_config.num_hidden_layers = LAYER_50_HIDDEN_STATE_INDEX

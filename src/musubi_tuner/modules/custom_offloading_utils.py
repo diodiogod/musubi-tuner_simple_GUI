@@ -645,7 +645,7 @@ class _DirectCopier:
                 ev_a = torch.cuda.Event(enable_timing=True)
                 ev_b = torch.cuda.Event(enable_timing=True)
                 ev_a.record(self.copy_stream)
-            dst_flat.copy_(src_flat, non_blocking=True)  # src is pinned -> async H2D
+            dst_flat.copy_(src_flat, non_blocking=src_flat.is_pinned())
             if self.debug:
                 ev_b.record(self.copy_stream)
                 self._xfer[key] = (ev_a, ev_b)
@@ -702,20 +702,35 @@ class _StagedCopier:
 
     def _ensure_staging(self, nbytes: int):
         if self._staging is None:
-            self._staging = [torch.empty(nbytes, dtype=torch.uint8).pin_memory(device=self.device) for _ in range(self.num_staging)]
+            from musubi_tuner.modules.host_memory import has_pinning_headroom
+
+            self._staging = []
+            if has_pinning_headroom(nbytes * self.num_staging):
+                try:
+                    for _ in range(self.num_staging):
+                        self._staging.append(torch.empty(nbytes, dtype=torch.uint8).pin_memory(device=self.device))
+                except RuntimeError:
+                    self._staging.clear()
+            if not self._staging:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Pinned staging unavailable or system RAM tight; using slower synchronous pageable copies."
+                )
             self._staging_free = [None] * self.num_staging
 
     def _run(self, dst_flat: torch.Tensor, src_flat: torch.Tensor, gate_event):
         # runs on the worker thread: pageable->pinned memcpy, then enqueue the async pinned->device H2D
         idx = self._rr
         self._rr = (idx + 1) % self.num_staging
-        staging = self._staging[idx]
+        staging = self._staging[idx] if self._staging else src_flat
 
         free_ev = self._staging_free[idx]
         if free_ev is not None:
             free_ev.synchronize()  # CPU(worker) waits until the prior H2D released this buffer -- off main thread
 
-        staging.copy_(src_flat)  # pageable -> pinned, plain CPU memcpy
+        if self._staging:
+            staging.copy_(src_flat)  # pageable -> pinned, plain CPU memcpy
 
         ev_a = ev_b = None
         with torch.cuda.stream(self.copy_stream):
@@ -725,7 +740,7 @@ class _StagedCopier:
                 ev_a = torch.cuda.Event(enable_timing=True)
                 ev_b = torch.cuda.Event(enable_timing=True)
                 ev_a.record(self.copy_stream)
-            dst_flat.copy_(staging, non_blocking=True)  # pinned -> device, async
+            dst_flat.copy_(staging, non_blocking=staging.is_pinned())
             if self.debug:
                 ev_b.record(self.copy_stream)
             done = self.copy_stream.record_event()  # H2D complete == this staging buffer is free again
@@ -859,6 +874,20 @@ class LoRAStreamOffloader:
                 )
 
         # ---- transfer engine: owns the copy stream and all H2D primitives ----
+        from musubi_tuner.modules.host_memory import has_pinning_headroom
+
+        if use_pinned_memory:
+            estimated_bytes = sum(
+                getattr(m, name).numel() * getattr(m, name).element_size()
+                for b in stream_idx for m, name, _ in self._jobs(b)
+            )
+            if not has_pinning_headroom(estimated_bytes):
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "System RAM is tight for pinned block masters; using pageable masters and bounded staging."
+                )
+                use_pinned_memory = self.use_pinned_memory = False
         # pinned masters -> direct async H2D; pageable masters -> stage through a worker thread + pinned pool
         # (low "shared GPU memory" footprint, e.g. on Windows). Both expose the same submit/wait interface.
         if use_pinned_memory:
@@ -1011,7 +1040,13 @@ class LoRAStreamOffloader:
                 self._layout = self._compute_layout(tensors)  # first streaming block defines the shared layout
             flat = torch.empty(self._layout[1], dtype=torch.uint8, device=cpu_device)
             if self.use_pinned_memory:
-                flat = flat.pin_memory(device=self.device)
+                try:
+                    flat = flat.pin_memory(device=self.device)
+                except RuntimeError:
+                    import logging
+
+                    logging.getLogger(__name__).warning("Could not pin block master; remaining masters stay pageable.")
+                    self.use_pinned_memory = False
             views = self._flat_views(flat, tensors, self._layout)
             master = []
 

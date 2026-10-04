@@ -255,7 +255,7 @@ def test_text_cache_metadata_distinguishes_requested_storage_dtype():
 
 class _FakeQwen3VLConfig:
     @classmethod
-    def from_pretrained(cls, _path, subfolder=None):
+    def from_pretrained(cls, _path, subfolder=None, **kwargs):
         del subfolder
         return SimpleNamespace(
             text_config=SimpleNamespace(
