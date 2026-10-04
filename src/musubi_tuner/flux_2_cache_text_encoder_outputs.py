@@ -118,6 +118,7 @@ def main():
         all_cache_paths_for_dataset,
         encode_for_text_encoder,
         cache_validator=cache_validator,
+        cache_args=args,
     )
     del text_embedder
 

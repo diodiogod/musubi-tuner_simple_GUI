@@ -21,6 +21,9 @@ def validate_face_recipe_for_mode(mode: str, face_config: dict[str, Any]) -> Non
     if denoise_steps < 1 or not 1 <= draft_k <= denoise_steps:
         raise ValueError("Face Refinement DRaFT K must be between 1 and the denoising step count.")
     if mode == "MiniMax H3 (Experimental)":
+        from musubi_tuner.face_refinement.h3_frame_policy import validate_frame_policy
+
+        validate_frame_policy(face_config.get("training_frame_mode", "one_frame"), face_config.get("worst_frame_weight", 0.0))
         if resolution < 32 or resolution % 32:
             raise ValueError("MiniMax H3 Face Refinement resolution must be a positive multiple of 32.")
         if not 30 <= blocks <= 48:

@@ -59,6 +59,7 @@
 - `minimax_h3_experimental.md` - experimental pruned-INT8 MiniMax H3 image LoRA setup, limitations, artifacts, and measured 24 GB CUDA validation
 - `minimax_h3.md` - upstream MiniMax H3 video/joint-audio dataset, cache, task, and inference contracts
 - `dataset_config.md` - Dataset config reference
+- `incremental_cache.md` - GUI missing/stale-only cache preparation, provenance and deliberate full rebuilds
 - `sampling_during_training.md` - Sampling behavior reference
 - `advanced_config.md` - Advanced training flags and behaviors
 - `loha_lokr.md` - LoHa / LoKr notes
@@ -236,6 +237,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `dataset/config_utils.py` - dataset config parsing/validation
 - `dataset/image_video_dataset.py` - core dataset loader
 - `dataset/cache_io.py` - cache read/write logic
+- `dataset/cache_identity.py` - opt-in source/settings provenance for GUI cache reuse; native H3 retains its existing metadata contract
 - `dataset/bucket.py` - bucket handling
 - `dataset/media_utils.py` - media helpers
 - `dataset/datasources.py` - dataset source abstraction

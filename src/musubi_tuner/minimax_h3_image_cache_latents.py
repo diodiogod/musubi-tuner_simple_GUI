@@ -101,7 +101,7 @@ def main() -> None:
         args,
         skip_existing_validator=(
             (lambda _path: False)
-            if args.teacher_conditions == "subject_ref"
+            if args.teacher_conditions == "subject_ref" and not args.validate_cache
             else is_latent_cache_minimax_h3_image_current
         ),
     )

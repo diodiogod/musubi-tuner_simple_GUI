@@ -117,7 +117,6 @@ def initialize_joint_noise(
     return video, audio
 
 
-@torch.no_grad()
 def sample_video_latent(
     transformer,
     text_hidden_states: torch.Tensor,
@@ -131,6 +130,7 @@ def sample_video_latent(
     video_shift: float = 12.0,
     audio_shift: float = 3.0,
     step_callback: Callable[[int, int], None] | None = None,
+    enable_grad_from_step: int | None = None,
 ) -> torch.Tensor:
     device = torch.device(device)
     text = text_hidden_states.to(device=device, dtype=torch.bfloat16)
@@ -160,42 +160,48 @@ def sample_video_latent(
     )
     old_video_denoised = None
     old_audio_denoised = None
+    grad_start = steps if enable_grad_from_step is None else max(0, min(int(enable_grad_from_step), steps))
     for index in range(steps):
-        sigma_video = video_sigmas[index].to(torch.float32)
-        sigma_audio = _map_shifted_sigma(sigma_video, float(video_shift), float(audio_shift))
-        prediction = transformer(
-            video_latents=video,
-            audio_latents=audio,
-            text_hidden_states=text,
-            text_token_tags=token_tags,
-            layout=layout,
-            model_t_video=1.0 - sigma_video,
-            model_t_audio=1.0 - sigma_audio,
-        )
-        if prediction.video.shape != video.shape or prediction.audio.shape != audio.shape:
-            raise ValueError("MiniMax-H3 transformer predictions do not match the target latent shapes")
-        audio_slope = _shifted_sigma_slope(sigma_video, float(video_shift), float(audio_shift))
-        video_denoised = video + sigma_video.to(video) * prediction.video
-        audio_denoised = audio + (sigma_video * audio_slope).to(audio) * prediction.audio
-        sigma_previous = video_sigmas[index - 1] if index else None
-        video_next = _res_multistep_update(
-            video,
-            video_denoised,
-            sigma=sigma_video,
-            sigma_next=video_sigmas[index + 1],
-            sigma_previous=sigma_previous,
-            old_denoised=old_video_denoised,
-        )
-        audio_next = _res_multistep_update(
-            audio,
-            audio_denoised,
-            sigma=sigma_video,
-            sigma_next=video_sigmas[index + 1],
-            sigma_previous=sigma_previous,
-            old_denoised=old_audio_denoised,
-        )
-        old_video_denoised, old_audio_denoised = video_denoised, audio_denoised
-        video, audio = video_next, audio_next
+        grad_enabled = index >= grad_start
+        if grad_enabled and not video.requires_grad:
+            video = video.detach().requires_grad_(True)
+            audio = audio.detach().requires_grad_(True)
+        with torch.set_grad_enabled(grad_enabled):
+            sigma_video = video_sigmas[index].to(torch.float32)
+            sigma_audio = _map_shifted_sigma(sigma_video, float(video_shift), float(audio_shift))
+            prediction = transformer(
+                video_latents=video,
+                audio_latents=audio,
+                text_hidden_states=text,
+                text_token_tags=token_tags,
+                layout=layout,
+                model_t_video=1.0 - sigma_video,
+                model_t_audio=1.0 - sigma_audio,
+            )
+            if prediction.video.shape != video.shape or prediction.audio.shape != audio.shape:
+                raise ValueError("MiniMax-H3 transformer predictions do not match the target latent shapes")
+            audio_slope = _shifted_sigma_slope(sigma_video, float(video_shift), float(audio_shift))
+            video_denoised = video + sigma_video.to(video) * prediction.video
+            audio_denoised = audio + (sigma_video * audio_slope).to(audio) * prediction.audio
+            sigma_previous = video_sigmas[index - 1] if index else None
+            video_next = _res_multistep_update(
+                video,
+                video_denoised,
+                sigma=sigma_video,
+                sigma_next=video_sigmas[index + 1],
+                sigma_previous=sigma_previous,
+                old_denoised=old_video_denoised,
+            )
+            audio_next = _res_multistep_update(
+                audio,
+                audio_denoised,
+                sigma=sigma_video,
+                sigma_next=video_sigmas[index + 1],
+                sigma_previous=sigma_previous,
+                old_denoised=old_audio_denoised,
+            )
+            old_video_denoised, old_audio_denoised = video_denoised, audio_denoised
+            video, audio = video_next, audio_next
         if step_callback is not None:
             step_callback(index + 1, steps)
     return video

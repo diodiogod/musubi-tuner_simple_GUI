@@ -11,6 +11,7 @@ LAST_SETTINGS = ROOT / "last_settings.json"
 MINIMAX_H3_MODE = "MiniMax H3 (Experimental)"
 MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE]
 STRUCTURED_KEYS = {"sample_prompts_data", "staged_training_config", "face_refinement_config"}
+CACHE_DEFAULTS = {"cache_incremental": True}
 MINIMAX_H3_DEFAULTS = {
     "minimax_h3_block_memory_mode": "Fixed blocks (existing)",
     "minimax_h3_auto_swap_reserve_gb": "2.0",
@@ -133,6 +134,8 @@ FIELD_LABELS = {
     "minimax_h3_text_encoder_blocks_to_swap": "Text Encoder Low-VRAM Streaming",
     "recache_latents": "Rebuild Image/Latent Cache",
     "recache_text": "Rebuild Caption/Text Cache",
+    "cache_incremental": "Only Update Missing or Outdated Cache Entries",
+    "staged_recache_text": "Fully Rebuild Caption Cache Before Every Stage",
     "sample_every_n_epochs": "Sample Every N Epochs (fractions allowed)",
     "sample_every_n_steps": "Sample Every N Steps",
     "sample_at_first": "Sample At First",
@@ -311,7 +314,7 @@ def load_settings() -> dict[str, Any]:
         payload["minimax_h3_quality_protection_preset"] = (
             "Proven Quality" if legacy.startswith("dynamic") else "Custom"
         )
-    for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS).items():
+    for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS | CACHE_DEFAULTS).items():
         payload.setdefault(key, value)
     return payload
 
@@ -392,6 +395,7 @@ def _section_for(key: str) -> str:
         "rename_final_artifacts_to_epoch",
         "recache_latents",
         "recache_text",
+        "cache_incremental",
         "offload_inactive_dit",
         "force_v2_1_time_embedding",
     }:

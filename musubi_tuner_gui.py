@@ -1314,23 +1314,28 @@ class MusubiTunerGUI:
             cache_frame,
             "recache_latents",
             "Re-cache Latents Before Training",
-            "Force latent cache generation before the run. Use this when the dataset, resolution, or VAE changed. If you add images, enable this option; the current GUI may recompute existing entries too because incremental missing/outdated-only caching is not implemented yet.",
+            "Prepare image/latent caches before the run. Enable for new images or changed VAE/resolution. Incremental updates reuse matching entries; disable that option for a deliberate full rebuild.",
             kind="checkbox",
         )
         self._add_widget(
             cache_frame,
             "recache_text",
             "Re-cache Text Encoders Before Training",
-            "Force caption/text-encoder cache generation before the run. Use this when captions or the text encoder changed. If you add images or captions, enable this option; the current GUI may recompute existing entries too because incremental missing/outdated-only caching is not implemented yet.",
+            "Prepare caption caches before the run. Enable for new or changed captions/text encoders. Incremental updates validate caption, precision, DOP and teacher settings before reuse.",
             kind="checkbox",
         )
         ttk.Label(
             cache_frame,
-            text="The stage editor has separate per-stage cache controls for resolution changes and optional full text re-caching.",
+            text="Cache preparation must be enabled to discover new entries. Older caches without provenance rebuild once.",
             style="PageHelp.TLabel",
             wraplength=900,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(2, 10))
+        self._add_widget(
+            cache_frame, "cache_incremental", "Only update missing or outdated cache entries",
+            "Enabled by default for normal and staged cache preparation. Uncheck to rebuild every entry, including matching caches.",
+            kind="checkbox", default_val=True,
+        )
 
         review_frame = ttk.LabelFrame(frame, text="Run review")
         review_frame.pack(fill="x", padx=10, pady=10)
@@ -3654,6 +3659,7 @@ class MusubiTunerGUI:
             "min_detection_rate": 0.25, "anti_copy_weight": 0.02,
             "preview_every": 5, "save_every": 10, "qkvo_only": True,
             "quality_preview_mode": "one_frame", "quality_preview_steps": 20, "quality_preview_final": True,
+            "training_frame_mode": "one_frame", "worst_frame_weight": 0.0,
             "checkpoint_vae": True, "license_acknowledged": False,
             "pose_aware": False, "pose_reward_weight": 0.20, "pose_min_references": 2,
             "pose_plan": default_pose_plan(),
@@ -3951,6 +3957,7 @@ class MusubiTunerGUI:
         ]
         if face_mode == "MiniMax H3 (Experimental)":
             fields.insert(fields.index(("save_every", "Save LoRA every N steps", int)), ("quality_preview_steps", "Five-frame preview steps", int))
+            fields.append(("worst_frame_weight", "Worst-frame reward weight (0–1)", float))
         field_help = {
             "pose_reward_weight": "How much of each update may focus on the matching viewing angle. 0.20 is a cautious default. The Pose Training Plan's identity anchor may reduce it further for safety.",
             "pose_min_references": "Minimum number of usable photos required before an angle gets its own identity target. Groups below this number safely fall back or are disabled.",
@@ -3976,7 +3983,18 @@ class MusubiTunerGUI:
         )
         quality_preview_var = tk.StringVar(value=quality_preview_current)
         quality_preview_final_var = tk.BooleanVar(value=config.get("quality_preview_final", True))
+        training_frame_choices = {"One frame (default)": "one_frame", "Native five frames (experimental)": "five_frame"}
+        training_frame_var = tk.StringVar(value=next(
+            (label for label, value in training_frame_choices.items() if value == config.get("training_frame_mode", "one_frame")),
+            "One frame (default)",
+        ))
         if face_mode == "MiniMax H3 (Experimental)":
+            training_row = ttk.Frame(settings_frame); training_row.pack(fill="x", padx=12, pady=(2, 6))
+            ttk.Label(training_row, text="Training gradient frames", width=26).pack(side="left")
+            ttk.Combobox(training_row, textvariable=training_frame_var, state="readonly", width=34,
+                         values=tuple(training_frame_choices)).pack(side="left")
+            ttk.Label(settings_frame, text="Five-frame gradients score all native frames and increase time and VRAM. On 24 GB, start small; select One frame if memory is insufficient. Worst-frame weight 0 uses the mean reward.",
+                      style="PageHelp.TLabel", wraplength=680).pack(anchor="w", padx=12, pady=(0, 6))
             preview_row = ttk.Frame(settings_frame); preview_row.pack(fill="x", padx=12, pady=(2, 6))
             ttk.Label(preview_row, text="Saved preview quality", width=26).pack(side="left")
             preview_picker = ttk.Combobox(
@@ -3987,7 +4005,7 @@ class MusubiTunerGUI:
             ToolTip(preview_picker, "Fast one-frame reuses the image already generated for refinement. Native five-frame runs an additional MiniMax preview and saves its center frame plus a tiny video; it is sharper but can add substantial time every time a preview is due.")
             ttk.Label(
                 settings_frame,
-                text="Refinement updates always stay on the fast one-frame gradient path. This choice changes only saved previews.",
+                text="Saved preview quality is independent of Training gradient frames. Fast previews reuse the center training frame.",
                 style="PageHelp.TLabel", wraplength=680,
             ).pack(anchor="w", padx=12, pady=(0, 6))
             final_preview = ttk.Checkbutton(settings_frame, text="Always save a final quality preview", variable=quality_preview_final_var)
@@ -4027,6 +4045,7 @@ class MusubiTunerGUI:
                 for key, _label, kind in fields: updated[key] = kind(variables[key].get())
                 updated["qkvo_only"] = qkvo_var.get(); updated["checkpoint_vae"] = checkpoint_var.get(); updated["pose_aware"] = pose_aware_var.get(); updated["license_acknowledged"] = license_var.get()
                 updated["quality_preview_mode"] = quality_preview_choices.get(quality_preview_var.get(), "one_frame"); updated["quality_preview_final"] = quality_preview_final_var.get()
+                updated["training_frame_mode"] = training_frame_choices.get(training_frame_var.get(), "one_frame")
                 updated["pose_plan"] = copy.deepcopy(config.get("pose_plan") or self._default_face_refinement_config()["pose_plan"])
                 updated["pose_plan"]["enabled"] = updated["pose_aware"]
                 if updated["pose_aware"]:
@@ -4040,6 +4059,8 @@ class MusubiTunerGUI:
                 if not updated.get("preflight_report") or updated["preflight_report"].get("reference_dir") != str(Path(updated["reference_dir"]).resolve()):
                     raise ValueError("Run Analyze Faces & Poses successfully for this reference folder before saving.")
                 if face_mode == "MiniMax H3 (Experimental)":
+                    from musubi_tuner.face_refinement.h3_frame_policy import validate_frame_policy
+                    validate_frame_policy(updated["training_frame_mode"], updated["worst_frame_weight"])
                     valid_runtime = updated["resolution"] % 32 == 0 and 30 <= updated["blocks_to_swap"] <= 48
                 else:
                     valid_runtime = updated["resolution"] % 16 == 0 and 0 <= updated["blocks_to_swap"] <= 26
@@ -8023,7 +8044,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "fp8_base": False, "fp8_scaled": False, "fp8_t5": False, "fp8_llm": False, "force_v2_1_time_embedding": False, "offload_inactive_dit": False,
             "attention_mechanism": "xformers", "starting_point_mode": "new", "resume_path": "", "network_weights": "",
             "log_with": "none", "logging_dir": "", "log_prefix": "", "log_grad_metrics": False,
-            "recache_latents": False, "recache_text": False,
+            "recache_latents": False, "recache_text": False, "cache_incremental": True,
             "convert_lora_path": "", "convert_output_dir": "",
             "training_mode": "Wan 2.2",
             "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
@@ -9150,7 +9171,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             f"Type: {stage_type}\n"
             f"Dataset: {stage.get('dataset_config') or 'not used'}\n"
             f"DOP: {'on · strength ' + str(settings.get('dop_loss_weight')) if settings.get('dop_enabled') else 'off'}\n"
-            f"Text cache: {'validate and reuse' if settings.get('dop_cache_reuse') else ('full re-cache' if settings.get('recache_text') else 'reuse')}\n"
+            f"Text cache: {('update missing/stale' if settings.get('cache_incremental', True) and not self._staged_recache_text else 'full re-cache') if settings.get('recache_text') else 'reuse'}\n"
             f"Handoff: {settings['resume_path'] or settings.get('network_weights') or input_lora or 'new training state'}\n",
         )
         if stage_type == "face_refinement":

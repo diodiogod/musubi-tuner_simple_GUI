@@ -30,6 +30,24 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Future-idea implementations (2026-10-04)
+
+- GUI cache builders share `backends._common.apply_cache_policy`: incremental
+  updates default on, global full rebuilds and explicit full stage text rebuilds
+  remain available. Wan, Flux.2, Krea and compact H3 pass `--validate_cache`.
+- `dataset/cache_identity.py` stamps item provenance through shared cache writers.
+  Shared latent/text batch loops compose identity checks with architecture-specific
+  posterior/DOP validators. Text provenance applies only to complete single-pass
+  encoders; stale optional keys are replaced. Legacy CLI behavior remains opt-in.
+- Native H3 retains its existing checkpoint/media/presentation identity validators
+  and receives only `--skip_existing`; preserve that metadata contract on imports.
+- Compact H3 face refinement optionally uses native five-frame DRaFT sampling and
+  mean/worst-frame rewards. One-frame training remains the default. The compact
+  video sampler's gradient start defaults to no-gradient inference; preserve the
+  distinction between training frames and independent quality-preview frames.
+- Regression coverage: `test_incremental_cache.py` and
+  `test_minimax_h3_face_frames.py`; measurements in `docs/future_ideas_validation.md`.
+
 ### Selective reliability update (2026-10-04)
 
 - Upstream main remains `f8a1b03`; dev `f5fe5d17` adds FL2VA dataset documentation.

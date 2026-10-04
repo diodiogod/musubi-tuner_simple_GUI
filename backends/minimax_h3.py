@@ -3,7 +3,7 @@
 from pathlib import Path
 import math
 
-from backends._common import setting_or_default
+from backends._common import setting_or_default, apply_cache_policy
 
 DEFAULT_H3_TRAINING_ASSISTANT = (
     "ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v3.safetensors"
@@ -351,7 +351,7 @@ def build_cache_commands(settings, python_executable):
             add_arg(command, "--teacher_conditions", teacher_condition_value(settings.get("minimax_h3_teacher_conditions")))
         build_dop_cache_args(command, settings)
         commands.append(command)
-    return commands
+    return apply_cache_policy(commands, settings)
 
 
 def _build_multimodal_cache_commands(settings, python_executable):
@@ -405,4 +405,4 @@ def _build_multimodal_cache_commands(settings, python_executable):
         elif quality_protection_components(settings)["dynamic"]:
             add_arg(command, "--uncond_output", _guidance_cache_path(settings), is_path=True)
         commands.append(command)
-    return commands
+    return apply_cache_policy(commands, settings, native_h3=True)

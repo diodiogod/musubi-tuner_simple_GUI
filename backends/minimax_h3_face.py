@@ -32,6 +32,8 @@ def build_command(settings, config, input_lora, output_lora, prompts_json):
         "preview_every": "preview_every",
         "quality_preview_mode": "quality_preview_mode",
         "quality_preview_steps": "quality_preview_steps",
+        "training_frame_mode": "training_frame_mode",
+        "worst_frame_weight": "worst_frame_weight",
         "save_every": "save_every",
         "blocks_to_swap": "blocks_to_swap",
         "pose_reward_weight": "pose_reward_weight",

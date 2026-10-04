@@ -406,6 +406,8 @@ def save_latent_cache_common(
         metadata["frame_count"] = f"{item_info.frame_count}"
     if extra_metadata:
         metadata.update(extra_metadata)
+    from musubi_tuner.dataset.cache_identity import identity_metadata
+    metadata.update(identity_metadata(item_info))
 
     for key, value in sd.items():
         # NaN check and show warning, replace NaN with 0
@@ -799,6 +801,10 @@ def save_text_encoder_output_cache_common(
     # merge_existing keeps keys written by previous passes (e.g. HunyuanVideo caches LLM and CLIP separately).
     # Single-pass architectures that write their full key set at once should pass merge_existing=False so the
     # cache is overwritten fresh, dropping any stale keys (e.g. optionals/dtypes) left from an earlier run.
+    # GUI provenance is only enabled for complete single-pass encoders. A stale or corrupt
+    # file must be replaced, including old DOP keys, rather than merged into the new identity.
+    if getattr(item_info, "_cache_identity", None):
+        merge_existing = False
     for key, value in sd.items():
         # NaN check and show warning, replace NaN with 0
         if torch.isnan(value).any():
@@ -839,4 +845,6 @@ def save_text_encoder_output_cache_common(
         text_encoder_output_dir = os.path.dirname(item_info.text_encoder_output_cache_path)
         os.makedirs(text_encoder_output_dir, exist_ok=True)
 
+    from musubi_tuner.dataset.cache_identity import identity_metadata
+    metadata.update(identity_metadata(item_info))
     safetensors_utils.mem_eff_save_file(sd, item_info.text_encoder_output_cache_path, metadata=metadata)

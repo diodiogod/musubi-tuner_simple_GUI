@@ -1,3 +1,4 @@
+from backends._common import apply_cache_policy
 from backends._common import (
     add_arg, build_output_dir, build_network_args,
     build_attention_arg, build_common_train_args, build_sample_args,
@@ -126,4 +127,4 @@ def build_cache_commands(settings, python_executable, temp_config_fn=None):
                "--dataset_config", cfg, "--t5", settings["t5_model"]]
         cmds.append(cmd)
 
-    return cmds
+    return apply_cache_policy(cmds, settings)

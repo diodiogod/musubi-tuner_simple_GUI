@@ -293,6 +293,9 @@ def encode_datasets(
     skip_existing_validator: Optional[callable] = None,
 ):
     """Common function to encode datasets. This function is called from multiple architecture scripts."""
+    from musubi_tuner.dataset.cache_identity import cache_recipe, prepare_item_identity, cache_identity_matches
+
+    recipe = cache_recipe(args, "latent")
     num_workers = args.num_workers if args.num_workers is not None else max(1, os.cpu_count() - 1)
     total_items = sum(len(dataset.datasource) for dataset in datasets)
     with tqdm(total=total_items, unit="item") as progress:
@@ -312,12 +315,15 @@ def encode_datasets(
                             item.content = [img[..., :3] if img.shape[-1] == 4 else img for img in item.content]
 
                 all_latent_cache_paths.extend([item.latent_cache_path for item in batch])
+                for item in batch:
+                    prepare_item_identity(item, recipe, "latent")
 
                 if args.skip_existing:
-                    if skip_existing_validator is None:
-                        filtered_batch = [item for item in batch if not os.path.exists(item.latent_cache_path)]
-                    else:
-                        filtered_batch = [item for item in batch if not skip_existing_validator(item.latent_cache_path)]
+                    def current(item):
+                        exists = (os.path.exists(item.latent_cache_path) if skip_existing_validator is None
+                                  else skip_existing_validator(item.latent_cache_path))
+                        return exists and (recipe is None or cache_identity_matches(item, "latent"))
+                    filtered_batch = [item for item in batch if not current(item)]
                     if len(filtered_batch) == 0:
                         continue
                     batch = filtered_batch
@@ -403,6 +409,7 @@ def setup_parser_common(*, include_vae: bool = True) -> argparse.ArgumentParser:
     )
     parser.add_argument("--num_workers", type=int, default=None, help="number of workers for dataset. default is cpu count-1")
     parser.add_argument("--skip_existing", action="store_true", help="skip existing cache files")
+    parser.add_argument("--validate_cache", action="store_true", help="Record source/settings provenance and rebuild stale caches with --skip_existing")
     parser.add_argument(
         "--skip_broken",
         action="store_true",

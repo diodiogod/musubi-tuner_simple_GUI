@@ -88,6 +88,7 @@ def main():
         all_cache_files_for_dataset,
         all_cache_paths_for_dataset,
         encode_for_text_encoder,
+        cache_args=args,
     )
     del text_encoder
 

@@ -80,10 +80,14 @@ def process_text_encoder_batches(
     encode: callable,
     requires_content: Optional[bool] = False,
     cache_validator: Optional[callable] = None,
+    cache_args: Optional[argparse.Namespace] = None,
 ):
     """
     Architecture independent processing of text encoder batches.
     """
+    from musubi_tuner.dataset.cache_identity import cache_recipe, prepare_item_identity, cache_identity_matches
+
+    recipe = cache_recipe(cache_args, "text") if cache_args is not None else None
 
     num_workers = num_workers if num_workers is not None else max(1, os.cpu_count() - 1)
     total_items = sum(len(dataset.datasource) for dataset in datasets)
@@ -104,6 +108,8 @@ def process_text_encoder_batches(
                     batch = batch[1]  # batch is (key, items), so use items
                 progress.update(len(batch))
                 all_cache_paths.update([os.path.normpath(item.text_encoder_output_cache_path) for item in batch])
+                for item in batch:
+                    prepare_item_identity(item, recipe, "text")
 
                 # skip existing cache files
                 if skip_existing:
@@ -111,6 +117,7 @@ def process_text_encoder_batches(
                         item
                         for item in batch
                         if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
+                        or (recipe is not None and not cache_identity_matches(item, "text"))
                         or (cache_validator is not None and not cache_validator(item))
                     ]
                     # print(f"Filtered {len(batch) - len(filtered_batch)} existing cache files")
@@ -225,6 +232,7 @@ def setup_parser_common():
     )
     parser.add_argument("--num_workers", type=int, default=None, help="number of workers for dataset. default is cpu count-1")
     parser.add_argument("--skip_existing", action="store_true", help="skip existing cache files")
+    parser.add_argument("--validate_cache", action="store_true", help="Record source/settings provenance and rebuild stale caches with --skip_existing")
     parser.add_argument("--keep_cache", action="store_true", help="keep cache files not in dataset")
     return parser
 

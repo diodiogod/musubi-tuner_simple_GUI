@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import random
+import time
 
 import torch
 from PIL import Image
@@ -15,7 +16,8 @@ from safetensors.torch import load_file
 
 from musubi_tuner.face_refinement import REFERENCE_IMPLEMENTATION, REFERENCE_PAPER
 from musubi_tuner.face_refinement.draft import reward_loss, save_preview
-from musubi_tuner.face_refinement.draft_minimax_h3 import generate_differentiable_h3
+from musubi_tuner.face_refinement.draft_minimax_h3 import generate_differentiable_h3, multiframe_reward_loss
+from musubi_tuner.face_refinement.h3_frame_policy import validate_frame_policy
 from musubi_tuner.face_refinement.face_reward import FaceSimilarityReward
 from musubi_tuner.face_refinement.pose import parse_pose_prompt
 from musubi_tuner.face_refinement.pose_plan import PoseProgressTracker
@@ -88,6 +90,12 @@ def save_network(network, output: Path, args, step: int) -> None:
         "ss_face_refinement_pose_plan": getattr(args, "pose_plan_metadata", ""),
         "ss_face_refinement_quality_preview_mode": args.quality_preview_mode,
         "ss_face_refinement_quality_preview_steps": str(args.quality_preview_steps),
+        "ss_face_refinement_training_frame_count": "5" if args.training_frame_mode == "five_frame" else "1",
+        "ss_face_refinement_reward_aggregation": (
+            ("mean_with_worst_frame" if args.worst_frame_weight else "mean")
+            if args.training_frame_mode == "five_frame" else "single_frame"
+        ),
+        "ss_face_refinement_worst_frame_weight": str(args.worst_frame_weight if args.training_frame_mode == "five_frame" else 0.0),
         "ss_face_refinement_reference": REFERENCE_IMPLEMENTATION,
         "ss_face_refinement_paper": REFERENCE_PAPER,
     }
@@ -141,6 +149,7 @@ def save_five_frame_quality_preview(model, vae, embedding, output_dir: Path, ste
 
 
 def train(args) -> None:
+    validate_frame_policy(args.training_frame_mode, args.worst_frame_weight)
     if not torch.cuda.is_available():
         raise RuntimeError("MiniMax-H3 face refinement requires an NVIDIA CUDA GPU")
     if args.resolution % 32:
@@ -155,6 +164,8 @@ def train(args) -> None:
         logger.warning("Fewer than 30 swapped blocks is unlikely to fit MiniMax-H3 DRaFT refinement on 24 GB")
 
     device = torch.device(args.device or "cuda")
+    if args.training_frame_mode == "five_frame":
+        logger.warning("Experimental five-frame gradients increase denoising and VAE memory; use one_frame if the run exceeds 24 GB")
     payload, prompts = load_prompts(args.prompts_json)
     pose_plan, pose_tracker, embedding_prompts, prompt_weights = _prepare_pose(args, payload, prompts)
     logger.info("Caching %d compact MiniMax-H3 prompt embedding(s)", len(prompts))
@@ -241,7 +252,11 @@ def train(args) -> None:
     randomizer = random.Random(args.seed)
     detected_steps = 0
     consecutive_target = 0
+    performance = []
     for step in range(1, args.train_steps + 1):
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+        update_start = time.perf_counter()
         prompt_index = (
             randomizer.choices(range(len(prompts)), weights=prompt_weights, k=1)[0]
             if prompt_weights
@@ -259,19 +274,41 @@ def train(args) -> None:
             seed=args.seed + step,
             device=device,
             checkpoint_vae=args.checkpoint_vae,
+            training_frame_mode=args.training_frame_mode,
         )
-        loss, reward_value = reward_loss(reward, pixels, prompt)
+        if args.training_frame_mode == "five_frame":
+            loss, reward_value = multiframe_reward_loss(reward, pixels, prompt, args.worst_frame_weight)
+        else:
+            loss, reward_value = reward_loss(reward, pixels, prompt)
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(parameters, args.max_grad_norm)
+        grad_norm = torch.nn.utils.clip_grad_norm_(parameters, args.max_grad_norm, error_if_nonfinite=True)
         optimizer.step()
+        torch.cuda.synchronize(device)
         metrics = reward.last_metrics
-        detected_steps += int(metrics.get("face_detected", 0))
+        measurement = {
+            "step": step, "training_frame_count": int(pixels.shape[0]),
+            "update_seconds": time.perf_counter() - update_start,
+            "peak_vram_gb": torch.cuda.max_memory_allocated(device) / 1024**3,
+            "peak_reserved_gb": torch.cuda.max_memory_reserved(device) / 1024**3,
+            "loss": float(loss.detach()), "grad_norm": float(grad_norm),
+            "face_similarity": float(metrics.get("face_similarity", 0)),
+            "frame_detection_rate": float(metrics.get("face_detected", 0)),
+        }
+        performance.append(measurement)
+        (output.parent / "face_refinement_performance.json").write_text(
+            json.dumps({"training_frame_mode": args.training_frame_mode,
+                        "worst_frame_weight": args.worst_frame_weight, "updates": performance}, indent=2),
+            encoding="utf-8",
+        )
+        detected_steps += float(metrics.get("face_detected", 0))
         similarity = float(metrics.get("face_similarity", 0.0))
         consecutive_target = consecutive_target + 1 if similarity >= args.stop_similarity else 0
         print(
             f"step={step}/{args.train_steps} loss={loss.item():.6f} reward={reward_value.item():.6f} "
-            f"face_similarity={similarity:.4f} face_detected={int(metrics.get('face_detected', 0))} "
-            f"grad_norm={float(grad_norm):.4f}",
+            f"face_similarity={similarity:.4f} face_detected={int(metrics.get('face_detected', 0) > 0)} "
+            f"frame_detection_rate={measurement['frame_detection_rate']:.3f} "
+            f"grad_norm={float(grad_norm):.4f} training_frames={pixels.shape[0]} "
+            f"update_seconds={measurement['update_seconds']:.3f} peak_vram_gb={measurement['peak_vram_gb']:.3f}",
             flush=True,
         )
         if pose_tracker:
@@ -293,10 +330,10 @@ def train(args) -> None:
             or (args.quality_preview_final and (step == args.train_steps or stopping))
         )
         if preview_due and args.quality_preview_mode == "one_frame":
-            print(f"face_preview={save_preview(pixels, output.parent, step, prompt)}", flush=True)
+            center = pixels[2:3] if args.training_frame_mode == "five_frame" else pixels
+            print(f"face_preview={save_preview(center, output.parent, step, prompt)}", flush=True)
         if preview_due and args.quality_preview_mode == "five_frame":
-            # The training reward above remains the fast differentiable one-frame path. This is an
-            # additional no-grad quality check and can materially increase wall time at short cadences.
+            # Saved-preview quality is independent of the selected differentiable training frames.
             del loss, reward_value, pixels
             gc.collect()
             clean_memory_on_device(device)
@@ -339,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview_every", type=int, default=5)
     parser.add_argument("--quality_preview_mode", choices=("one_frame", "five_frame"), default="one_frame")
     parser.add_argument("--quality_preview_steps", type=int, default=20)
+    parser.add_argument("--training_frame_mode", choices=("one_frame", "five_frame"), default="one_frame")
+    parser.add_argument("--worst_frame_weight", type=float, default=0.0, help="Blend mean and worst-frame reward (0..1); five-frame training only")
     parser.add_argument("--quality_preview_final", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--save_every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)

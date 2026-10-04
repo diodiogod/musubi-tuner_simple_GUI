@@ -261,6 +261,7 @@ def main() -> None:
             unconditional_hidden_states = encoder.encode("")[0].to(dtype=cache_dtype)
 
     def encode(batch: list[ItemInfo]):
+        nonlocal encoder, teacher_encoder
         encode_and_save_batch(
             encoder if encoder is not None else _NativeTextAdapter(teacher_processor, teacher_encoder),
             batch,
@@ -290,6 +291,7 @@ def main() -> None:
         encode,
         requires_content=bool(args.teacher_conditions),
         cache_validator=cache_validator,
+        cache_args=args,
     )
     del encoder, teacher_encoder
     cache_text_encoder_outputs.post_process_cache_files(datasets, all_cache_files, all_cache_paths, args.keep_cache)

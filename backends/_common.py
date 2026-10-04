@@ -138,6 +138,22 @@ def build_dop_cache_args(cmd, settings):
         cmd.append("--skip_existing")
 
 
+def apply_cache_policy(commands, settings, *, native_h3=False):
+    """GUI cache preparation updates missing/stale entries unless a full rebuild is selected."""
+    for command in commands:
+        full_stage_text = (settings.get("use_staged_training") and settings.get("staged_recache_text")
+                           and any("cache_text_encoder_outputs" in part for part in command))
+        incremental = settings.get("cache_incremental", True) and not full_stage_text
+        if not incremental:
+            command[:] = [part for part in command if part != "--skip_existing"]
+        elif "--skip_existing" not in command:
+            command.append("--skip_existing")
+        # Native H3 already validates complete model/media/presentation metadata.
+        if not native_h3:
+            command.append("--validate_cache")
+    return commands
+
+
 def build_common_train_args(cmd, settings):
     add_arg(cmd, "--optimizer_type", settings.get("optimizer_type"))
     add_arg(cmd, "--learning_rate", settings.get("learning_rate"))
