@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from backends import flux2, krea2, minimax_h3, wan
+from backends import flux2, krea2, minimax_h3, wan, moss_image
 from modern_gui.sample_prompts import prepare_sample_prompt_settings
 from modern_gui.training_notes import effective_training_comment
 
@@ -108,6 +108,9 @@ def build_command_plan(settings: dict[str, Any], preview: bool = False) -> dict[
             temp_config_fn=cache_config if not preview else None,
         )
         train = wan.build_commands(settings)
+    elif mode == "MOSS-Image (Experimental)":
+        cache = moss_image.build_cache_commands(settings, python_executable)
+        train = moss_image.build_commands(settings)
     elif mode == "Krea 2":
         cache = krea2.build_cache_commands(settings, python_executable)
         train = krea2.build_commands(settings)

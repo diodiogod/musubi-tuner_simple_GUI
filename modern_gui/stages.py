@@ -88,10 +88,10 @@ def validate_stage_plan(settings: dict[str, Any]) -> list[dict[str, Any]]:
             effective = dict(settings)
             apply_dop_overrides(effective, stage)
             if effective.get("dop_enabled"):
-                if settings.get("training_mode") not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)"}:
+                if settings.get("training_mode") not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
                     raise ValueError(
                         f"{stage_label(stage, index)} enables DOP, but DOP is supported only for "
-                        "Krea 2, MiniMax H3, and FLUX.2 Klein."
+                        "Krea 2, MiniMax H3, MOSS-Image, and FLUX.2 Klein."
                     )
                 try:
                     from musubi_tuner.training.dop import validate_dop_config
@@ -111,12 +111,12 @@ def validate_stage_plan(settings: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"{stage_label(stage, index)} has an unsupported depth-helper policy: {depth_mode}"
                 )
-            if depth_mode != "inherit" and settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)"}:
+            if depth_mode != "inherit" and settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
                 raise ValueError(
-                    f"{stage_label(stage, index)} can override depth-helper memory only in Krea 2 or MiniMax H3."
+                    f"{stage_label(stage, index)} can override depth-helper memory only in Krea 2, MiniMax H3, or MOSS-Image."
                 )
-        elif settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)"}:
-            raise ValueError("Face Refinement stages are supported only in Krea 2 or MiniMax H3 mode.")
+        elif settings.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
+            raise ValueError("Face Refinement stages are supported in Krea 2, MiniMax H3, and MOSS-Image mode.")
         else:
             face_config = settings.get("face_refinement_config") or {}
             from modern_gui.face_stages import validate_face_recipe_for_mode
@@ -149,10 +149,11 @@ def apply_dop_overrides(settings: dict[str, Any], stage: dict[str, Any]) -> None
 
 def apply_depth_memory_override(settings: dict[str, Any], stage: dict[str, Any]) -> None:
     mode = str(stage.get("depth_helpers_mode", "inherit"))
+    key = "moss_keep_depth_helpers_on_gpu" if settings.get("training_mode") == "MOSS-Image (Experimental)" else "krea2_keep_depth_helpers_on_gpu"
     if mode == "keep on GPU":
-        settings["krea2_keep_depth_helpers_on_gpu"] = True
+        settings[key] = True
     elif mode == "offload to CPU":
-        settings["krea2_keep_depth_helpers_on_gpu"] = False
+        settings[key] = False
 
 
 def apply_fresh_optimizer_overrides(settings: dict[str, Any], stage: dict[str, Any]) -> None:

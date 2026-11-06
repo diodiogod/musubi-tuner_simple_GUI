@@ -128,6 +128,7 @@ def compute_dop_loss(
     *,
     embedding_key: str,
     dop_embedding_key: str,
+    after_teacher=None,
 ) -> tuple[torch.Tensor | None, dict]:
     """Compute DOP separately so its graph need not overlap the primary loss graph."""
 
@@ -160,6 +161,11 @@ def compute_dop_loss(
             network_dtype,
         )
         prior_pred = prior_output.pred.detach()
+
+    # Some block swappers rely on backward to restore the forward layout.
+    # The detached teacher has no backward, so let the architecture reset it.
+    if after_teacher is not None:
+        after_teacher()
 
     # Student: LoRA enabled, same generic class caption. Gradients only update the adapter.
     preservation_output = trainer.call_dit(

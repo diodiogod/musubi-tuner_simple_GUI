@@ -26,11 +26,15 @@ def validate_face_lora(path: str | Path, mode: str) -> dict:
     except Exception as exc:
         raise ValueError(f"Could not read the selected LoRA: {exc}") from exc
 
-    down = [key for key in keys if key.startswith("lora_unet_blocks_") and key.endswith(".lora_down.weight")]
-    up = [key for key in keys if key.startswith("lora_unet_blocks_") and key.endswith(".lora_up.weight")]
+    prefix = "lora_unet_layers_" if mode == "MOSS-Image (Experimental)" else "lora_unet_blocks_"
+    down = [key for key in keys if key.startswith(prefix) and key.endswith(".lora_down.weight")]
+    up = [key for key in keys if key.startswith(prefix) and key.endswith(".lora_up.weight")]
     if mode == "MiniMax H3 (Experimental)":
         attention = [key for key in down if any(part in key for part in ("_attn_qkv_proj.", "_attn_out_proj."))]
         label = "MiniMax-H3"
+    elif mode == "MOSS-Image (Experimental)":
+        attention = [key for key in down if any(part in key for part in ("_proj_q.", "_proj_k.", "_proj_v.", "_proj_o."))]
+        label = "MOSS-Image"
     else:
         attention = [key for key in down if any(part in key for part in ("_attn_wq.", "_attn_wk.", "_attn_wv.", "_attn_wo."))]
         label = "Krea 2"

@@ -17,7 +17,8 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, minimax_h3_face as minimax_h3_face_backend, krea2_face_eval as krea2_face_eval_backend
+from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, minimax_h3_face as minimax_h3_face_backend, krea2_face_eval as krea2_face_eval_backend, moss_image as moss_backend
+from backends import moss_settings, moss_image_face as moss_face_backend
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -402,7 +403,7 @@ class MusubiTunerGUI:
         toolbar.grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
-                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)"],
+                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE],
                                       state="readonly", width=25)
         self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
@@ -667,9 +668,36 @@ class MusubiTunerGUI:
             ),
         )
 
+    def _add_moss_fields(self, parent, keys):
+        for key in keys:
+            default = moss_settings.DEFAULTS[key]
+            kind = ('checkbox' if isinstance(default, bool) else 'combobox' if key in moss_settings.CHOICES
+                    else 'path_entry' if key in moss_settings.PATHS else 'entry')
+            widget = self._add_widget(
+                parent, key, moss_settings.REPA_LABELS.get(key, key.removeprefix('moss_').replace('_', ' ').capitalize()), moss_settings.HELP[key],
+                kind=kind, options=moss_settings.CHOICES.get(key),
+                is_path=key in moss_settings.PATHS, is_dir=key == 'moss_tokenizer_cache_dir',
+                default_val=default if isinstance(default, bool) else False,
+            )
+            if kind in ('entry', 'path_entry'):
+                widget.insert(0, default)
+
     def create_model_paths_tab(self):
         frame = self._create_scrollable_tab("Models", "models")
         self._add_page_intro(frame, "Models & dataset", "Choose the dataset, model components, and output destination for the selected training mode. Required fields are marked with an asterisk.")
+
+        workspace_frame = ttk.LabelFrame(frame, text="Workspace · Choose where this training is saved (Optional)")
+        workspace_frame.pack(fill="x", padx=10, pady=10)
+        self._add_widget(workspace_frame, "project_root", "Project root:",
+                         "Choose a main folder for this training project. Selecting it with Browse creates models/ for "
+                         "saved LoRAs and log/ for training logs, and fills their paths. You can also paste a folder "
+                         "and click Set Output and Log Folders. This is optional; individual paths still work.",
+                         kind='path_entry', is_dir=True, is_path=True, command=self._apply_project_root_paths)
+        workspace_actions = ttk.Frame(workspace_frame)
+        workspace_actions.pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Label(workspace_actions, text="Uses models/ for LoRAs and log/ for training logs inside this folder.",
+                  style="PageHelp.TLabel", wraplength=520).pack(side="left", padx=(0, 10))
+        ttk.Button(workspace_actions, text="Set Output and Log Folders", command=self._apply_project_root_paths).pack(side="right")
 
         dataset_frame = ttk.LabelFrame(frame, text="Dataset Configuration"); dataset_frame.pack(fill="x", padx=10, pady=10)
         dataset_entry = self._add_widget(dataset_frame, "dataset_config", "Dataset Config (TOML):", "Path to .toml dataset configuration file.", kind='path_entry', options=[("TOML files", "*.toml")], is_required=True, is_path=True)
@@ -759,6 +787,11 @@ class MusubiTunerGUI:
         )
 
         # ---- Krea 2 model paths section ----
+        self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
+        self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
+            key for key in moss_settings.DEFAULTS
+            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_"))
+        ])
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
         self.krea2_note_label = ttk.Label(
@@ -925,13 +958,9 @@ class MusubiTunerGUI:
         # VAE shared by both modes — store reference for pack ordering
         models_frame = ttk.LabelFrame(frame, text="VAE Model"); models_frame.pack(fill="x", padx=10, pady=10)
         self._vae_frame = models_frame
-        self._add_widget(models_frame, "vae_model", "VAE Model:", "Path to VAE model (.safetensors or .pt). Required for training and caching.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
+        self._add_widget(models_frame, "vae_model", "VAE Model:", "Choose the VAE for the selected model. MOSS-Image requires a Flux.2 VAE (standard or small decoder); Wan, Krea 2, and MiniMax H3 VAEs are not compatible. Rebuild the image/latent cache after changing the VAE.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
 
         output_frame = ttk.LabelFrame(frame, text="Output Configuration"); output_frame.pack(fill="x", padx=10, pady=10)
-        self._add_widget(output_frame, "project_root", "Concept Workspace:", "Optional main folder for this concept. Selecting it creates and fills the models and log subfolders.", kind='path_entry', is_dir=True, is_path=True, command=self._apply_project_root_paths)
-        workspace_actions = ttk.Frame(output_frame); workspace_actions.pack(fill="x", padx=10, pady=(0, 5))
-        ttk.Button(workspace_actions, text="Apply Workspace Layout", command=self._apply_project_root_paths).pack(side="right")
-        ttk.Label(workspace_actions, text="Creates models/ and log/ and fills the related paths.", style="PageHelp.TLabel").pack(side="right", padx=(0, 10))
         self._add_widget(output_frame, "output_dir", "Output Directory:", "Base directory to save trained LoRAs. A subfolder will be automatically created.", kind='path_entry', is_dir=True, is_required=True, is_path=True)
         self._add_widget(output_frame, "output_name", "Output Name:", "Base filename for output LoRA (e.g., 'my_character'). Suffixes like '_LowNoise' will be added automatically.", is_required=True)
 
@@ -1181,7 +1210,7 @@ class MusubiTunerGUI:
     def _apply_project_root_paths(self):
         root_value = self.entries["project_root"].get().strip()
         if not root_value:
-            messagebox.showwarning("Workspace", "Choose a concept workspace folder first.")
+            messagebox.showwarning("Workspace", "Choose Project root using Browse at the top of the Models tab.")
             return
         root_path = Path(root_value).expanduser()
         try:
@@ -1727,6 +1756,24 @@ class MusubiTunerGUI:
         )
         h3_reference_guided_frame.pack(fill="x", padx=10, pady=(6, 10))
 
+        self.hidden_frames['moss_repa'] = ttk.LabelFrame(self.regularization_frame, text="MOSS · REPA visual guidance (Experimental)")
+        repa_frame = self.hidden_frames['moss_repa']
+        self._add_moss_fields(repa_frame, ["moss_repa_enabled"])
+        ttk.Button(repa_frame, text="?  How REPA works", command=lambda: messagebox.showinfo(
+            "MOSS REPA visual learning guidance", moss_settings.REPA_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=10, pady=4)
+        repa_options = ttk.Frame(repa_frame)
+        repa_expanded = tk.BooleanVar(value=False)
+        ttk.Checkbutton(repa_frame, text="Show REPA settings", variable=repa_expanded,
+                        command=lambda: repa_options.pack(fill="x") if repa_expanded.get()
+                        else repa_options.pack_forget()).pack(anchor="w", padx=10, pady=4)
+        self._add_moss_fields(repa_options, [key for key in moss_settings.DEFAULTS
+                                           if key.startswith("moss_repa_") and key != "moss_repa_enabled"])
+        self.hidden_frames['moss_regularization'] = ttk.LabelFrame(self.regularization_frame, text="MOSS · Depth and Adapter Noise (Experimental)")
+        self._add_moss_fields(self.hidden_frames['moss_regularization'], [
+            key for key in moss_settings.DEFAULTS
+            if key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_"))
+        ])
         self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(self.regularization_frame, text="Krea 2 · Generalization (Experimental)")
         ttk.Label(
             self.hidden_frames['krea2_regularization'],
@@ -2052,16 +2099,17 @@ class MusubiTunerGUI:
             variable.set(state[key])
         is_krea = self.training_mode_var.get() == "Krea 2"
         is_h3 = self.training_mode_var.get() == "MiniMax H3 (Experimental)"
+        is_moss = self.training_mode_var.get() == moss_settings.MODE
         self.face_workspace_mode_var.set(
             "Ready for Krea 2. Configure and evaluate here; start the actual staged run from Monitor."
             if is_krea else (
                 "Ready for experimental MiniMax H3 refinement. Use 512px, DRaFT-K 1, and at least 30 swapped blocks."
-                if is_h3 else "Face Refinement supports Krea 2 and experimental MiniMax H3. Switch training mode to configure it."
+                if is_h3 else "Ready for experimental MOSS refinement." if is_moss else "Face Refinement supports Krea 2, MiniMax H3, and MOSS. Switch training mode to configure it."
             )
         )
         for button in getattr(self, "_face_workspace_buttons", []):
-            button.configure(state="normal" if is_krea or is_h3 else "disabled")
-        if hasattr(self, "_face_evaluation_button") and is_h3:
+            button.configure(state="normal" if is_krea or is_h3 or is_moss else "disabled")
+        if hasattr(self, "_face_evaluation_button") and not is_krea:
             self._face_evaluation_button.configure(state="disabled")
         latest = str(
             (self._face_refinement_config or {}).get("evaluation_last_result")
@@ -2181,8 +2229,8 @@ class MusubiTunerGUI:
         self._open_pose_training_plan_dialog(config, config.get("trigger_word", ""), save, self.root)
 
     def _add_face_refinement_final_stage(self):
-        if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
-            messagebox.showerror("Face Refinement", "Switch Training mode to Krea 2 or MiniMax H3 first.")
+        if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            messagebox.showerror("Face Refinement", "Switch Training mode to Krea 2, MiniMax H3 or MOSS first.")
             return
         config = self._face_refinement_config or {}
         if not config.get("preflight_report"):
@@ -2353,7 +2401,7 @@ class MusubiTunerGUI:
             preview_btn = ttk.Button(row, text="Preview", width=7,
                        command=lambda i=idx: self._test_sample_prompt(i))
             preview_btn.pack(side="right", padx=(3, 0))
-            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
+            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
                 preview_btn.configure(state="disabled")
                 ToolTip(preview_btn, "Standalone preview generation is available for Krea 2 and experimental MiniMax H3.")
             ttk.Button(row, text="Duplicate", width=9,
@@ -2455,16 +2503,18 @@ class MusubiTunerGUI:
         if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
             messagebox.showerror("Validation Error", "Activation CPU offload requires Gradient Checkpointing.")
             return
-        if mode not in ("Krea 2", "MiniMax H3 (Experimental)"):
-            messagebox.showinfo("Not Available", "Sample test generation is available for Krea 2 and experimental MiniMax H3.")
+        if mode not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            messagebox.showinfo("Not Available", "Sample test generation is available for Krea 2, MiniMax H3 and MOSS.")
             return
 
         try:
-            command = (
-                self._build_minimax_h3_test_sample_command(settings, prompt_items)
-                if mode == "MiniMax H3 (Experimental)"
-                else self._build_krea2_test_sample_command(settings, prompt_items)
-            )
+            if mode == moss_settings.MODE:
+                from modern_gui.prompt_preview import build_moss_preview
+                command, _ = build_moss_preview(settings, prompt_items)
+            elif mode == "MiniMax H3 (Experimental)":
+                command = self._build_minimax_h3_test_sample_command(settings, prompt_items)
+            else:
+                command = self._build_krea2_test_sample_command(settings, prompt_items)
         except ValueError as e:
             messagebox.showerror(f"{mode} Test Sample", str(e))
             return
@@ -2779,7 +2829,8 @@ class MusubiTunerGUI:
         mode = self.training_mode_var.get()
         is_krea2 = mode == "Krea 2"
         is_h3 = mode == "MiniMax H3 (Experimental)"
-        is_image_mode = is_krea2 or is_h3
+        is_moss = mode == moss_settings.MODE
+        is_image_mode = is_krea2 or is_h3 or is_moss
         is_krea2_turbo = is_krea2 and bool(
             (self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
             or (self.entries.get("krea2_turbo_lora") and self.entries["krea2_turbo_lora"].get().strip())
@@ -2828,10 +2879,10 @@ class MusubiTunerGUI:
 
         row1 = ttk.Frame(dlg); row1.pack(fill="x", padx=10, pady=(8, 0))
         row1_fields = [
-            ("Width", "width", "768" if is_h3 else ("1024" if is_krea2 else "512"), 6),
-            ("Height", "height", "768" if is_h3 else ("1024" if is_krea2 else "512"), 6),
-            ("Steps", "steps", "28" if is_h3 else (("8" if is_krea2_turbo else "28") if is_krea2 else "20"), 5),
-            ("Guidance", "guidance", "1.0" if is_h3 else (("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0"), 6),
+            ("Width", "width", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
+            ("Height", "height", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
+            ("Steps", "steps", "28" if is_h3 else ("50" if is_moss else (("8" if is_krea2_turbo else "28") if is_krea2 else "20")), 5),
+            ("Guidance", "guidance", "1.0" if is_h3 else ("3.0" if is_moss else (("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0")), 6),
         ]
         if not is_image_mode:
             row1_fields.insert(2, ("Frames", "frames", "25", 5))
@@ -2858,9 +2909,9 @@ class MusubiTunerGUI:
                 ("Y2", "y2", existing.get("y2", ""), 6),
                 ("Seed", "seed", existing.get("seed", ""), 8),
             ]
-        elif is_h3:
+        elif is_h3 or is_moss:
             row2_fields = [
-                ("H3 Shift", "flow_shift", existing.get("flow_shift", "12.0"), 7),
+                ("Flow Shift", "flow_shift", existing.get("flow_shift", "12.0" if is_h3 else "5.0"), 7),
                 ("Seed", "seed", existing.get("seed", "42"), 10),
             ]
         else:
@@ -2899,6 +2950,9 @@ class MusubiTunerGUI:
                 font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
+        elif is_moss:
+            ttk.Label(dlg, text="MOSS defaults: 50 steps, guidance 3, flow shift 5. These control preview generation only.",
+                      foreground=self.colors["muted"], wraplength=580).pack(anchor="w", padx=10, pady=(12, 0))
         else:
             lbl(dlg, "Image path  (I2V only — optional)")
             e_img = ttk.Frame(dlg); e_img.pack(fill="x", padx=10, pady=(0, 2))
@@ -2950,7 +3004,7 @@ class MusubiTunerGUI:
         dlg.bind("<Escape>", lambda _e: dlg.destroy())
         e_prompt.focus_set()
 
-    def _serialize_sample_prompt_line(self, prompt_data, is_krea2):
+    def _serialize_sample_prompt_line(self, prompt_data, is_krea2, is_moss=False):
         line = prompt_data.get("prompt", "")
         if prompt_data.get("width"):
             line += f" --w {prompt_data['width']}"
@@ -2961,7 +3015,7 @@ class MusubiTunerGUI:
         if prompt_data.get("guidance"):
             # Krea 2 uses ordinary CFG; musubi's training sampler reads it from --l.
             # The standalone Krea generator accepts --g and --l equivalently.
-            line += f" --{'l' if is_krea2 else 'g'} {prompt_data['guidance']}"
+            line += f" --{'l' if is_krea2 or is_moss else 'g'} {prompt_data['guidance']}"
         if is_krea2:
             if prompt_data.get("mu"):
                 line += f" --mu {prompt_data['mu']}"
@@ -2974,13 +3028,13 @@ class MusubiTunerGUI:
                 line += f" --f {prompt_data['frames']}"
             if prompt_data.get("flow_shift"):
                 line += f" --fs {prompt_data['flow_shift']}"
-            if prompt_data.get("cfg_scale"):
+            if prompt_data.get("cfg_scale") and not is_moss:
                 line += f" --l {prompt_data['cfg_scale']}"
         if prompt_data.get("seed"):
             line += f" --d {prompt_data['seed']}"
         if prompt_data.get("neg"):
             line += f" --n {prompt_data['neg']}"
-        if not is_krea2 and prompt_data.get("image_path"):
+        if not is_krea2 and not is_moss and prompt_data.get("image_path"):
             line += f" --i {prompt_data['image_path']}"
         return line
 
@@ -3000,7 +3054,7 @@ class MusubiTunerGUI:
                 serialized_prompt["frames"] = 5 if preview_mode in {
                     "five_frame", "five-frame video (experimental)", "five-frame video (recommended)"
                 } else 1
-            lines.append(self._serialize_sample_prompt_line(serialized_prompt, is_krea2))
+            lines.append(self._serialize_sample_prompt_line(serialized_prompt, is_krea2, mode == moss_settings.MODE))
         if not lines:
             return ""
         # Save next to the dataset config (always outside the repo, always exists)
@@ -3677,6 +3731,8 @@ class MusubiTunerGUI:
         config.update(self._face_refinement_config or {})
         if face_mode == "MiniMax H3 (Experimental)" and not self._face_refinement_config:
             config.update({"blocks_to_swap": 35, "cfg_scale": 1.0})
+        elif face_mode == moss_settings.MODE and not self._face_refinement_config:
+            config.update({"blocks_to_swap": 30, "cfg_scale": 3.0})
         dialog = tk.Toplevel(self.root)
         dialog.title(f"{face_mode} · Face Refinement (Experimental)")
         dialog.transient(self.root); dialog.grab_set(); dialog.minsize(760, 720)
@@ -4062,6 +4118,8 @@ class MusubiTunerGUI:
                     from musubi_tuner.face_refinement.h3_frame_policy import validate_frame_policy
                     validate_frame_policy(updated["training_frame_mode"], updated["worst_frame_weight"])
                     valid_runtime = updated["resolution"] % 32 == 0 and 30 <= updated["blocks_to_swap"] <= 48
+                elif face_mode == moss_settings.MODE:
+                    valid_runtime = updated["resolution"] % 16 == 0 and 0 <= updated["blocks_to_swap"] <= 40
                 else:
                     valid_runtime = updated["resolution"] % 16 == 0 and 0 <= updated["blocks_to_swap"] <= 26
                 if updated["steps"] < 1 or not valid_runtime or not 1 <= updated["draft_k"] <= updated["denoise_steps"]: raise ValueError("Invalid step count, resolution, differentiable-step value, or blocks-to-swap value. MiniMax H3 requires a multiple of 32 and 30–48 swapped blocks on a 24 GB GPU.")
@@ -4801,10 +4859,11 @@ class MusubiTunerGUI:
     @staticmethod
     def _apply_stage_depth_memory_settings(settings, stage):
         mode = str(stage.get("depth_helpers_mode", "inherit"))
+        key = "moss_keep_depth_helpers_on_gpu" if settings.get("training_mode") == moss_settings.MODE else "krea2_keep_depth_helpers_on_gpu"
         if mode == "keep on GPU":
-            settings["krea2_keep_depth_helpers_on_gpu"] = True
+            settings[key] = True
         elif mode == "offload to CPU":
-            settings["krea2_keep_depth_helpers_on_gpu"] = False
+            settings[key] = False
         return settings
 
     @staticmethod
@@ -5330,7 +5389,7 @@ class MusubiTunerGUI:
         can_refine_face = bool(
             can_repeat
             and isinstance(job.get("settings_snapshot"), dict)
-            and job.get("settings_snapshot", {}).get("training_mode") in ("Krea 2", "MiniMax H3 (Experimental)")
+            and job.get("settings_snapshot", {}).get("training_mode") in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE)
             and self._resolve_job_face_lora(job) is not None
         )
         self._jobs_context_menu.entryconfigure(
@@ -6001,8 +6060,8 @@ class MusubiTunerGUI:
         if not job:
             return
         snapshot = job.get("settings_snapshot")
-        if not isinstance(snapshot, dict) or snapshot.get("training_mode") not in ("Krea 2", "MiniMax H3 (Experimental)"):
-            messagebox.showerror("Face Refinement unavailable", "Select a recorded Krea 2 or MiniMax H3 training job with a complete settings snapshot.")
+        if not isinstance(snapshot, dict) or snapshot.get("training_mode") not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            messagebox.showerror("Face Refinement unavailable", "Select a recorded Krea 2, MiniMax H3, or MOSS training job with a complete settings snapshot.")
             return
         input_lora = self._resolve_job_face_lora(job)
         if input_lora is None:
@@ -6018,6 +6077,8 @@ class MusubiTunerGUI:
         face_config.update(copy.deepcopy(snapshot.get("face_refinement_config") or {}))
         if snapshot.get("training_mode") == "MiniMax H3 (Experimental)" and not snapshot.get("face_refinement_config"):
             face_config.update({"blocks_to_swap": 35, "cfg_scale": 1.0})
+        elif snapshot.get("training_mode") == moss_settings.MODE and not snapshot.get("face_refinement_config"):
+            face_config.update({"blocks_to_swap": 30, "cfg_scale": 3.0})
         face_config.update({"input_mode": "existing_lora", "input_lora": str(input_lora)})
         settings["use_staged_training"] = True
         settings["staged_training_config"] = [{
@@ -6986,6 +7047,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def on_training_mode_change(self, event=None):
         mode = self.training_mode_var.get()
+        self.hidden_frames['moss_model_paths'].pack_forget()
         is_wan = (mode == "Wan 2.2")
         self.title_label.config(text="Musubi Tuner")
         self.subtitle_label.config(text=f"{mode} · LoRA training studio")
@@ -6996,7 +7058,20 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else:
                 self._minimax_training_preview_frame.pack_forget()
 
-        if is_wan:
+        if mode == moss_settings.MODE:
+            self.mode_note_label.config(text="MOSS image LoRA · Qwen3.5-9B text encoder · Flux.2 VAE")
+            for name in ('wan_dit', 'wan_models', 'flux2_model_paths', 'krea2_model_paths', 'minimax_h3_model_paths'):
+                self.hidden_frames[name].pack_forget()
+            self.hidden_frames['moss_model_paths'].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+            if event is not None:
+                self.entries["mixed_precision"].set("bf16")
+                self.entries["attention_mechanism"].set("sdpa")
+                self.entries["gradient_checkpointing"].var.set(True)
+                self.entries["fp8_base"].var.set(False)
+                self.entries["fp8_scaled"].var.set(False)
+                self.entries["blocks_to_swap"].delete(0, tk.END)
+                self.entries["blocks_to_swap"].insert(0, "30")
+        elif is_wan:
             self.mode_note_label.config(text="Dual-stage Wan training · T2V and I2V workflows")
             self.hidden_frames['flux2_model_paths'].pack_forget()
             self.hidden_frames['krea2_model_paths'].pack_forget()
@@ -7017,28 +7092,6 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if self.entries["network_alpha_low"].get().strip() in ("", "16"):
                 self.entries["network_alpha_low"].delete(0, tk.END)
                 self.entries["network_alpha_low"].insert(0, "32")
-        elif mode in ("Flux.2 Klein", "Flux.2 Dev") and settings.get("flux2_reference_guided"):
-            if mode == "Flux.2 Dev":
-                messagebox.showerror("Validation Error", "Reference-Guided Learning currently supports Flux.2 Klein only.")
-                return
-            try:
-                cutoff = float(settings.get("flux2_reference_sigma_max") or "")
-                direct = float(settings.get("flux2_reference_direct_loss_weight") or "")
-                if not 0 <= cutoff <= 1 or direct < 0:
-                    raise ValueError
-            except (TypeError, ValueError):
-                messagebox.showerror(
-                    "Validation Error",
-                    "Klein Teacher Cutoff Sigma must be between 0 and 1, and Direct Dataset Learning Contribution cannot be negative.",
-                )
-                return
-            if str(settings.get("flux2_reference_conditions") or "").lower().startswith("other pictures"):
-                if not settings.get("recache_latents"):
-                    messagebox.showerror(
-                        "Validation Error",
-                        "Other-picture Klein learning needs control_path/control_path_N references and Rebuild Image/Latent Cache enabled.",
-                    )
-                    return
         elif mode == "MiniMax H3 (Experimental)":
             multimodal = str(self.entries["minimax_h3_training_workflow"].get() or "").startswith("Video")
             self.mode_note_label.config(text=(
@@ -7157,6 +7210,13 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 ) is not None
             elif mode in ("Flux.2 Klein", "Flux.2 Dev"):
                 targeted = "double_blocks." in key or "single_blocks." in key
+            elif mode == moss_settings.MODE:
+                targeted = re.search(r"(?:^|\.)layers\.\d+\.proj\.(?:q|k|v|qkv|o|ffn_up_gate|ffn_down)\.weight$", key) is not None
+                if targeted and key.endswith(".proj.qkv.weight"):
+                    if shape[0] % 3:
+                        raise ValueError("the fused MOSS QKV tensor has an invalid shape")
+                    shapes.extend([(int(shape[0]) // 3, int(shape[1]))] * 3)
+                    continue
             else:
                 targeted = True  # Krea 2 targets every Linear in its DiT.
             if targeted:
@@ -7234,6 +7294,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 estimates.append(("Final", self.entries["krea2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
             elif mode == "MiniMax H3 (Experimental)":
                 estimates.append(("Final", self.entries["minimax_h3_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
+            elif mode == moss_settings.MODE:
+                estimates.append(("Final", self.entries["moss_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
             else:
                 estimates.append(("Final", self.entries["flux2_dit_model"].get().strip(), self.entries["network_dim_low"].get().strip()))
 
@@ -7297,13 +7359,14 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_wan = (mode == "Wan 2.2")
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
+        is_moss = (mode == moss_settings.MODE)
         is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
         selected_h3_multimodal = bool(
             is_minimax_h3
             and self.entries.get("minimax_h3_training_workflow")
             and str(self.entries["minimax_h3_training_workflow"].get() or "").startswith("Video")
         )
-        supports_dop = is_krea2 or is_minimax_h3 or mode == "Flux.2 Klein"
+        supports_dop = is_krea2 or is_minimax_h3 or is_moss or mode == "Flux.2 Klein"
         dop_active = bool(supports_dop and not selected_h3_multimodal and self.entries.get("dop_enabled") and self.entries["dop_enabled"].var.get())
         all_valid = True
         invalid_fields = []
@@ -7335,6 +7398,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.entries["minimax_h3_video_vae"].is_required = h3_multimodal
         self.entries["minimax_h3_audio_vae"].is_required = h3_multimodal
         self.entries["dataset_config"].is_required = not refinement_only
+        self.entries["moss_dit_model"].is_required = is_moss
+        self.entries["moss_text_encoder"].is_required = is_moss and (self.entries["recache_text"].var.get() or wants_samples or has_face_stage)
         # A first-stage existing-LoRA face refinement has its own step count,
         # learning rate, and network shape. Standard SFT-only fields must not
         # block launch even when an older job snapshot left them blank.
@@ -7537,6 +7602,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else: self.hidden_frames['fp8_t5_frame'].pack_forget()
         except KeyError: pass
         try:
+            if mode == moss_settings.MODE:
+                self.hidden_frames['moss_repa'].pack(fill="x", padx=10, pady=10)
+                self.hidden_frames['moss_regularization'].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames['moss_repa'].pack_forget()
+                self.hidden_frames['moss_regularization'].pack_forget()
             if is_krea2 or is_minimax_h3:
                 self.hidden_frames['krea2_regularization'].configure(
                     text=("MiniMax H3 · Generalization (Experimental)" if is_minimax_h3 else "Krea 2 · Generalization (Experimental)")
@@ -7575,7 +7646,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             pass
         self._refresh_training_notes_preview()
         try:
-            supports_dop = is_krea2 or is_minimax_h3 or mode == "Flux.2 Klein"
+            supports_dop = is_krea2 or is_minimax_h3 or mode in ("Flux.2 Klein", moss_settings.MODE)
             if is_krea2:
                 self.regularization_availability_var.set(
                     "Krea 2 supports DOP, weight noise, and the optional depth anchor. All methods are disabled by default."
@@ -7585,6 +7656,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     "Native video/audio: DOP is shown but disabled because its loss and cache are not implemented in that trainer."
                     if h3_multimodal else
                     "MiniMax H3 supports experimental DOP, adapter weight noise, and depth anchoring. Depth should start with at least 30 swapped blocks."
+                )
+            elif mode == moss_settings.MODE:
+                self.regularization_availability_var.set(
+                    "MOSS supports experimental DOP, adapter weight noise and depth anchoring. All are disabled by default."
                 )
             elif mode == "Flux.2 Klein":
                 self.regularization_availability_var.set(
@@ -7810,10 +7885,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         else:
             steps = str(settings.get("max_train_steps") or "").strip()
             epochs = str(settings.get("max_train_epochs") or "").strip()
-            if steps:
-                parts.append(f"{steps} steps")
-            elif epochs:
+            if epochs:
                 parts.append(f"{epochs} epochs")
+            elif steps:
+                parts.append(f"{steps} steps")
             dataset = cls._dataset_note_label(settings.get("dataset_config"))
             if dataset:
                 parts.append(f"data={dataset}")
@@ -7851,6 +7926,18 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             if projector and str(settings.get("training_mode")) == "Krea 2":
                 strength = str(settings.get("krea2_projector_diff_strength") or "1").strip()
                 parts.append(f"projector={Path(projector).name}@{strength}")
+
+        if str(settings.get("training_mode")) == moss_settings.MODE:
+            if settings.get("moss_repa_enabled"):
+                parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
+            depth = enabled_number("moss_depth_anchor_weight")
+            if depth:
+                depth_text = f"depth {depth}@{settings.get('moss_depth_anchor_input_size') or 518}"
+                depth_text += " GPU" if settings.get("moss_keep_depth_helpers_on_gpu") else " offload"
+                parts.append(depth_text)
+            noise = enabled_number("moss_weight_noise_sigma")
+            if noise:
+                parts.append(f"weight-noise {noise} {settings.get('moss_weight_noise_mode') or 'relative'}")
 
         blocks = str(settings.get("blocks_to_swap") or "").strip()
         if blocks and blocks != "0":
@@ -8862,6 +8949,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         elif mode == "Krea 2":
             cache_commands = krea2_backend.build_cache_commands(settings, python_executable)
             training_commands = krea2_backend.build_commands(settings)
+        elif mode == moss_settings.MODE:
+            cache_commands = moss_backend.build_cache_commands(settings, python_executable)
+            training_commands = moss_backend.build_commands(settings)
         elif mode == "MiniMax H3 (Experimental)":
             cache_commands = minimax_h3_backend.build_cache_commands(settings, python_executable)
             training_commands = minimax_h3_backend.build_commands(settings)
@@ -8944,8 +9034,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 validate_face_lora(face_config.get("input_lora", ""), self.training_mode_var.get())
             except ValueError as exc:
                 messagebox.showerror("Staged Run", str(exc)); return
-        if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)"):
-            messagebox.showerror("Staged Run", "Face Refinement is available in Krea 2 and experimental MiniMax H3 modes.")
+        if any(item.get("type") == "face_refinement" for item in stages) and self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            messagebox.showerror("Staged Run", "Face Refinement is available in Krea 2, MiniMax H3 and MOSS modes.")
             return
         if any(item.get("type") == "face_refinement" for item in stages):
             if not self._check_face_refinement_dependencies():
@@ -8971,7 +9061,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return
 
         base_settings = self.get_settings()
-        dop_supported = base_settings.get("training_mode") in ("Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)")
+        dop_supported = base_settings.get("training_mode") in ("Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)", moss_settings.MODE)
         any_stage_dop = any(
             item.get("type", "standard") == "standard"
             and (
@@ -8987,6 +9077,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             text_encoder_key = (
                 "krea2_text_encoder" if base_settings.get("training_mode") == "Krea 2"
                 else "minimax_h3_text_encoder" if base_settings.get("training_mode") == "MiniMax H3 (Experimental)"
+                else "moss_text_encoder" if base_settings.get("training_mode") == moss_settings.MODE
                 else "flux2_text_encoder"
             )
             text_encoder_path = str(base_settings.get(text_encoder_key) or "").strip()
@@ -9178,6 +9269,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             face_backend = (
                 minimax_h3_face_backend
                 if run["base_settings"].get("training_mode") == "MiniMax H3 (Experimental)"
+                else moss_face_backend if run["base_settings"].get("training_mode") == moss_settings.MODE
                 else krea2_face_backend
             )
             face_config = dict(self._face_refinement_config)
@@ -9282,6 +9374,21 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         mode = settings.get("training_mode", "Wan 2.2")
         if self.start_btn['state'] == 'disabled':
             messagebox.showerror("Validation Error", "Please fill all required fields before training."); return
+        if mode in ("Flux.2 Klein", "Flux.2 Dev") and settings.get("flux2_reference_guided"):
+            if mode == "Flux.2 Dev":
+                messagebox.showerror("Validation Error", "Reference-Guided Learning currently supports Flux.2 Klein only.")
+                return
+            try:
+                cutoff = float(settings.get("flux2_reference_sigma_max") or "")
+                direct = float(settings.get("flux2_reference_direct_loss_weight") or "")
+                if not 0 <= cutoff <= 1 or direct < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                messagebox.showerror("Validation Error", "Klein Teacher Cutoff Sigma must be between 0 and 1, and Direct Dataset Learning Contribution cannot be negative.")
+                return
+            if str(settings.get("flux2_reference_conditions") or "").lower().startswith("other pictures") and not settings.get("recache_latents"):
+                messagebox.showerror("Validation Error", "Other-picture Klein learning needs control_path/control_path_N references and Rebuild Image/Latent Cache enabled.")
+                return
         if mode == "Krea 2":
             if settings.get("fp8_base") and not settings.get("fp8_scaled"):
                 messagebox.showerror("Validation Error", "Krea 2 requires FP8 Scaled when FP8 Base is enabled.")
@@ -9525,6 +9632,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             )
         elif mode == "Krea 2":
             cache_cmds = krea2_backend.build_cache_commands(settings, python_executable)
+        elif mode == moss_settings.MODE:
+            cache_cmds = moss_backend.build_cache_commands(settings, python_executable)
         elif mode == "MiniMax H3 (Experimental)":
             cache_cmds = minimax_h3_backend.build_cache_commands(settings, python_executable)
         else:
@@ -9615,6 +9724,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return wan_backend.build_commands(settings)
         elif mode == "Krea 2":
             return krea2_backend.build_commands(settings)
+        elif mode == moss_settings.MODE:
+            return moss_backend.build_commands(settings)
         elif mode == "MiniMax H3 (Experimental)":
             return minimax_h3_backend.build_commands(settings)
         else:

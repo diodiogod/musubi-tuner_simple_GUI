@@ -640,7 +640,9 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     else ""
                 )
                 is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
-                preview_mode = "MiniMax H3 (Experimental)" if is_h3 else ("Krea 2 Turbo" if "--turbo" in command else "Krea 2")
+                preview_mode = ("MiniMax H3 (Experimental)" if is_h3 else
+                                "MOSS-Image (Experimental)" if settings.get("training_mode") == "MOSS-Image (Experimental)" else
+                                "Krea 2 Turbo" if "--turbo" in command else "Krea 2")
                 try:
                     existing_outputs = [
                         str(path.resolve()) for path in save_path.glob("*")
@@ -712,9 +714,10 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     }
                 )
             if self.path == "/api/workspace/apply":
-                root = Path(str(body.get("root", ""))).expanduser()
-                if not str(body.get("root", "")).strip():
-                    raise ValueError("Choose a concept workspace folder first.")
+                root_value = str(body.get("root") or "").strip()
+                if not root_value:
+                    raise ValueError("Choose Project root using Browse at the top of New training > Dataset.")
+                root = Path(root_value).expanduser()
                 models = root / "models"
                 logs = root / "log"
                 models.mkdir(parents=True, exist_ok=True)

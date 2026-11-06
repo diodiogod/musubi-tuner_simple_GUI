@@ -91,6 +91,84 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                     "recache_latents",
                     "Other-picture learning needs control_path/control_path_N reference images in the image dataset and a rebuilt Image/Latent Cache.",
                 )
+    elif mode == "MOSS-Image (Experimental)":
+        if settings.get("moss_repa_enabled", False):
+            from argparse import Namespace
+            from backends.moss_settings import DEFAULTS as moss_defaults
+            from musubi_tuner.moss_image.repa_config import validate_config
+            repa_values = {}
+            for key in moss_defaults:
+                if key.startswith("moss_repa_"):
+                    raw = settings.get(key, moss_defaults[key])
+                    try:
+                        repa_values[key] = (float(raw) if key == "moss_repa_weight" else int(raw)
+                                            if key in {"moss_repa_block", "moss_repa_image_size", "moss_repa_cache_size"} else raw)
+                    except (TypeError, ValueError):
+                        error(key, "Enter a valid REPA number.")
+            if len(repa_values) == sum(key.startswith("moss_repa_") for key in moss_defaults):
+                try:
+                    validate_config(Namespace(**repa_values, mixed_precision=settings.get("mixed_precision", "bf16")))
+                except ValueError as exc:
+                    error("moss_repa_enabled", str(exc))
+        require("moss_dit_model", "MOSS-Image DiT")
+        has_face_stage = settings.get("use_staged_training") and any(
+            stage.get("type") == "face_refinement" for stage in configured_stages
+        )
+        if settings.get("recache_text") or settings.get("sample_prompts_data") or settings.get("sample_prompts") or has_face_stage:
+            require("moss_text_encoder", "Qwen3.5 text encoder")
+        if settings.get("fp8_base") or settings.get("fp8_scaled"):
+            error("fp8_base", "MOSS supports BF16 or ConvRot INT8, not this FP8 setting.")
+        try:
+            blocks = int(settings.get("blocks_to_swap") or 0)
+            if not 0 <= blocks <= 40:
+                raise ValueError
+        except (TypeError, ValueError):
+            error("blocks_to_swap", "MOSS supports between 0 and 40 swapped blocks.")
+        try:
+            if not 1 <= int(settings.get("moss_max_token_length") or 4096) <= 4096:
+                raise ValueError
+        except (TypeError, ValueError):
+            error("moss_max_token_length", "MOSS token limit must be between 1 and 4096.")
+        for key in ("moss_depth_anchor_weight", "moss_weight_noise_sigma"):
+            try:
+                value = float(settings.get(key) or 0)
+                if not 0 <= value < float("inf"):
+                    raise ValueError
+            except (TypeError, ValueError):
+                error(key, "Enter a finite, non-negative value.")
+        if settings.get("moss_depth_anchor_weight") and str(settings["moss_depth_anchor_weight"]) not in {"0", "0.0"}:
+            try:
+                size = int(settings.get("moss_depth_anchor_input_size") or 518)
+                if size <= 0 or size % 14:
+                    raise ValueError
+            except (TypeError, ValueError):
+                error("moss_depth_anchor_input_size", "Depth estimation size must be a positive multiple of 14.")
+        if settings.get("moss_pretraining_schedule", True):
+            from backends.moss_settings import DEFAULTS as moss_defaults
+            for key, check in (
+                ("moss_logit_mean", lambda v: abs(v) < float("inf")),
+                ("moss_logit_std", lambda v: 0 < v < float("inf")),
+                ("moss_timestep_cutoff", lambda v: 0 < v <= 1),
+                ("moss_timestep_uniform_ratio", lambda v: 0 <= v <= 1),
+            ):
+                try:
+                    if not check(float(settings.get(key, moss_defaults[key]))):
+                        raise ValueError
+                except (TypeError, ValueError):
+                    error(key, "Check the MOSS pretraining schedule value.")
+        try:
+            shift = settings.get("moss_sample_flow_shift")
+            shift = 5 if shift is None or str(shift).strip() == "" else float(shift)
+            if not 0 < shift < float("inf"):
+                raise ValueError
+        except (TypeError, ValueError):
+            error("moss_sample_flow_shift", "Preview shift must be a finite, positive number.")
+        try:
+            layers = str(settings.get("moss_sample_skip_layers", "22")).strip()
+            if layers and any(not 0 <= int(n.strip()) < 42 for n in layers.split(",")):
+                raise ValueError
+        except (TypeError, ValueError):
+            error("moss_sample_skip_layers", "Skipped layers must be block numbers from 0 to 41.")
     elif mode == "Krea 2":
         require("krea2_dit_model", "Krea 2 RAW DiT")
         require("krea2_text_encoder", "Krea 2 text encoder")
@@ -391,11 +469,13 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
     steps = str(settings.get("max_train_steps") or "").strip()
     if not settings.get("use_staged_training") and not _positive_integer(epochs) and not _positive_integer(steps):
         error("max_train_epochs", "Set a positive epoch or step limit.")
+    if not settings.get("use_staged_training") and _positive_integer(epochs) and _positive_integer(steps):
+        warning("max_train_steps", "Both limits are set; the epoch limit takes precedence. Clear epochs to train by steps.")
 
     h3_multimodal = mode == "MiniMax H3 (Experimental)" and str(settings.get("minimax_h3_training_workflow") or "").startswith("Video")
     if settings.get("dop_enabled") and not h3_multimodal:
-        if mode not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)"}:
-            error("dop_enabled", "DOP is supported only for Krea 2, FLUX.2 Klein, and experimental MiniMax H3.")
+        if mode not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
+            error("dop_enabled", "DOP is supported for Krea 2, FLUX.2 Klein, experimental MiniMax H3, and experimental MOSS-Image.")
         try:
             from musubi_tuner.training.dop import validate_dop_config
 

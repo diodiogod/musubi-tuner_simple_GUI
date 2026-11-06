@@ -28,7 +28,7 @@ _EXECUTION_OPTIONS = {
     "text_encoder_blocks_to_swap",
     "vae_chunk_size",
 }
-_MODEL_OPTIONS = {"vae", "text_encoder", "t5", "tokenizer"}
+_MODEL_OPTIONS = {"vae", "text_encoder", "t5", "tokenizer", "tokenizer_cache_dir"}
 
 
 def _path_identity(value):

@@ -262,7 +262,60 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
     return command, save_path
 
 
+def build_moss_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    required = {"MOSS DiT": settings.get("moss_dit_model"), "Flux.2 VAE": settings.get("vae_model"),
+                "Qwen3.5 text encoder": settings.get("moss_text_encoder")}
+    missing = [name for name, value in required.items() if not value or not Path(str(value)).is_file()]
+    if missing:
+        raise ValueError("Missing required MOSS paths: " + ", ".join(missing))
+    enabled = [prompt for prompt in prompts if prompt.get("enabled", True)]
+    if len(enabled) != 1:
+        raise ValueError("MOSS standalone preview generates one prompt at a time.")
+    prompt = enabled[0]
+    if not str(prompt.get("prompt") or "").strip():
+        raise ValueError("Enter a prompt for the MOSS preview.")
+    try:
+        width = int(setting_or_default(prompt, "width", 1024))
+        height = int(setting_or_default(prompt, "height", 1024))
+        steps = int(setting_or_default(prompt, "steps", 50))
+        seed = int(setting_or_default(prompt, "seed", 42))
+        cfg = float(setting_or_default(prompt, "guidance", setting_or_default(prompt, "cfg_scale", 3.0)))
+        shift = float(setting_or_default(prompt, "flow_shift", setting_or_default(settings, "moss_sample_flow_shift", 5.0)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("MOSS preview size, steps, seed, CFG, and flow shift must be numbers.") from exc
+    if min(width, height, steps) < 1 or width % 16 or height % 16 or not math.isfinite(shift) or shift <= 0 or not math.isfinite(cfg):
+        raise ValueError("MOSS preview width and height must be positive multiples of 16; steps and shift must be positive, and CFG and shift must be finite.")
+    save_path = Path(str(settings.get("output_dir") or "")).expanduser() / (str(settings.get("output_name") or "").strip() or "moss_test") / "sample_test"
+    save_path.mkdir(parents=True, exist_ok=True)
+    output = save_path / f"moss_preview_{uuid.uuid4().hex[:12]}.png"
+    attention = {"sdpa": "torch", "flash_attn": "flash", "sage_attn": "sageattn"}.get(
+        settings.get("attention_mechanism"), settings.get("attention_mechanism") or "torch")
+    command = [sys.executable, "src/musubi_tuner/moss_image_generate.py", "--dit", str(settings["moss_dit_model"]),
+               "--vae", str(settings["vae_model"]), "--text_encoder", str(settings["moss_text_encoder"]),
+               "--prompt", str(prompt.get("prompt") or ""), "--negative_prompt", str(prompt.get("neg") or ""),
+               "--output", str(output), "--width", str(width), "--height", str(height), "--steps", str(steps),
+               "--seed", str(seed), "--cfg_scale", str(cfg), "--flow_shift", str(shift),
+               "--skip_layers", str(settings.get("moss_sample_skip_layers", "22")),
+               "--blocks_to_swap", str(int(settings.get("blocks_to_swap") or 0)), "--attn_mode", str(attention),
+               "--moss_max_token_length", str(settings.get("moss_max_token_length") or 4096),
+               "--convrot_bwd_mode", str(settings.get("moss_convrot_bwd_mode") or "bf16")]
+    if settings.get("moss_tokenizer_cache_dir"):
+        command.extend(["--tokenizer_cache_dir", str(settings["moss_tokenizer_cache_dir"])])
+    if settings.get("moss_text_encoder_cpu_streaming", True):
+        command.append("--text_encoder_cpu_streaming")
+    if settings.get("moss_convrot_int8"):
+        command.append("--convrot_int8")
+    if settings.get("split_attn"):
+        command.append("--split_attn")
+    lora = resolve_preview_lora(settings)
+    if lora:
+        command.extend(["--network_weights", lora, "--lora_multiplier", str(preview_lora_multiplier(settings))])
+    return command, save_path
+
+
 def build_prompt_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    if settings.get("training_mode") == "MOSS-Image (Experimental)":
+        return build_moss_preview(settings, prompts)
     if settings.get("training_mode") == "MiniMax H3 (Experimental)":
         return build_minimax_h3_preview(settings, prompts)
     return build_krea_preview(settings, prompts)

@@ -1,0 +1,83 @@
+"""One real Musubi training step on CPU with a tiny MOSS transformer and real cache files."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import torch
+import pytest
+from PIL import Image
+from safetensors import safe_open
+
+from musubi_tuner.dataset.architectures import ARCHITECTURE_MOSS_IMAGE
+from musubi_tuner.dataset.image_video_dataset import ImageDataset, ItemInfo
+from musubi_tuner.moss_image.cache import save_embeddings, save_latents
+from musubi_tuner.training.dop import dop_signature
+
+
+@pytest.mark.parametrize("repa", [False, True])
+def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa):
+    Image.new("RGB", (32, 32)).save(tmp_path / "a.png")
+    (tmp_path / "a.txt").write_text("a person_token portrait", encoding="utf-8")
+    dataset = ImageDataset(resolution=(32, 32), caption_extension=".txt", batch_size=1,
+                           num_repeats=1, enable_bucket=False, bucket_no_upscale=False,
+                           image_directory=str(tmp_path), cache_directory=str(tmp_path),
+                           architecture=ARCHITECTURE_MOSS_IMAGE)
+    item = ItemInfo(str(tmp_path / "a.png"), "a person_token portrait", (32, 32))
+    item.latent_cache_path = dataset.get_latent_cache_path(item)
+    item.text_encoder_output_cache_path = dataset.get_text_encoder_output_cache_path(item)
+    save_latents(item, torch.randn(128, 1, 2, 2))
+    save_embeddings(item, torch.randn(3, 4096), torch.randn(2, 4096), dop_signature("person_token", "a person"))
+    dataset_file = tmp_path / "dataset.toml"
+    folder = str(tmp_path).replace("\\", "/")
+    dataset_file.write_text(f'[[datasets]]\nresolution = [32, 32]\nbatch_size = 1\nimage_directory = "{folder}"\n', encoding="utf-8")
+    dit = tmp_path / "tiny-dummy.safetensors"
+    dit.touch()
+    script = """
+import sys, torch
+from musubi_tuner.moss_image.models import MossImage
+from musubi_tuner.moss_image_train_network import MossImageNetworkTrainer, moss_setup_parser, setup_parser_common
+torch.set_num_threads(2)
+trainer=MossImageNetworkTrainer()
+trainer.load_transformer=lambda *a, **k: MossImage(dim=32, ffn_dim=48, num_heads=2, num_layers=2, text_dim=4096, freq_dim=16, latent_channels=128)
+class TinyVAE(torch.nn.Module):
+    def decode(self, x):
+        return torch.nn.functional.interpolate(x[:, :3], size=(28, 28))
+trainer.load_vae=lambda *a, **k: TinyVAE()
+args=moss_setup_parser(setup_parser_common()).parse_args(sys.argv[1:])
+args.dit_dtype='float32'
+args.vae_dtype='float32'
+trainer.train(args)
+"""
+    cmd = [sys.executable, "-c", script, "--dataset_config", str(dataset_file), "--dit", str(dit),
+           "--output_dir", str(tmp_path / "out"), "--output_name", "tiny", "--network_module", "networks.lora_moss_image",
+           "--network_dim", "2", "--network_alpha", "2", "--max_train_steps", "1", "--learning_rate", "0.0001",
+           "--optimizer_type", "AdamW", "--max_data_loader_n_workers", "0", "--sdpa", "--mixed_precision", "no",
+           "--moss_pretraining_schedule", "--gradient_checkpointing",
+           "--dop_trigger_word", "person_token", "--dop_class_word", "a person", "--dop_loss_weight", "0.1",
+           "--save_state"]
+    if repa:
+        from transformers import Dinov2Config, Dinov2Model
+        encoder_path = tmp_path / "tiny-dino"
+        Dinov2Model(Dinov2Config(hidden_size=16, num_hidden_layers=1, num_attention_heads=2,
+                               intermediate_size=32, image_size=28, patch_size=14)).save_pretrained(encoder_path)
+        cmd += ["--moss_repa_enabled", "--moss_repa_block", "0", "--moss_repa_image_size", "28",
+                "--moss_repa_encoder", str(encoder_path), "--vae", str(dit)]
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", ACCELERATE_USE_CPU="true", PYTHONIOENCODING="utf-8")
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    artifact = tmp_path / "out" / "tiny.safetensors"
+    assert artifact.is_file(), result.stdout + "\n" + result.stderr
+    with safe_open(str(artifact), framework="pt", device="cpu") as handle:
+        assert any(key.startswith("lora_unet_layers_0_proj_q.") for key in handle.keys())
+        assert not any("projector" in key or "repa" in key for key in handle.keys())
+        if repa:
+            assert handle.metadata()["ss_moss_repa_enabled"] == "True"
+    state = tmp_path / "out" / "tiny-state"
+    assert state.is_dir(), result.stdout + "\n" + result.stderr
+    if repa:
+        assert (state / "custom_checkpoint_0.pkl").is_file()
+    resumed = subprocess.run(cmd + ["--resume", str(state), "--output_name", "resumed"], env=env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert resumed.returncode == 0, resumed.stdout + "\n" + resumed.stderr
+    assert (tmp_path / "out" / "resumed.safetensors").is_file()

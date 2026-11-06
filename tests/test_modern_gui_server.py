@@ -23,6 +23,26 @@ def request_json(url, payload=None):
     return json.load(urllib.request.urlopen(request))
 
 
+def test_workspace_layout_uses_project_root_and_names_the_control_on_error(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MusubiWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/api/workspace/apply"
+    project = tmp_path / "my concept"
+    try:
+        for empty in (None, "", "   "):
+            with pytest.raises(urllib.error.HTTPError) as failed:
+                request_json(url, {"root": empty})
+            assert "Choose Project root" in json.load(failed.value)["error"]
+        result = request_json(url, {"root": "  " + str(project) + "  "})
+        assert Path(result["output_dir"]) == project / "models"
+        assert Path(result["logging_dir"]) == project / "log"
+        assert (project / "models").is_dir() and (project / "log").is_dir()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_server_hosts_app_and_core_read_only_apis():
     server = ThreadingHTTPServer(("127.0.0.1", 0), MusubiWebHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

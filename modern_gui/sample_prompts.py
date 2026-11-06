@@ -32,6 +32,7 @@ def serialize_sample_prompt(prompt: dict[str, Any], mode: str) -> str:
 
     line = " ".join(str(prompt.get("prompt") or "").split())
     is_krea2 = mode == "Krea 2"
+    is_moss = mode == "MOSS-Image (Experimental)"
 
     def add(flag: str, key: str) -> None:
         nonlocal line
@@ -42,18 +43,20 @@ def serialize_sample_prompt(prompt: dict[str, Any], mode: str) -> str:
     add("w", "width")
     add("h", "height")
     add("s", "steps")
-    add("l" if is_krea2 else "g", "guidance")
+    add("l" if is_krea2 or is_moss else "g", "guidance")
     if is_krea2:
         add("mu", "mu")
         add("y1", "y1")
         add("y2", "y2")
+    elif is_moss:
+        add("fs", "flow_shift")
     else:
         add("f", "frames")
         add("fs", "flow_shift")
         add("l", "cfg_scale")
     add("d", "seed")
     add("n", "neg")
-    if not is_krea2:
+    if not is_krea2 and not is_moss:
         add("i", "image_path")
     return line
 

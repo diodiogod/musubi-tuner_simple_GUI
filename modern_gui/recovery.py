@@ -457,12 +457,13 @@ def prepare_exact_recovery(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepare_face_refinement(job: dict[str, Any]) -> dict[str, Any]:
-    """Load a recorded Krea run as a one-stage face-refinement recipe."""
+    """Load a supported recorded run as a one-stage face-refinement recipe."""
     snapshot = job.get("settings_snapshot") or job.get("settings")
-    if not isinstance(snapshot, dict) or snapshot.get("training_mode") != "Krea 2":
-        raise ValueError("Face refinement needs a recorded Krea 2 job with a complete settings snapshot.")
+    if not isinstance(snapshot, dict) or snapshot.get("training_mode") not in {"Krea 2", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
+        raise ValueError("Face refinement needs a recorded Krea 2, MiniMax H3, or MOSS-Image job with a complete settings snapshot.")
+    mode = snapshot["training_mode"]
     from musubi_tuner.face_refinement.face_models import default_model_dir
-    from musubi_tuner.face_refinement.lora_validation import validate_krea2_lora
+    from musubi_tuner.face_refinement.lora_validation import validate_face_lora
     from musubi_tuner.face_refinement.pose_plan import default_pose_plan
 
     run_name = effective_run_name(snapshot)
@@ -479,13 +480,13 @@ def prepare_face_refinement(job: dict[str, Any]) -> dict[str, Any]:
     input_lora = None
     for candidate in candidates:
         try:
-            validate_krea2_lora(candidate.resolve())
+            validate_face_lora(candidate.resolve(), mode)
             input_lora = candidate.resolve()
             break
         except (OSError, ValueError):
             continue
     if input_lora is None:
-        raise FileNotFoundError("No complete Krea 2 LoRA could be found for this job.")
+        raise FileNotFoundError(f"No complete {mode} LoRA could be found for this job.")
 
     settings = copy.deepcopy(snapshot)
     source_name = str(settings.get("output_name") or job.get("output_name") or "krea-lora")
@@ -505,6 +506,10 @@ def prepare_face_refinement(job: dict[str, Any]) -> dict[str, Any]:
         "license_acknowledged": False, "pose_aware": False, "pose_reward_weight": 0.20,
         "pose_min_references": 2, "pose_plan": default_pose_plan(), "blocks_to_swap": 10, "gpu_id": "auto",
     }
+    if mode == "MiniMax H3 (Experimental)":
+        defaults.update({"cfg_scale": 1.0, "blocks_to_swap": 35})
+    elif mode == "MOSS-Image (Experimental)":
+        defaults.update({"cfg_scale": 3.0, "blocks_to_swap": 30})
     defaults.update(copy.deepcopy(snapshot.get("face_refinement_config") or {}))
     defaults.update({"input_mode": "existing_lora", "input_lora": str(input_lora)})
     settings.update({

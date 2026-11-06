@@ -2,13 +2,20 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
+from safetensors.torch import save_file
 
 from modern_gui.face_stages import prepare_face_stage, validate_face_recipe_for_mode
 
 
+def write_test_lora(path, prefix):
+    save_file({f"{prefix}.lora_down.weight": torch.zeros(2, 4),
+               f"{prefix}.lora_up.weight": torch.zeros(4, 2)}, str(path))
+
+
 def test_face_stage_builds_prompt_and_reference_manifests(tmp_path: Path):
     input_lora = tmp_path / "input.safetensors"
-    input_lora.write_bytes(b"lora")
+    write_test_lora(input_lora, "lora_unet_blocks_0_attn_wq")
     reference = tmp_path / "face.png"
     reference.write_bytes(b"image")
     base = {
@@ -49,7 +56,7 @@ def test_face_stage_builds_prompt_and_reference_manifests(tmp_path: Path):
 
 def test_minimax_h3_face_stage_uses_experimental_backend(tmp_path: Path):
     input_lora = tmp_path / "input.safetensors"
-    input_lora.write_bytes(b"lora")
+    write_test_lora(input_lora, "lora_unet_blocks_0_attn_qkv_proj")
     reference = tmp_path / "face.png"
     reference.write_bytes(b"image")
     base = {

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from backends import krea2_face, minimax_h3_face
+from backends import krea2_face, minimax_h3_face, moss_image_face
 
 
 def validate_face_recipe_for_mode(mode: str, face_config: dict[str, Any]) -> None:
@@ -28,6 +28,9 @@ def validate_face_recipe_for_mode(mode: str, face_config: dict[str, Any]) -> Non
             raise ValueError("MiniMax H3 Face Refinement resolution must be a positive multiple of 32.")
         if not 30 <= blocks <= 48:
             raise ValueError("MiniMax H3 Face Refinement needs 30–48 swapped blocks on a 24 GB GPU; start at 35.")
+    elif mode == "MOSS-Image (Experimental)":
+        if resolution < 16 or resolution % 16 or not 0 <= blocks <= 40:
+            raise ValueError("MOSS Face Refinement resolution must be a multiple of 16 and blocks to swap must be 0–40.")
     elif resolution < 16 or resolution % 16 or not 0 <= blocks <= 26:
         raise ValueError("Krea 2 Face Refinement resolution must be a multiple of 16 and blocks to swap must be 0–26.")
 
@@ -54,15 +57,18 @@ def prepare_face_stage(
     input_lora: Path,
 ) -> tuple[dict[str, Any], list[str], Path]:
     mode = base_settings.get("training_mode")
-    if mode not in {"Krea 2", "MiniMax H3 (Experimental)"}:
-        raise ValueError("Face Refinement stages require Krea 2 or MiniMax H3 mode.")
-    face_backend = minimax_h3_face if mode == "MiniMax H3 (Experimental)" else krea2_face
+    if mode not in {"Krea 2", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
+        raise ValueError("Face Refinement stages require Krea 2, MiniMax H3, or MOSS-Image mode.")
+    face_backend = minimax_h3_face if mode == "MiniMax H3 (Experimental)" else moss_image_face if mode == "MOSS-Image (Experimental)" else krea2_face
     face_config = copy.deepcopy(base_settings.get("face_refinement_config") or {})
     validate_face_recipe_for_mode(str(mode), face_config)
     if not face_config.get("preflight_report"):
         raise ValueError("Face Refinement needs a completed face-analysis preflight report.")
     if not input_lora.is_file():
         raise FileNotFoundError(f"Face Refinement input LoRA does not exist: {input_lora}")
+    from musubi_tuner.face_refinement.lora_validation import validate_face_lora
+
+    validate_face_lora(input_lora, str(mode))
 
     stage_steps = str(stage.get("steps", "")).strip()
     if not stage_steps.isdigit() or int(stage_steps) < 1:

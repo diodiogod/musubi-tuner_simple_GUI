@@ -25,6 +25,7 @@ This fork is no longer just a Wan 2.2 front-end. The GUI now supports multiple m
 - `Flux.2 Dev`
 - `Krea 2`
 - `MiniMax H3 (Experimental)` — still-image LoRA directly from the pruned ConvRot INT8 base
+- `MOSS-Image (Experimental)` — image LoRA using the MOSS-Image Base model, including ComfyUI ConvRot checkpoints
 
 It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling, monitoring, continuation training, and conversion easier to manage from a single interface.
 
@@ -40,7 +41,7 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - Save/load settings and auto-restore of your last session
 - LoRA conversion tools
 - Accelerate setup tab for first-time installation
-- Guided Differential Output Preservation (DOP) for Krea 2, experimental MiniMax H3, and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
+- Guided Differential Output Preservation (DOP) for Krea 2, experimental MiniMax H3 and MOSS-Image, and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
 - Dedicated Training Notes workspace with permanent custom comments plus an optional live hyperparameter summary rebuilt for each run and embedded in LoRA metadata
 
 ## Current Workspace Layout
@@ -59,6 +60,18 @@ The app is organized into these main pages:
 The GUI adjusts required fields and available options based on the selected training mode.
 
 ## Supported Modes
+
+### MOSS-Image (Experimental)
+
+Train image LoRAs from a MOSS-Image Base checkpoint, Qwen3.5-9B text encoder,
+and Flux.2 VAE. Both interfaces expose caption/latent caching, image previews,
+block swapping, optional DOP, REPA visual guidance and depth anchoring, and experimental staged face
+refinement. The DiT accepts ComfyUI ConvRot INT8 or BF16 weights; the text
+encoder also accepts ComfyUI W4A8 with an experimental portable decoder.
+Short real-model GPU smoke tests have passed, including a 1024px LoRA update.
+Long-run quality and memory requirements across configurations are not yet established.
+
+Docs: [MOSS-Image experimental guide](./docs/moss_image_experimental.md)
 
 ### Wan 2.2
 
@@ -342,12 +355,12 @@ using the same dataset, seed, step count, and sample prompts. Start with weight-
 `0.0125` and depth-anchor strength `0.01`. See [the Krea 2 guide](./docs/krea2.md#experimental-lora-generalization-controls-in-this-gui-fork)
 for implementation details, cautions, and attribution.
 
-### Krea 2 / MiniMax H3 Face Refinement (DRaFT, Experimental)
+### Krea 2 / MiniMax H3 / MOSS Face Refinement (DRaFT, Experimental)
 
 Face Refinement is an optional **staged-training step** for human-identity LoRAs. It can follow standard
-training automatically or run by itself from an existing Krea 2 or MiniMax H3 LoRA. In refinement-only mode,
+training automatically or run by itself from an existing LoRA for one of these models. In refinement-only mode,
 select the source LoRA in the Face Refinement window; no dataset TOML or dummy training stage is required.
-Once the starting LoRA has learned the subject, Krea generates temporary images from a varied prompt list. A
+Once the starting LoRA has learned the subject, the selected model generates temporary images from a varied prompt list. A
 frozen face-recognition model compares each generated face with embeddings prepared from your
 reference folder, and the similarity reward updates the LoRA through the final denoising step.
 
@@ -377,7 +390,7 @@ reference folder, and the similarity reward updates the LoRA through the final d
   compared against the baseline, then **Build Plan from Weak Poses** prepares an editable plan.
   The UI shows the trigger and LoRA strength used. Unique prompts are encoded once before the
   image model loads, then reused while seed variants generate sequentially.
-- MiniMax H3 uses its native compact standalone preview instead of the Krea-only fixed Turbo evaluator. Its heavier DRaFT path starts at 35 swapped blocks on 24 GB and remains more experimental than baseline H3 LoRA training.
+- MiniMax H3 and MOSS use their standalone previews instead of the Krea-only fixed Turbo evaluator. MiniMax's heavier DRaFT path starts at 35 swapped blocks on 24 GB; MOSS face refinement has only a short real-model smoke test so far.
 - Double-click a pose in the embedded evaluation report to inspect all generated images for that
   angle in a thumbnail gallery. Refinement setup also exposes the intermediate LoRA save interval;
   `0` disables intermediate checkpoints, while the final LoRA is always saved.
@@ -389,7 +402,7 @@ Open **Face Refinement**, choose the starting-LoRA mode and trigger word in **Co
 select AntelopeV2, run **Analyze Faces & Poses**, then add a `face_refinement` stage in the staged-training
 window. The recommended starting point is 30 updates at 512px with 12 denoising steps and
 `draft_k=1`. Optional dependencies are installed with `pip install -e ".[face_refinement]"`.
-For a recorded Krea run, the **Jobs** page also provides **Refine Face Identity…** in the
+For a recorded Krea, MiniMax H3, or MOSS run, the **Jobs** page also provides **Refine Face Identity…** in the
 right-click menu; it restores the run's model paths, finds its complete LoRA, and prepares a
 refinement-only plan without starting it.
 
@@ -403,7 +416,7 @@ separate terms; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 - Save prompt presets without deleting older ones
 - Enable only the prompts you want active for a run
 - Duplicate a prompt and edit the copy
-- Test Krea 2 and individual MiniMax H3 prompts directly from the GUI
+- Test Krea 2, MiniMax H3, and MOSS prompts directly from the GUI
 - Preview generated sample images inside the app
 - Open a global prompt library with search, tags, collections, favorites, and model filters
 - Collect and deduplicate prompts from current settings or historical jobs

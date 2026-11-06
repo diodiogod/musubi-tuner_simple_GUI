@@ -77,6 +77,10 @@ function schemaFields(sectionIds) {
   return state.schema.sections.filter(s => sectionIds.includes(s.id)).flatMap(s => s.fields);
 }
 const HELP = {
+  network_type: "Choose the adapter to train. LoRA is the standard starting point; LoKr and LoHa are alternatives with different weight structures. MOSS face refinement currently accepts LoRA adapters only.",
+  lokr_factor: "Controls how LoKr splits its weights. Leave this empty (or use -1) for automatic selection. Set a positive factor only when following a LoKr recipe that calls for it.",
+  max_train_epochs: "How many times to work through the dataset. Entering an epoch limit clears the separate step limit.",
+  max_train_steps: "Stop after this many optimizer updates instead of counting epochs. Entering a step limit clears the epoch limit.",
   minimax_h3_block_memory_mode: "Automatic keeps more frozen blocks on the GPU for smaller batches and streams more for larger batches. Fixed preserves your existing swap count.",
   minimax_h3_auto_swap_reserve_gb: "Extra VRAM headroom for temporary work and other apps. Start with 2 GiB. More is safer but may slow training.",
   minimax_h3_auto_swap_min_blocks: "Advanced lower limit, not a fixed count. Start with 2.",
@@ -220,10 +224,10 @@ const LONG_HELP_COPY = {
   rename_final_artifacts_to_epoch: "The trainer's final LoRA normally keeps the run name, while periodic checkpoints receive epoch or step suffixes. When this option is enabled, the Modern GUI renames the final LoRA and final saved-state folder to the last epoch suffix, such as run-000002. Disable it to leave the final run-name files untouched."
 };
 function helpFor(field) {
-  return HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
+  return field.help || HELP[field.key] || `Advanced Musubi setting: ${field.label}. Leave its default value unless a model-specific recipe tells you to change it. Internal option: ${field.key}.`;
 }
 function openHelp(field) {
-  $("#help-title").textContent = field.label; $("#help-copy").textContent = LONG_HELP_COPY[field.key] || helpFor(field); $("#help-key").textContent = field.key;
+  $("#help-title").textContent = field.label; $("#help-copy").textContent = field.help_detail || LONG_HELP_COPY[field.key] || helpFor(field); $("#help-key").textContent = field.key;
   $("#help-dialog").showModal();
 }
 
@@ -247,6 +251,9 @@ function applyTheme(value, {syncSetting = true, markChanged = false, persist = t
 }
 
 function fieldControl(field, {wide = false} = {}) {
+  if (field.key === "vae_model" && state.settings.training_mode === "MOSS-Image (Experimental)") {
+    field = {...field, label:"Flux.2 VAE", help:"Select a Flux.2 VAE for MOSS-Image. Both the standard and small-decoder versions are supported. Wan, Krea 2, and MiniMax H3 VAEs are different and will not work. Rebuild the image/latent cache after changing the VAE."};
+  }
   const wrap = document.createElement("div");
   wrap.className = `field${wide || field.type === "textarea" || field.type === "path" ? " wide" : ""}`;
   wrap.dataset.key = field.key; wrap.dataset.modes = (field.modes || []).join("|"); wrap.dataset.search = `${field.label} ${field.key}`.toLowerCase();
@@ -261,7 +268,7 @@ function fieldControl(field, {wide = false} = {}) {
   const labelRow = document.createElement("div");
   labelRow.className = "field-label-row";
   labelRow.append(label);
-  if (LONG_HELP.has(field.key)) {
+  if (LONG_HELP.has(field.key) || field.help) {
     const help = document.createElement("button");
     help.type = "button"; help.className = "help"; help.textContent = "?";
     help.dataset.tip = "Open detailed guidance";
@@ -292,15 +299,19 @@ function fieldControl(field, {wide = false} = {}) {
       input = document.createElement("textarea"); input.value = state.settings[field.key] ?? "";
     } else {
       input = document.createElement("input");
-      input.type = looksNumeric(state.settings[field.key]) ? "number" : "text";
-      if (input.type === "number") input.step = "any";
+      input.type = field.key === "moss_sample_skip_layers" ? "text" : field.step != null || looksNumeric(state.settings[field.key]) ? "number" : "text";
+      if (input.type === "number") {
+        input.step = String(field.step ?? "any");
+        if (field.min != null) input.min = String(field.min);
+        if (field.max != null) input.max = String(field.max);
+      }
       input.value = state.settings[field.key] ?? "";
       if (field.type === "path") input.placeholder = "Paste or choose a local path";
     }
     if(field.type==="path"){
       const pathRow=document.createElement("div");pathRow.className="path-control";pathRow.append(input);
       const browse=document.createElement("button");browse.type="button";browse.className="quiet";browse.textContent="Browse";
-      const directoryKeys=new Set(["output_dir","project_root","logging_dir","convert_output_dir","resume_path"]);
+      const directoryKeys=new Set(["output_dir","project_root","logging_dir","convert_output_dir","resume_path","moss_tokenizer_cache_dir"]);
       browse.addEventListener("click",async()=>{try{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:directoryKeys.has(field.key)?"directory":"file",initial:input.value})});if(result.path){input.value=result.path;commit()}}catch(e){toast(e.message,"error")}});pathRow.append(browse);wrap.append(pathRow);
     }else wrap.append(input);
     if(customInput)wrap.append(customInput);
@@ -319,6 +330,11 @@ function fieldControl(field, {wide = false} = {}) {
   const commit = () => {
     if(customInput){customInput.hidden=input.value!=="__custom__";if(input.value==="__custom__")customInput.focus()}
     state.settings[field.key] = field.type === "boolean" ? input.checked : input.value==="__custom__" ? customInput.value : input.value;
+    if (["max_train_epochs","max_train_steps"].includes(field.key) && input.value.trim()) {
+      const other = field.key === "max_train_epochs" ? "max_train_steps" : "max_train_epochs";
+      state.settings[other] = "";
+      document.querySelectorAll(`.field[data-key="${other}"] input`).forEach(control => control.value = "");
+    }
     if(field.key==="minimax_h3_training_assistant_enabled"&&!input.checked&&state.settings.minimax_h3_base_preservation_enabled){
       state.settings.minimax_h3_base_preservation_reference="Base only";
       toast("Drift Reference changed to Base only because the Ostris assistant is off.");
@@ -370,7 +386,7 @@ function fieldControl(field, {wide = false} = {}) {
       const presetControl=document.querySelector('[data-key="minimax_h3_quality_protection_preset"] select');
       if(presetControl)presetControl.value="Custom";
     }
-    if(["minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided"].includes(field.key)){
+    if(["network_type","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided","moss_pretraining_schedule"].includes(field.key)){
       sync();renderGuided();return;
     }
     if(field.key === "krea2_generalization_preset" && applyGeneralizationPreset(input.value)) return;
@@ -476,12 +492,15 @@ function renderGuided() {
   $$("#mode-choices [data-mode]").forEach(button => button.addEventListener("click", () => selectMode(button.dataset.mode)));
   const mode = state.settings.training_mode;
   const h3Multimodal=mode==="MiniMax H3 (Experimental)"&&String(state.settings.minimax_h3_training_workflow||"").startsWith("Video");
-  const h3Explainer=$("#h3-workflow-explainer");h3Explainer.hidden=mode!=="MiniMax H3 (Experimental)";
+  const h3Explainer=$("#h3-workflow-explainer");h3Explainer.hidden=!['MiniMax H3 (Experimental)','MOSS-Image (Experimental)'].includes(mode);
   if(mode==="MiniMax H3 (Experimental)")h3Explainer.innerHTML=h3Multimodal
     ? `<div class="workflow-action"><div><strong>Native synchronized video/audio training</strong><small>T2VA uses text, FL2VA extracts first and last frames from each target clip automatically, and Ref2VA uses ordered JSONL references. Choose exactly what contributes to loss below.</small></div><button class="quiet" data-open-h3-builder>Open MiniMax dataset builder →</button></div>`
     : `<div class="issue warning">Compact still-image training uses the proven pruned ConvRot workflow. Switch Training Media Type below when you want native video/audio datasets.</div>`;
+  else if(mode==="MOSS-Image (Experimental)")h3Explainer.innerHTML='<div class="issue warning">Experimental MOSS text-to-image training uses captioned images. Video datasets and image-edit conditioning are not supported by this training mode.</div>';
   h3Explainer.querySelector("[data-open-h3-builder]")?.addEventListener("click",()=>{go("datasets");ensureDatasetLoaded();setTimeout(()=>setDatasetTab("h3",{load:false}),0)});
-  const modelKeys = mode === "Krea 2"
+  const modelKeys = mode === "MOSS-Image (Experimental)"
+    ? ["moss_dit_model","moss_text_encoder","vae_model","moss_tokenizer_cache_dir","moss_max_token_length","moss_text_encoder_cpu_streaming","moss_convrot_int8","moss_convrot_bwd_mode","moss_lora_target_preset"]
+    : mode === "Krea 2"
     ? ["krea2_dit_model","krea2_text_encoder","vae_model","krea2_turbo_dit","krea2_turbo_lora","krea2_projector_diff"]
     : mode === "MiniMax H3 (Experimental)"
       ? (h3Multimodal
@@ -490,11 +509,17 @@ function renderGuided() {
     : mode?.startsWith("Flux.2") ? ["flux2_dit_model","flux2_text_encoder","vae_model"]
     : ["is_i2v","dit_high_noise","dit_low_noise","t5_model","clip_model","vae_model"];
   appendFields($("#model-fields"), modelKeys);
-  appendFields($("#data-fields"), ["dataset_config","project_root","output_dir","output_name"]);
+  appendFields($("#workspace-root-fields"), ["project_root"]);
+  appendFields($("#data-fields"), ["dataset_config","output_dir","output_name"]);
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
   const methodKeys=["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps"];
-  if(!h3Multimodal)methodKeys.push("timestep_sampling","discrete_flow_shift");
+  if(state.settings.network_type==="LoKr")methodKeys.splice(1,0,"lokr_factor");
+  if(mode==="MOSS-Image (Experimental)"){
+    methodKeys.push("moss_pretraining_schedule");
+    if(state.settings.moss_pretraining_schedule)methodKeys.push("moss_logit_mean","moss_logit_std","moss_timestep_cutoff","moss_timestep_uniform_ratio");
+    else methodKeys.push("timestep_sampling","discrete_flow_shift");
+  }else if(!h3Multimodal)methodKeys.push("timestep_sampling","discrete_flow_shift");
   if(!h3Multimodal&&(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"))methodKeys.push("krea2_generalization_preset");
   appendFields($("#method-fields"),methodKeys);
   renderTrainingStructure();
@@ -515,7 +540,10 @@ function renderGuided() {
   LONG_HELP.add("minimax_h3_training_assistant_preset");
   const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
   const fluxRefKeys=["flux2_reference_guided","flux2_reference_conditions","flux2_reference_sigma_max","flux2_reference_direct_loss_weight"];
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key)&&!fluxRefKeys.includes(key));
+  const repaKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>key.startsWith("moss_repa_"));
+  $("#moss-repa-settings").hidden=mode!=="MOSS-Image (Experimental)";
+  appendFields($("#moss-repa-fields"),repaKeys);
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!repaKeys.includes(key)&&!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key)&&!fluxRefKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
   if(mode==="Flux.2 Klein"){
     appendFields($("#regularization-fields"),["flux2_reference_guided"]);
@@ -526,7 +554,7 @@ function renderGuided() {
     if(fluxRefField)markUnavailable(fluxRefField,"Reference-guided learning is implemented for FLUX.2 Klein only; Dev uses a different training target.");
   }
   $("#regularization-settings").hidden=h3Multimodal;
-  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode);
+  const supportsDop=["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode);
   $("#dop-settings").hidden=!supportsDop;
   appendFields($("#dop-fields"),dopKeys);
   if(mode==="MiniMax H3 (Experimental)"&&h3Multimodal)markUnavailable($("#dop-fields"),"Not available in native video/audio training yet. The setting is shown so the limitation is visible, but it is not sent to the native trainer.");
@@ -592,6 +620,11 @@ function renderGuided() {
 }
 function selectMode(mode) {
   state.settings.training_mode = mode;
+  if(mode === "MOSS-Image (Experimental)"){
+    Object.assign(state.settings,{mixed_precision:"bf16",attention_mechanism:"sdpa",gradient_checkpointing:true,
+      blocks_to_swap:"30",fp8_base:false,fp8_scaled:false,timestep_sampling:"sigmoid",discrete_flow_shift:"1.0"});
+    const face=faceConfig();face.cfg_scale ??= 3;face.blocks_to_swap ??= 30;
+  }
   if(mode === "MiniMax H3 (Experimental)"){
     Object.assign(state.settings, {
       network_type:"LoRA", network_dim_low:"16", network_alpha_low:"16",
@@ -713,6 +746,11 @@ function renderHome() {
 }
 function sync(markChanged = true) {
   $("#settings-json").value = JSON.stringify(state.settings, null, 2);
+  const workspaceRoot=String(state.settings.project_root||"").trim();
+  $("#apply-workspace").disabled=!workspaceRoot;
+  $("#workspace-setup-hint").textContent=workspaceRoot
+    ? "Sets the LoRA output to models/ and training logs to log/ inside the selected folder. Review the updated output path below."
+    : "Choose Project root above using Browse, then set up its output and log folders. This is optional; you can set paths individually.";
   renderHome(); renderReview(); renderTrainingSummary();
   if (markChanged) setDirty(true);
 }
@@ -754,6 +792,7 @@ function uniqueStageLabel(base="Stage"){
 function defaultPromptForMode(){
   const mode=state.settings.training_mode||"Wan 2.2",turbo=mode==="Krea 2"&&(String(state.settings.krea2_turbo_dit||"").trim()||String(state.settings.krea2_turbo_lora||"").trim());
   if(mode==="Krea 2")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:turbo?8:28,seed:42,guidance:turbo?1:5.5,...(turbo?{mu:1.15}:{})};
+  if(mode==="MOSS-Image (Experimental)")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:50,seed:42,guidance:3,flow_shift:5};
   if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:39,fps:24,steps:20,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
   if(mode==="Wan 2.2")return {enabled:true,prompt:"",neg:"",width:832,height:480,frames:25,steps:20,seed:42,guidance:5,cfg_scale:1};
   return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:20,seed:42,guidance:5,cfg_scale:1};
@@ -803,7 +842,7 @@ function stageCardIssues(stage,index){
   if(!/^\d+$/.test(limit)||Number(limit)<1)issues.push(`${name} needs a positive limit`);
   if(stage.type!=="face_refinement"&&!String(stage.dataset_config||"").trim())issues.push(`${name} needs a dataset TOML`);
   if(stage.type!=="face_refinement"&&stage.dop_mode==="enable"){
-    if(!["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
+    if(!["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode))issues.push(`${name} cannot enable DOP for this model`);
     const strength=Number(stage.dop_loss_weight||state.settings.dop_loss_weight||0),trigger=String(stage.dop_trigger_word||state.settings.dop_trigger_word||"").trim(),classWord=String(stage.dop_class_word||state.settings.dop_class_word||"").trim();
     if(!Number.isFinite(strength)||strength<=0)issues.push(`${name} needs a positive DOP strength`);
     if(!trigger||!classWord||trigger.toLowerCase()===classWord.toLowerCase())issues.push(`${name} needs distinct DOP trigger and class words`);
@@ -854,10 +893,10 @@ function renderPlanOverview(){
   $("#plan-overview").classList.toggle("has-issues",issues.length>0);
   $("#prompt-tab-count").textContent=String(prompts.length);$("#stage-tab-count").textContent=String(stages.length);
   $("#plan-save-note").textContent=state.dirty?"Plan has unsaved changes":"Changes stay in this workspace";
-  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode),h3SelectionInvalid=h3&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
-  preview.textContent=h3?(included.length===1?`Generate selected with ${sourceLabel}`:included.length?"Generate individually below":"Enable one prompt to generate"):included.length?`Generate ${included.length} with ${mixedSources?"one source":sourceLabel}`:"Generate enabled";
+  const preview=$("#preview-prompts"),previewMode=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode),h3SelectionInvalid=(h3||state.settings.training_mode==="MOSS-Image (Experimental)")&&included.length!==1,sourceKinds=new Set(included.map(prompt=>promptPreviewUsesLora(prompt))),mixedSources=sourceKinds.size>1,sourceLabel=sourceKinds.values().next().value?"LoRA":"base";
+  preview.textContent=(h3||state.settings.training_mode==="MOSS-Image (Experimental)")?(included.length===1?`Generate selected with ${sourceLabel}`:included.length?"Generate individually below":"Enable one prompt to generate"):included.length?`Generate ${included.length} with ${mixedSources?"one source":sourceLabel}`:"Generate enabled";
   preview.disabled=!included.length||Boolean(invalidIncluded.length)||!previewMode||h3SelectionInvalid||mixedSources;
-  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":!included.length?"Enable one prompt before generating a preview.":invalidIncluded.length?"Fix the included prompt card marked Needs attention before generating its preview.":h3&&included.length>1?"MiniMax H3 safely loads its large models once per prompt. Generate from an individual card, or enable only one prompt.":mixedSources?"Enabled cards mix Base and LoRA. Generate them individually, or set them to the same preview source.":`Generate with ${sourceLabel}.`;
+  preview.title=!previewMode?"Standalone prompt preview is available for Krea 2 and experimental MiniMax H3.":!included.length?"Enable one prompt before generating a preview.":invalidIncluded.length?"Fix the included prompt card marked Needs attention before generating its preview.":h3SelectionInvalid&&included.length>1?"This model generates one prompt per preview. Generate from an individual card, or enable only one prompt.":mixedSources?"Enabled cards mix Base and LoRA. Generate them individually, or set them to the same preview source.":`Generate with ${sourceLabel}.`;
 }
 function promptMeta(prompt){
   const values=[`${prompt.width||"—"} × ${prompt.height||"—"}`,`${prompt.steps||"—"} steps`,String(prompt.seed??"").trim()?`Seed ${prompt.seed}`:"Random seed"];
@@ -880,11 +919,11 @@ function renderPromptCards(){
   }
   prompts.forEach((prompt,index)=>{
     const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index),previewIssues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),previewKind=state.settings.training_mode==="MiniMax H3 (Experimental)"&&Number(prompt.frames??39)>1?"video":"preview";
-    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
+    const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
     const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewUrl=previewPath?`/api/sample-file?path=${encodeURIComponent(previewPath)}`:"",previewIsVideo=/\.(mp4|webm|mov|m4v)$/i.test(previewPath||"");
     const thumbnail=previewUrl?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated preview">`):linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
-    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
+    card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
     const footerActions=card.querySelector(".prompt-card-footer>div"),defaults=document.createElement("button"),source=document.createElement("label"),previewButton=card.querySelector('[data-action="preview"]');
     defaults.type="button";defaults.className="text-action";defaults.dataset.action="defaults";defaults.textContent=`Use ${modelLabel} defaults`;defaults.title=`Reset only this prompt's sampling values to the recommended ${modelLabel} settings. Prompt text is preserved.`;
     source.className="preview-card-toggle";source.title=useLora?"This card generates with the selected/current LoRA. Turn it off for the base model; use Edit to choose the LoRA file and strength.":"This card generates with the base model. Turn it on for the selected/current LoRA; use Edit to choose the file and strength.";source.innerHTML=`<input type="checkbox" data-action="preview-lora" ${useLora?"checked":""}><span>${useLora?"LoRA":"Base"}</span>`;
@@ -960,7 +999,7 @@ function renderPlanPromptEditor(){
   seedActions.querySelector('[data-seed-mode="random"]').addEventListener("click",()=>{prompt.seed="";renderPlanPromptEditor();sync()});
   sampling.append(seedActions);
   host.append(words,resolution,sampling);
-  if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode)){
+  if(["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode)){
     const previewSource=planEditorSection("Standalone preview source","This affects Generate Preview for this card only. The selected LoRA file and strength are shared so every LoRA-enabled card compares the same checkpoint.");
     previewSource.querySelector(".guided-fields").append(
       objectField("Generate this card with","_preview_use_lora",promptPreviewUsesLora(prompt)?"lora":"base",value=>prompt._preview_use_lora=value==="lora",{type:"select",options:[{label:state.settings.minimax_h3_foundation_lora_enabled?"Foundation + current LoRA":"Current / selected LoRA",value:"lora"},{label:"Base model only",value:"base"}],help:state.settings.minimax_h3_foundation_lora_enabled?"LoRA mode loads the frozen foundation first and the current refinement second, matching training. Base model only disables both for a clean control.":"Choose LoRA to test what training learned, or Base to create a control image without the LoRA."}),
@@ -981,13 +1020,14 @@ function renderPlanPromptEditor(){
       objectField("Frames","frames",prompt.frames??39,value=>prompt.frames=value,{type:"number",help:"Use 39 for the recommended short standalone preview matching ComfyUI's one-second setting. MiniMax H3 accepts 5, 22, 39, ... frames here. Scheduled in-training samples use the separate Scheduled MiniMax Preview option in Sampling Frequency."}),
       objectField("FPS","fps",prompt.fps??24,value=>prompt.fps=value,{type:"number",help:"Playback speed for the silent preview MP4. 24 FPS matches MiniMax H3's normal timing."})
     );
-    fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}),objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
+    fields.append(objectField("Flow shift","flow_shift",prompt.flow_shift??"",value=>prompt.flow_shift=value,{type:"number"}));
+    if(mode!=="MOSS-Image (Experimental)")fields.append(objectField("CFG scale","cfg_scale",prompt.cfg_scale??"",value=>prompt.cfg_scale=value,{type:"number"}));
     if(mode==="Wan 2.2")fields.append(objectField("I2V source image","image_path",prompt.image_path||"",value=>prompt.image_path=value,{wide:true,browseKind:"file",help:"Optional starting image for Wan I2V samples."}));
     host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${prompt.enabled!==false?"checked":""}><span><strong>Include in scheduled training samples</strong><small>Turning this off keeps the card and its settings without sending it to Musubi.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{prompt.enabled=event.target.checked;$("#plan-prompt-editor-state").textContent=prompt.enabled?"Included in scheduled samples":"Not included in scheduled samples";sync()});host.append(include);
-  const refreshPreviewAction=()=>{const button=$("#plan-prompt-preview"),issues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),useLora=promptPreviewUsesLora(prompt);button.disabled=!["Krea 2","MiniMax H3 (Experimental)"].includes(mode)||Boolean(issues.length);button.textContent=`Generate with ${useLora?"LoRA":"base"}`;button.title=issues[0]||`Generate this prompt with ${useLora?"the selected/current LoRA":"the base model only"}.`};
+  const refreshPreviewAction=()=>{const button=$("#plan-prompt-preview"),issues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),useLora=promptPreviewUsesLora(prompt);button.disabled=!["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode)||Boolean(issues.length);button.textContent=`Generate with ${useLora?"LoRA":"base"}`;button.title=issues[0]||`Generate this prompt with ${useLora?"the selected/current LoRA":"the base model only"}.`};
   host.oninput=refreshPreviewAction;host.onchange=refreshPreviewAction;refreshPreviewAction();
 }
 function stageHandoff(previous,current){
@@ -1055,10 +1095,10 @@ function renderStageEditor(){
     );else{const note=document.createElement("div");note.className="issue warning";note.textContent="The restored state controls learning rate, optimizer, scheduler, and warmup. Choose Fresh optimizer to change them reliably.";handoff.append(note)}
     host.append(handoff);
   }
-  if(!face&&["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)"].includes(mode)){
+  if(!face&&["Krea 2","Flux.2 Klein","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode)){
     const advanced=document.createElement("details");advanced.className="plan-editor-advanced";advanced.innerHTML='<summary>Stage regularization overrides</summary><p>Inherit follows the main recipe. An explicit setting affects only this stage.</p><div class="guided-fields"></div>';
     const fields=advanced.querySelector(".guided-fields");fields.append(objectField("DOP behavior","dop_mode",stage.dop_mode||"inherit",value=>stage.dop_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Enable for this stage",value:"enable"},{label:"Disable for this stage",value:"disable"}]}),objectField("DOP strength","dop_loss_weight",stage.dop_loss_weight||"",value=>stage.dop_loss_weight=value,{type:"number"}),objectField("DOP trigger word","dop_trigger_word",stage.dop_trigger_word||"",value=>stage.dop_trigger_word=value),objectField("DOP class word","dop_class_word",stage.dop_class_word||"",value=>stage.dop_class_word=value));
-    if(["Krea 2","MiniMax H3 (Experimental)"].includes(mode))fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
+    if(["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode))fields.append(objectField("Depth helper memory","depth_helpers_mode",stage.depth_helpers_mode||"inherit",value=>stage.depth_helpers_mode=value,{type:"select",options:[{label:"Inherit main recipe",value:"inherit"},{label:"Keep on GPU",value:"keep on GPU"},{label:"Offload to CPU",value:"offload to CPU"}]}));host.append(advanced);
   }
   const include=document.createElement("label");include.className="editor-include-switch";include.innerHTML=`<input type="checkbox" ${stage.enabled!==false?"checked":""}><span><strong>Include this stage</strong><small>Disabled stages stay in the plan but are skipped during training.</small></span>`;
   include.querySelector("input").addEventListener("change",event=>{stage.enabled=event.target.checked;$("#stage-editor-state").textContent=stage.enabled?"Included in the staged run":"Not included in the staged run";sync()});host.append(include);
@@ -1080,7 +1120,7 @@ function renderPlan(){
   $("#staged-cache-policy").hidden=!state.settings.use_staged_training;
   appendFields($("#run-cache-policies"),["recache_latents","recache_text","cache_incremental"]);
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text","cache_incremental"]);
-  appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first","minimax_h3_training_preview_mode"]);
+  appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first","minimax_h3_training_preview_mode","moss_sample_flow_shift","moss_sample_skip_layers"]);
   appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
   ensurePreviewSettings();renderSamplingEstimate();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
@@ -1102,7 +1142,7 @@ function clientTrainingSettingsSummary(){
     parts.push(`staged ${stages.map((stage,index)=>`${planStageArtifactLabel(stage,index)} ${String(stage.steps||"").trim()?`${stage.steps} steps`:`${stage.epochs||"?"} epochs`}${stage.type==="face_refinement"?" face":""}`).join(" → ")}`);
   }else{
     const steps=String(settings.max_train_steps||"").trim(),epochs=String(settings.max_train_epochs||"").trim(),dataset=String(settings.dataset_config||"").split(/[\\/]/).pop()?.replace(/\.[^.]+$/,"");
-    if(steps)parts.push(`${steps} steps`);else if(epochs)parts.push(`${epochs} epochs`);
+    if(epochs)parts.push(`${epochs} epochs`);else if(steps)parts.push(`${steps} steps`);
     if(dataset)parts.push(`data=${dataset}`);
   }
   if(String(settings.learning_rate||"").trim())parts.push(`lr=${settings.learning_rate}`);
@@ -1116,6 +1156,10 @@ function clientTrainingSettingsSummary(){
     if(Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
     if(Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
     if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
+  }
+  if(settings.training_mode==="MOSS-Image (Experimental)"){
+    if(Number(settings.moss_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.moss_depth_anchor_weight)}@${settings.moss_depth_anchor_input_size||518}${settings.moss_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
+    if(Number(settings.moss_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.moss_weight_noise_sigma)} ${settings.moss_weight_noise_mode||"relative"}`);
   }
   const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
   const saveEpochs=String(settings.save_every_n_epochs||"").trim(),saveSteps=String(settings.save_every_n_steps||"").trim();
@@ -1220,14 +1264,14 @@ function renderPosePromptEditor(host,config,buckets){
   host.querySelector("[data-pose-ideas]").addEventListener("click",()=>{const phrases={frontal:"front-facing portrait",three_quarter_left:"three-quarter portrait, turned slightly left",three_quarter_right:"three-quarter portrait, turned slightly right",profile_left:"clear left side-profile portrait",profile_right:"clear right side-profile portrait",looking_up:"portrait looking slightly upward",looking_down:"portrait looking slightly downward"},suffixes={natural:"natural daylight, realistic skin texture",studio:"neutral studio background, soft balanced lighting",cinematic:"cinematic lighting, detailed photograph",expression:"natural expression, candid photograph"},trigger=config.trigger_word||"{trigger}",existing=new Set(bucket.prompts||[]);(config.pose_plan?.variations||["natural","studio","cinematic","expression"]).forEach(style=>{if(suffixes[style])existing.add(`[${active}] ${phrases[active]} of ${trigger}, ${suffixes[style]}`)});bucket.prompts=[...existing];renderPosePromptEditor(host,config,buckets);sync()});
 }
 function renderFaceWorkspace(){
-  const config=faceConfig(),set=(key,value)=>{config[key]=value},isH3=state.settings.training_mode==="MiniMax H3 (Experimental)",supportsFace=["Krea 2","MiniMax H3 (Experimental)"].includes(state.settings.training_mode);
+  const config=faceConfig(),set=(key,value)=>{config[key]=value},isH3=state.settings.training_mode==="MiniMax H3 (Experimental)",supportsFace=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
   config.pose_plan ||= {enabled:false,preset:"balanced_identity",overall_anchor_weight:.8,variations:["natural","studio","cinematic","expression"],buckets:{}};
   ["frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"].forEach(name=>{config.pose_plan.buckets[name]||={enabled:true,share:14.286,target:.55,patience:2,plateau_patience:4,min_evaluations:2,prompts:[]}});
   updateFacePromptModeLabels(config);
   $("#face-mode-warning").style.display=supportsFace?"none":"";
   const evaluationTab=$('[data-face-step="evaluation"]');
-  evaluationTab.disabled=isH3;
-  evaluationTab.title=isH3?"Fixed Turbo evaluation is Krea 2-only; MiniMax H3 refinement itself is available.":"";
+  evaluationTab.disabled=state.settings.training_mode!=="Krea 2";
+  evaluationTab.title=evaluationTab.disabled?"Fixed Turbo evaluation is Krea 2-only; refinement remains available for this model.":"";
   const setup=$("#face-setup-fields");setup.innerHTML="";setup.append(objectField("Starting LoRA source","input_mode",config.input_mode||"previous_stage",v=>set("input_mode",v),{type:"select",options:[{label:"Use LoRA from previous stage",value:"previous_stage"},{label:"Refine an existing LoRA",value:"existing_lora"}]}),objectField("Input LoRA","input_lora",config.input_lora||state.settings.network_weights||"",v=>set("input_lora",v),{wide:true,browseKind:"file",help:"Required when refinement is the first stage; later face stages can consume the previous stage automatically."}),objectField("Trigger word","trigger_word",config.trigger_word||"",v=>set("trigger_word",v),{help:"The unique subject token used by reference and evaluation prompts."}),objectField("Reference directory","reference_dir",config.reference_dir||"",v=>set("reference_dir",v),{wide:true,browseKind:"directory",help:"Folder containing clear reference photographs of the person whose identity should be preserved."}),objectField("AntelopeV2 model folder","face_model_dir",config.face_model_dir||"",v=>set("face_model_dir",v),{wide:true,browseKind:"directory",help:"Click Browse and choose the AntelopeV2 folder itself. Existing InsightFace folders with glintr100.onnx and scrfd_10g_bnkps.onnx work, as do folders downloaded by this GUI."}),objectField("I acknowledge the AntelopeV2 model terms","license_acknowledged",config.license_acknowledged||false,v=>set("license_acknowledged",v),{type:"boolean",help:"Required only before this GUI downloads third-party model files. It is not needed merely to select models you already have."}));
   const modelFolderHelp=document.createElement("div");modelFolderHelp.className="plan-card-note";modelFolderHelp.innerHTML="<strong>Already have InsightFace or ReActor models?</strong> Use Browse and select the folder containing <code>glintr100.onnx</code> and <code>scrfd_10g_bnkps.onnx</code>. Select the folder, not an individual ONNX file. Otherwise, leave the default folder selected, acknowledge the model terms, and use the download button below.";setup.append(modelFolderHelp);
   const recipe=$("#face-recipe-fields");recipe.innerHTML="";recipe.className="face-recipe-groups";
@@ -1242,7 +1286,7 @@ function renderFaceWorkspace(){
     objectField("Learning rate","learning_rate",config.learning_rate??1e-4,v=>set("learning_rate",v),{type:"number"}),
     objectField("Denoising steps","denoise_steps",config.denoise_steps??12,v=>set("denoise_steps",v),{type:"number"}),
     objectField("DRaFT truncation K","draft_k",config.draft_k??1,v=>set("draft_k",v),{type:"number"}),
-    objectField("CFG scale","cfg_scale",isH3?1:(config.cfg_scale??5.5),v=>set("cfg_scale",v),{type:"number",help:isH3?"MiniMax H3 is guidance-distilled, so this is fixed at 1.0.":"Krea 2 face-refinement classifier-free guidance."})
+    objectField("CFG scale","cfg_scale",isH3?1:(config.cfg_scale??5.5),v=>set("cfg_scale",v),{type:"number",help:isH3?"MiniMax H3 is guidance-distilled, so this is fixed at 1.0.":"Classifier-free guidance for the face-refinement image."})
   ],true);
   addRecipeGroup("Quality and stopping","Identity targets, anti-copy pressure, and automatic stopping.",[
     objectField("Target similarity","target_similarity",config.target_similarity??.45,v=>set("target_similarity",v),{type:"number"}),
@@ -1275,8 +1319,8 @@ function renderFaceWorkspace(){
   const poseHost=$("#pose-plan"),plan=config.pose_plan||{},buckets=plan.buckets||{};
   if(Object.keys(buckets).length){renderPosePlanTable(poseHost,config,buckets);renderPosePromptEditor($("#pose-prompt-editor"),config,buckets)}
   else {poseHost.innerHTML='<div class="empty">Enable pose-aware training to configure pose goals.</div>';$("#pose-prompt-editor").innerHTML=""}
-  const evalHost=$("#face-eval-fields");evalHost.innerHTML=isH3?'<div class="issue warning">MiniMax H3 DRaFT refinement is available, but the fixed comparison recipe is not validated yet. Use standalone MiniMax H3 prompt previews to inspect checkpoints.</div>':"";if(!isH3)evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
-  ["#face-baseline","#face-compare","#load-face-result","#open-face-results","#build-weak-pose-plan"].forEach(selector=>{$(selector).disabled=isH3});
+  const evalHost=$("#face-eval-fields"),evalUnavailable=state.settings.training_mode!=="Krea 2";evalHost.innerHTML=evalUnavailable?'<div class="issue warning">The fixed comparison recipe is only available for Krea 2. Use standalone prompt previews to inspect checkpoints for other models.</div>':"";if(!evalUnavailable)evalHost.append(objectField("Prompts per pose","evaluation_prompts_per_pose",config.evaluation_prompts_per_pose??1,v=>set("evaluation_prompts_per_pose",v),{type:"number"}),objectField("Seeds per prompt","evaluation_seeds_per_prompt",config.evaluation_seeds_per_prompt??2,v=>set("evaluation_seeds_per_prompt",v),{type:"number"}),objectField("Seed","evaluation_seed",config.evaluation_seed??42000,v=>set("evaluation_seed",v),{type:"number"}),objectField("Resolution","evaluation_resolution",config.evaluation_resolution??512,v=>set("evaluation_resolution",v),{type:"number"}),objectField("Steps","evaluation_steps",config.evaluation_steps??8,v=>set("evaluation_steps",v),{type:"number"}),objectField("LoRA strength","evaluation_lora_strength",config.evaluation_lora_strength??1,v=>set("evaluation_lora_strength",v),{type:"number"}));
+  ["#face-baseline","#face-compare","#load-face-result","#open-face-results","#build-weak-pose-plan"].forEach(selector=>{$(selector).disabled=evalUnavailable});
   const report=config.preflight_report,excluded=new Set(config.excluded_reference_images||[]),poseNames=["uncertain","frontal","three_quarter_left","three_quarter_right","profile_left","profile_right","looking_up","looking_down"];
   const reportHost=$("#face-preflight-report");
   if(report){
@@ -2395,7 +2439,7 @@ function renderJobLineage(job){
 function jobRowMarkup(j,i){
   const key=`${j._source}:${j._history_index}`,selected=(state.jobComparison||[]).some(item=>item.key===key),perf=j.performance||{},speed=perf.median_seconds_per_iteration??perf.overall_seconds_per_iteration,lineage=jobLineageKind(j),lineageBadge=lineage?`<span class="job-lineage-badge ${lineage}">${esc(jobLineageLabel(lineage))}</span>`:"";
   const exactEligible=j.kind==="training"&&["failed","stopped","completed"].includes(j.status),exactLabel=j.status==="completed"?"Extend exact":"Resume exact",exactTitle=j.status==="completed"?"Extend this run from its final verified epoch state":"Resume the verified saved optimizer and step position";
-  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><div class="job-status-stack"><span class="job-status ${esc(j.status)}">${esc(j.status)}</span>${lineageBadge}</div><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)==="Krea 2"?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
+  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><div class="job-status-stack"><span class="job-status ${esc(j.status)}">${esc(j.status)}</span>${lineageBadge}</div><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
 }
 function renderJobs(){
   const query=($("#job-search")?.value||"").trim().toLowerCase(),status=$("#job-status-filter")?.value||"";
@@ -2499,8 +2543,8 @@ $("#load-settings-file").addEventListener("click",()=>$("#settings-file-input").
 $("#export-settings-file").addEventListener("click",()=>{const blob=new Blob([JSON.stringify(state.settings,null,2)],{type:"application/json"}),link=document.createElement("a");link.href=URL.createObjectURL(blob);link.download=`${state.settings.output_name||"musubi-settings"}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)});
 $("#reset-settings").addEventListener("click",async()=>{if(!confirm("Restore every field to its default value? Saved files and training outputs are not deleted."))return;const payload=await api("/api/settings/defaults");state.settings=payload.settings;renderGuided();renderAllSettings();sync();toast("Defaults loaded for review.")});
 $("#preview-button").addEventListener("click",()=>previewCommands().catch(e=>toast(e.message)));$("#validate-settings").addEventListener("click",()=>validateSettings().catch(e=>toast(e.message)));$("#start-from-review").addEventListener("click",()=>startJob().catch(e=>toast(e.message)));
-$("#estimate-lora").addEventListener("click",async()=>{const mode=state.settings.training_mode,model=mode==="Krea 2"?state.settings.krea2_dit_model:mode==="MiniMax H3 (Experimental)"?state.settings.minimax_h3_dit_model:mode?.startsWith("Flux.2")?state.settings.flux2_dit_model:state.settings.dit_low_noise||state.settings.dit_high_noise;try{const result=await api("/api/estimate-lora",{method:"POST",body:JSON.stringify({model_path:model,mode,rank:state.settings.network_dim_low||state.settings.network_dim,network_type:state.settings.network_type,lokr_factor:state.settings.lokr_factor})});$("#lora-estimate").textContent=`Estimated adapter size: ${result.formatted}` }catch(e){toast(e.message)}});
-$("#apply-workspace").addEventListener("click",async()=>{try{const result=await api("/api/workspace/apply",{method:"POST",body:JSON.stringify({root:state.settings.project_root})});state.settings.output_dir=result.output_dir;state.settings.logging_dir=result.logging_dir;state.settings.convert_output_dir=result.output_dir;renderGuided();renderAllSettings();sync();toast("Workspace models and log folders are ready.")}catch(e){toast(e.message)}});
+$("#estimate-lora").addEventListener("click",async()=>{const mode=state.settings.training_mode,model=mode==="MOSS-Image (Experimental)"?state.settings.moss_dit_model:mode==="Krea 2"?state.settings.krea2_dit_model:mode==="MiniMax H3 (Experimental)"?state.settings.minimax_h3_dit_model:mode?.startsWith("Flux.2")?state.settings.flux2_dit_model:state.settings.dit_low_noise||state.settings.dit_high_noise;try{const result=await api("/api/estimate-lora",{method:"POST",body:JSON.stringify({model_path:model,mode,rank:state.settings.network_dim_low||state.settings.network_dim,network_type:state.settings.network_type,lokr_factor:state.settings.lokr_factor})});$("#lora-estimate").textContent=`Estimated adapter size: ${result.formatted}` }catch(e){toast(e.message)}});
+$("#apply-workspace").addEventListener("click",async()=>{try{const result=await api("/api/workspace/apply",{method:"POST",body:JSON.stringify({root:String(state.settings.project_root||"").trim()})});state.settings.output_dir=result.output_dir;state.settings.logging_dir=result.logging_dir;state.settings.convert_output_dir=result.output_dir;renderGuided();renderAllSettings();sync();toast("Output and log folders are set for this workspace.")}catch(e){toast(e.message)}});
 $("#setting-search").addEventListener("input",filterSettings);$("#show-all-modes").addEventListener("change",filterSettings);$("#settings-json").addEventListener("change",()=>{if(acceptRawSettings()){renderGuided();renderAllSettings();sync()}});
 $("#load-dataset").addEventListener("click",()=>loadDatasetDocument());
 $("#dataset-path").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();loadDatasetDocument()}});

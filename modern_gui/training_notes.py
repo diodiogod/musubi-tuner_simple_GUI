@@ -85,10 +85,10 @@ def training_settings_summary(settings: dict[str, Any]) -> str:
     else:
         steps = str(settings.get("max_train_steps") or "").strip()
         epochs = str(settings.get("max_train_epochs") or "").strip()
-        if steps:
-            parts.append(f"{steps} steps")
-        elif epochs:
+        if epochs:
             parts.append(f"{epochs} epochs")
+        elif steps:
+            parts.append(f"{steps} steps")
         dataset = _dataset_note_label(settings.get("dataset_config"))
         if dataset:
             parts.append(f"data={dataset}")
@@ -129,6 +129,18 @@ def training_settings_summary(settings: dict[str, Any]) -> str:
         if projector:
             strength = str(settings.get("krea2_projector_diff_strength") or "1").strip()
             parts.append(f"projector={Path(projector).name}@{strength}")
+
+    if str(settings.get("training_mode")) == "MOSS-Image (Experimental)":
+        if settings.get("moss_repa_enabled"):
+            parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
+        depth = _enabled_number(settings, "moss_depth_anchor_weight")
+        if depth:
+            text = f"depth {depth}@{settings.get('moss_depth_anchor_input_size') or 518}"
+            text += " GPU" if settings.get("moss_keep_depth_helpers_on_gpu") else " offload"
+            parts.append(text)
+        noise = _enabled_number(settings, "moss_weight_noise_sigma")
+        if noise:
+            parts.append(f"weight-noise {noise} {settings.get('moss_weight_noise_mode') or 'relative'}")
 
     blocks = str(settings.get("blocks_to_swap") or "").strip()
     if settings.get("training_mode") == "MiniMax H3 (Experimental)" and settings.get("minimax_h3_block_memory_mode") == "Automatic (experimental)":

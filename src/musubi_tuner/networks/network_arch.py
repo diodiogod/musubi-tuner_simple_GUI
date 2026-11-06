@@ -30,6 +30,12 @@ def detect_arch_config(unet):
 
         return ZIMAGE_TARGET_REPLACE_MODULES, [r".*(_modulation|_refiner).*"]
 
+    if "MossImageBlock" in module_class_names:
+        # Match the standard MOSS LoRA scope: main-block projections only.
+        from .lora_moss_image import TARGET_MODULES
+
+        return TARGET_MODULES, []
+
     if "SingleStreamDiT" in module_class_names and "SingleStreamBlock" in module_class_names:
         # Krea 2 intentionally targets every Linear in the DiT, including the
         # input/output projections, time/text MLPs, text-fusion transformer, and

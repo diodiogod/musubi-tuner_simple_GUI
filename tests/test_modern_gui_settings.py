@@ -46,6 +46,30 @@ def test_missing_last_settings_bootstraps_schema_from_base_template(monkeypatch,
     assert payload["training_mode"] == "Wan 2.2"
     assert "minimax_h3_dit_model" in keys
     assert "minimax_h3_text_encoder" in keys
+    assert {"network_type", "lokr_factor", "max_train_steps", "dop_enabled", "dop_trigger_word",
+            "dop_class_word", "dop_loss_weight", "sample_every_n_epochs", "sample_every_n_steps",
+            "sample_at_first", "staged_recache_latents", "staged_recache_text"} <= keys
+    assert payload["network_type"] == "LoRA"
+    assert payload["project_root"] == ""
+    fields = {field["key"]: field for section in schema["sections"] for field in section["fields"]}
+    assert fields["project_root"]["label"] == "Project root (workspace folder)"
+    assert fields["project_root"]["type"] == "path"
+    assert "models/" in fields["project_root"]["help"]
+
+
+def test_older_recipes_keep_the_folder_setup_controls_and_saved_paths(monkeypatch, tmp_path):
+    saved = tmp_path / "last_settings.json"
+    original = {"training_mode": "Krea 2", "dataset_config": "data.toml",
+                "output_dir": "custom-models", "output_name": "my-lora", "logging_dir": "custom-logs"}
+    saved.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(settings, "LAST_SETTINGS", saved)
+    payload = settings.load_settings()
+    fields = {field["key"] for section in settings.settings_schema(payload)["sections"] for field in section["fields"]}
+    assert {"project_root", "dataset_config", "output_dir", "output_name"} <= fields
+    assert all(payload[key] == value for key, value in original.items())
+    original["project_root"] = "existing-project"
+    saved.write_text(json.dumps(original), encoding="utf-8")
+    assert settings.load_settings()["project_root"] == "existing-project"
 
 
 def test_mode_specific_fields_are_tagged_for_frontend_filtering():
@@ -80,6 +104,7 @@ def test_minimax_fields_and_fixed_controls_are_mode_aware():
     assert fields["minimax_h3_dit_model"]["label"] == "Pruned ConvRot INT8 DiT (Required)"
     assert fields["minimax_h3_convrot_bwd_mode"]["options"] == ["bf16", "int8"]
     assert fields["network_type"]["disabled_modes"] == [settings.MINIMAX_H3_MODE]
+    assert fields["network_type"]["allow_custom"] is False
     assert fields["compile"]["disabled_modes"] == [settings.MINIMAX_H3_MODE]
 
 
@@ -89,6 +114,21 @@ def test_cache_controls_have_plain_language_labels():
 
     assert fields["recache_latents"]["label"] == "Rebuild Image/Latent Cache"
     assert fields["recache_text"]["label"] == "Rebuild Caption/Text Cache"
+
+
+def test_depth_strength_controls_keep_fractional_steps_when_off_or_cleared():
+    for value in ("0", "0.0", "", "0.01"):
+        schema = settings.settings_schema({
+            "moss_depth_anchor_weight": value, "krea2_depth_anchor_weight": value,
+            "moss_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_gradient_weight": "0.5",
+        })
+        fields = {field["key"]: field for section in schema["sections"] for field in section["fields"]}
+        for key in ("moss_depth_anchor_weight", "krea2_depth_anchor_weight"):
+            assert fields[key]["step"] == .005 and fields[key]["min"] == 0
+        for key in ("moss_depth_anchor_gradient_weight", "krea2_depth_anchor_gradient_weight"):
+            assert fields[key]["step"] == .05
+        help_text = fields["moss_depth_anchor_weight"]["help"]
+        assert "0.01" in help_text and "0.005" in help_text and "off" in help_text
 
 
 def test_h3_quality_layers_are_independent_and_section_opens_by_default():

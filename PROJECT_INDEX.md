@@ -37,6 +37,7 @@
 | Krea 2 | `backends/krea2.py` | `krea2_train_network.py` | `docs/krea2.md` |
 | MiniMax H3 compact still images | `backends/minimax_h3.py` | `minimax_h3_image_train_network.py` | `docs/minimax_h3_experimental.md` |
 | MiniMax H3 official video/audio | `backends/minimax_h3.py` | `minimax_h3_native_train_network.py` | `docs/minimax_h3.md` |
+| MOSS-Image (experimental) | `backends/moss_image.py` | `moss_image_train_network.py` | `docs/moss_image_experimental.md` |
 
 **Mode-specific GUI behavior includes:**
 
@@ -190,6 +191,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `modules/automatic_swap_policy.py` / `modules/automatic_offloading.py` - process-local automatic residency budget and frozen-weight H2D transitions; fixed swapping remains the default
 - `training/weight_noise.py` - isolated adapter-only Gaussian weight-noise implementation used by the Krea trainer hook
 - `training/dop.py` - shared caption replacement/signature validation, temporary adapter bypass, and preservation-loss implementation used by Krea 2 and FLUX.2 Klein
+- `moss_image/repa.py` - optional MOSS image representation alignment with a frozen DINOv2 teacher, bounded CPU feature cache and resume-only projection head; both GUIs use `backends/moss_settings.py` for its defaults and help
 
 ### Experimental Differential Output Preservation
 

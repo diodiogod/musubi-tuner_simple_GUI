@@ -4,12 +4,13 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from backends.moss_settings import MODE as MOSS_MODE, DEFAULTS as MOSS_DEFAULTS, CHOICES as MOSS_CHOICES, PATHS as MOSS_PATHS, HELP as MOSS_HELP
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LAST_SETTINGS = ROOT / "last_settings.json"
 MINIMAX_H3_MODE = "MiniMax H3 (Experimental)"
-MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE]
+MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE, MOSS_MODE]
 STRUCTURED_KEYS = {"sample_prompts_data", "staged_training_config", "face_refinement_config"}
 CACHE_DEFAULTS = {"cache_incremental": True}
 MINIMAX_H3_DEFAULTS = {
@@ -103,6 +104,7 @@ MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
 }
 
 FIELD_LABELS = {
+    "project_root": "Project root (workspace folder)",
     "minimax_h3_block_memory_mode": "Block Memory Management",
     "minimax_h3_auto_swap_reserve_gb": "VRAM Safety Margin (GiB)",
     "minimax_h3_auto_swap_min_blocks": "Minimum Streamed Blocks",
@@ -179,6 +181,16 @@ SECTION_TITLES = {
     "staging": "Training plan",
     "utilities": "Utilities",
     "other": "Other",
+}
+
+# Spinner precision describes the setting, not its current saved value. In
+# particular, an off value of "0" must not turn a fractional strength into an
+# integer control. The shared Krea keys also serve compact MiniMax H3.
+NUMERIC_CONTROLS = {
+    "moss_depth_anchor_weight": {"step": 0.005, "min": 0},
+    "krea2_depth_anchor_weight": {"step": 0.005, "min": 0},
+    "moss_depth_anchor_gradient_weight": {"step": 0.05, "min": 0},
+    "krea2_depth_anchor_gradient_weight": {"step": 0.05, "min": 0},
 }
 
 CHOICES = {
@@ -314,7 +326,16 @@ def load_settings() -> dict[str, Any]:
         payload["minimax_h3_quality_protection_preset"] = (
             "Proven Quality" if legacy.startswith("dynamic") else "Custom"
         )
-    for key, value in (MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS | CACHE_DEFAULTS).items():
+    # Older and fresh-checkout recipes may omit controls that the guided
+    # interface offers. Supply them without overwriting saved user choices.
+    guided_defaults = {
+        "project_root": "",
+        "network_type": "LoRA", "lokr_factor": "", "max_train_steps": "",
+        "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
+        "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
+        "staged_recache_latents": True, "staged_recache_text": False,
+    }
+    for key, value in (guided_defaults | MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS | CACHE_DEFAULTS | MOSS_DEFAULTS).items():
         payload.setdefault(key, value)
     return payload
 
@@ -344,6 +365,18 @@ def _humanize(key: str) -> str:
 
 
 def _section_for(key: str) -> str:
+    if key in MOSS_DEFAULTS:
+        if key.startswith(("moss_depth_", "moss_keep_", "moss_weight_", "moss_repa_")):
+            return "regularization"
+        if key.startswith("moss_sample_"):
+            return "sampling"
+        if key.startswith(("moss_pretraining_", "moss_logit_", "moss_timestep_")):
+            return "timesteps"
+        if key == "moss_lora_target_preset":
+            return "network"
+        if key in {"moss_convrot_int8", "moss_convrot_bwd_mode", "moss_text_encoder_cpu_streaming"}:
+            return "runtime"
+        return "models"
     if key in {"minimax_h3_cache_skip_broken", "minimax_h3_audio_max_discontinuity", "minimax_h3_audio_max_missing"}:
         return "runtime"
     if key == "minimax_h3_block_memory_mode" or key.startswith("minimax_h3_auto_swap_"):
@@ -404,6 +437,20 @@ def _section_for(key: str) -> str:
 
 
 def _field_for(key: str, value: Any) -> dict[str, Any]:
+    if key in MOSS_DEFAULTS:
+        field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
+        field.update(NUMERIC_CONTROLS.get(key, {}))
+        from backends.moss_settings import REPA_LABELS, REPA_DETAILS
+        field["label"] = REPA_LABELS.get(key, field["label"])
+        if key == "moss_repa_enabled":
+            field["help_detail"] = REPA_DETAILS
+        if key in MOSS_CHOICES:
+            field.update(type="select", options=MOSS_CHOICES[key], allow_custom=True)
+        elif key in MOSS_PATHS:
+            field["type"] = "path"
+        elif isinstance(MOSS_DEFAULTS[key], bool):
+            field["type"] = "boolean"
+        return field
     if key in CHOICES:
         field_type = "select"
     elif isinstance(value, bool):
@@ -415,16 +462,24 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     else:
         field_type = "text"
     field = {"key": key, "label": FIELD_LABELS.get(key, _humanize(key)), "type": field_type}
+    field.update(NUMERIC_CONTROLS.get(key, {}))
+    if key == "project_root":
+        field["help"] = (
+            "Choose a main folder for this training project using Browse. This is the workspace folder. "
+            "Then click Set output and log folders "
+            "to create models/ for saved LoRAs and log/ for training logs inside it. "
+            "Optional: you can also choose output and log locations individually."
+        )
     if key in CHOICES:
         field["options"] = CHOICES[key]
-        field["allow_custom"] = key not in {"training_mode", "appearance_mode"}
+        field["allow_custom"] = key not in {"training_mode", "appearance_mode", "network_type"}
     modes = MODE_RULES.get(key)
     if key.startswith("flux2_") or key == "fp8_text_encoder":
         modes = ["Flux.2 Klein", "Flux.2 Dev"]
     elif key in MINIMAX_H3_SHARED_REGULARIZATION_KEYS:
         modes = ["Krea 2", MINIMAX_H3_MODE]
     elif key.startswith("krea2_") or key.startswith("dop_"):
-        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein", MINIMAX_H3_MODE]
+        modes = ["Krea 2"] if key.startswith("krea2_") else ["Krea 2", "Flux.2 Klein", MINIMAX_H3_MODE, MOSS_MODE]
     elif key.startswith("minimax_h3_"):
         modes = [MINIMAX_H3_MODE]
     if key in {"network_type", "mixed_precision", "compile", "fp8_base", "fp8_scaled"}:
