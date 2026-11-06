@@ -553,6 +553,10 @@ class ModelOffloader(Offloader):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
+        # Upstream #1160: placement must not race pending wrap-around swaps.
+        for block_idx in list(self.futures):
+            self._wait_blocks_move(block_idx)
+
         if self.debug:
             print(f"[{self.block_type}] Prepare block devices before forward")
 
@@ -646,6 +650,8 @@ class _DirectCopier:
                 ev_b = torch.cuda.Event(enable_timing=True)
                 ev_a.record(self.copy_stream)
             dst_flat.copy_(src_flat, non_blocking=src_flat.is_pinned())
+            # Upstream #1150: keep allocation alive while copy-stream DMA is pending.
+            dst_flat.record_stream(self.copy_stream)
             if self.debug:
                 ev_b.record(self.copy_stream)
                 self._xfer[key] = (ev_a, ev_b)
@@ -741,6 +747,7 @@ class _StagedCopier:
                 ev_b = torch.cuda.Event(enable_timing=True)
                 ev_a.record(self.copy_stream)
             dst_flat.copy_(staging, non_blocking=staging.is_pinned())
+            dst_flat.record_stream(self.copy_stream)
             if self.debug:
                 ev_b.record(self.copy_stream)
             done = self.copy_stream.record_event()  # H2D complete == this staging buffer is free again

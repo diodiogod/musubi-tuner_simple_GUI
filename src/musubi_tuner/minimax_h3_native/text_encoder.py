@@ -47,6 +47,8 @@ IMAGE_TOKEN_ID = 151655
 VIDEO_TOKEN_ID = 151656
 IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
 VIDEO_PLACEHOLDER = "<|vision_start|><|video_pad|><|vision_end|>"
+# Upstream #1157: Qwen's processor supplies per-frame vision markers itself.
+VIDEO_PROCESSOR_TOKEN = "<|video_pad|>"
 # the H3 encoder is Qwen3-VL-32B, but the released repository ships its own processor and config:
 # the tokenizer adds <d>, </d>, <|cutoff|>, <|lyrics_start|>, <|lyrics_end|>, <|caption_start|> and
 # <|caption_end|> as special tokens (ids 151669-151675), which Qwen/Qwen3-VL-32B-Instruct splits into
@@ -163,7 +165,7 @@ def build_presentation(
         part = f"<Video {counters['video']}>: "
         parts.append(part)
         processor_parts.append(part)
-        processor_parts.append(VIDEO_PLACEHOLDER)
+        processor_parts.append(VIDEO_PROCESSOR_TOKEN)
 
         visual = _require_visual(visuals, reference.path, f"reference video {reference.path}")
         frames = visual.frames

@@ -30,6 +30,18 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Selective correctness fixes (2026-11-06)
+
+- Musubi PR #1150: both H2D copiers register destination use on their private
+  CUDA stream, preventing allocator release while wrap-around transfers run.
+- PR #1160: classic block placement drains pending swaps first; transfer errors
+  propagate before placement. Downstream pageable-memory fallbacks are retained.
+- PR #1157: native H3 processor text uses a bare video placeholder; Qwen3-VL
+  supplies the per-frame vision markers. Presentation text and image/audio
+  references are unchanged. A real offline processor regression covers expansion.
+- Tests: `test_copy_stream_lifetime.py`, `test_model_offloader_prepare.py`,
+  `test_h3_video_processor_regression.py`, native H3 text-encoder tests.
+
 ### Future-idea implementations (2026-10-04)
 
 - GUI cache builders share `backends._common.apply_cache_policy`: incremental

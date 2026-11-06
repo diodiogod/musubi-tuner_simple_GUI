@@ -17,6 +17,7 @@ from musubi_tuner.minimax_h3_native.text_encoder import (
     IMAGE_PLACEHOLDER,
     REF_TEACHER_CAPTION_HEADER,
     VIDEO_PLACEHOLDER,
+    VIDEO_PROCESSOR_TOKEN,
     H3TextVisual,
     build_presentation,
     build_token_tags,
@@ -125,7 +126,7 @@ def test_ref2va_presentation_preserves_jsonl_order_and_timestamp_format(tmp_path
         f"<Audio 2>: {record.caption}"
     )
     assert presentation.processor_text == (
-        f"<Picture 1>: {IMAGE_PLACEHOLDER}<Audio 1>: <Video 1>: {VIDEO_PLACEHOLDER}<Audio 2>: {record.caption}"
+        f"<Picture 1>: {IMAGE_PLACEHOLDER}<Audio 1>: <Video 1>: {VIDEO_PROCESSOR_TOKEN}<Audio 2>: {record.caption}"
     )
     assert len(presentation.images) == 1
     assert [tuple(video_block.shape) for video_block in presentation.videos] == [
@@ -178,7 +179,7 @@ def test_ref_teacher_presentation_wraps_the_caption_and_samples_the_target_crop(
     # 29 frames sampled at stride 12 -> 3 text frames at 2 fps (timestamps 0.0/0.5/1.0),
     # padded to 4 for the two-frame blocks: block timestamps 0.25 -> "0.2" and 1.0
     assert presentation.text == (f"<Audio 1>: <Video 1>: <0.2 seconds>{VIDEO_PLACEHOLDER}<1.0 seconds>{VIDEO_PLACEHOLDER}{wrapped}")
-    assert presentation.processor_text == f"<Audio 1>: <Video 1>: {VIDEO_PLACEHOLDER}{wrapped}"
+    assert presentation.processor_text == f"<Audio 1>: <Video 1>: {VIDEO_PROCESSOR_TOKEN}{wrapped}"
     assert presentation.images == ()
     assert [tuple(video_block.shape) for video_block in presentation.videos] == [(3, 32, 32, 3)]
 
