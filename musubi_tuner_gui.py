@@ -790,7 +790,7 @@ class MusubiTunerGUI:
         self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
         self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
             key for key in moss_settings.DEFAULTS
-            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_"))
+            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_"))
         ])
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
@@ -2250,9 +2250,22 @@ class MusubiTunerGUI:
     def create_samples_tab(self):
         tab_frame = self._create_scrollable_tab("Samples", "samples")
         self._add_page_intro(tab_frame, "Sample previews", "Choose when previews run, manage reusable prompts, and inspect generated samples without deleting inactive prompts.")
+        self._moss_sampling_frame = ttk.LabelFrame(tab_frame, text="MOSS preview settings")
+        self._moss_sampling_frame.pack(fill="x", padx=10, pady=8)
+        self._add_moss_fields(self._moss_sampling_frame, ["moss_sample_flow_shift", "moss_sample_skip_layers", "moss_sample_sampler", "moss_sample_scheduler"])
+        extra_open = tk.BooleanVar(value=False)
+        extra = ttk.Frame(self._moss_sampling_frame)
+        ttk.Checkbutton(self._moss_sampling_frame, text="Show optional sampling-only Turbo LoRA", variable=extra_open,
+                        command=lambda: extra.pack(fill="x") if extra_open.get() else extra.pack_forget()).pack(anchor="w", padx=8, pady=5)
+        self._add_moss_fields(extra, ["moss_sample_lora", "moss_sample_lora_multiplier"])
+        ttk.Button(extra, text="? How sampling-only LoRAs and covers work", command=lambda: messagebox.showinfo(
+            "MOSS preview recipe", moss_settings.SAMPLE_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=8, pady=5)
+        ttk.Label(extra, text="Only enabled while sampling. Separate from the LoRA you train. Try strength 0.6 with 25 steps, DDIM, Simple and CFG 3.", wraplength=850).pack(anchor="w", padx=8, pady=5)
 
         # --- Frequency controls ---
         freq_frame = ttk.LabelFrame(tab_frame, text="Sampling Frequency"); freq_frame.pack(fill="x", padx=10, pady=10)
+        self._moss_sampling_anchor = freq_frame
         freq_inner = ttk.Frame(freq_frame); freq_inner.pack(fill="x", padx=8, pady=8)
         vcmd = (self.root.register(self.validate_number), '%P')
 
@@ -2401,6 +2414,10 @@ class MusubiTunerGUI:
             preview_btn = ttk.Button(row, text="Preview", width=7,
                        command=lambda i=idx: self._test_sample_prompt(i))
             preview_btn.pack(side="right", padx=(3, 0))
+            if self.training_mode_var.get() in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+                ttk.Button(row, text="Base cover", command=lambda i=idx: self._test_sample_prompts(
+                    [self._sample_prompts_data[i]], "Base model cover", "Before-training baseline", base_cover=True,
+                )).pack(side="right", padx=(3, 0))
             if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
                 preview_btn.configure(state="disabled")
                 ToolTip(preview_btn, "Standalone preview generation is available for Krea 2 and experimental MiniMax H3.")
@@ -2459,6 +2476,8 @@ class MusubiTunerGUI:
             current_prompts=lambda: copy.deepcopy(self._sample_prompts_data),
             jobs=lambda: self._job_history,
             on_use=self._merge_library_prompts,
+            settings=self.get_settings,
+            on_generate=lambda prompt: self._test_sample_prompts([prompt], "Base model library cover", "Before-training baseline", base_cover=True),
         )
 
     def _delete_sample_prompt(self, idx):
@@ -2493,12 +2512,17 @@ class MusubiTunerGUI:
             return
         self._test_sample_prompts(enabled_prompts, "Krea 2 Batch Sample Preview", note)
 
-    def _test_sample_prompts(self, prompt_items, job_title, job_note):
+    def _test_sample_prompts(self, prompt_items, job_title, job_note, base_cover=False):
         if self.current_process:
             messagebox.showwarning("Process Running", "Stop the current process before launching a test sample.")
             return
 
-        settings = self.get_settings()
+        from preview_profiles import with_preview_output
+        settings = with_preview_output(self.get_settings())
+        if base_cover:
+            settings["preview_use_lora"] = False
+        elif len(prompt_items) == 1 and "_preview_use_lora" in prompt_items[0]:
+            settings["preview_use_lora"] = prompt_items[0]["_preview_use_lora"]
         mode = settings.get("training_mode", "Wan 2.2")
         if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
             messagebox.showerror("Validation Error", "Activation CPU offload requires Gradient Checkpointing.")
@@ -2508,13 +2532,8 @@ class MusubiTunerGUI:
             return
 
         try:
-            if mode == moss_settings.MODE:
-                from modern_gui.prompt_preview import build_moss_preview
-                command, _ = build_moss_preview(settings, prompt_items)
-            elif mode == "MiniMax H3 (Experimental)":
-                command = self._build_minimax_h3_test_sample_command(settings, prompt_items)
-            else:
-                command = self._build_krea2_test_sample_command(settings, prompt_items)
+            from modern_gui.prompt_preview import build_prompt_preview
+            command, _ = build_prompt_preview(settings, prompt_items)
         except ValueError as e:
             messagebox.showerror(f"{mode} Test Sample", str(e))
             return
@@ -2528,15 +2547,19 @@ class MusubiTunerGUI:
             save_path = None
         existing_outputs = {
             str(path.resolve()) for path in (save_path.glob("*") if save_path else [])
-            if path.is_file() and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+            if path.is_file() and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v")
         }
+        from modern_gui.prompt_preview import resolve_preview_lora
+        from preview_profiles import preview_metadata
+        resolved_lora = resolve_preview_lora(settings)
         self._sample_test_context = {
             "prompts": copy.deepcopy(prompt_items),
             "save_path": str(save_path),
             "existing_outputs": existing_outputs,
             "mode": "Krea 2 Turbo" if "--turbo" in command else mode,
             "output_name": settings.get("output_name", ""),
-            "network_weights": self._resolve_krea2_preview_lora(settings),
+            "network_weights": resolved_lora,
+            "preview_metadata": preview_metadata(settings, resolved_lora),
         } if save_path else None
 
         self.output_text.delete("1.0", tk.END)
@@ -2784,13 +2807,14 @@ class MusubiTunerGUI:
         new_images = [
             path for path in save_path.glob("*")
             if path.is_file()
-            and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+            and path.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v")
             and str(path.resolve()) not in before
         ]
         new_images.sort(key=lambda path: (path.stat().st_mtime, path.name))
         captured = 0
         for prompt, image_path in zip(context.get("prompts") or [], new_images):
             metadata = {
+                **context.get("preview_metadata", {}),
                 "test_type": "standalone_zero_step",
                 "output_name": context.get("output_name", ""),
                 "network_weights": context.get("network_weights", ""),
@@ -2844,7 +2868,7 @@ class MusubiTunerGUI:
         }
         dlg = tk.Toplevel(self.root)
         dlg.title("Edit Sample Prompt" if idx is not None else "Add Sample Prompt")
-        dlg.geometry("720x650" if is_image_mode else "680x650")
+        dlg.geometry("760x760" if is_image_mode else "680x650")
         dlg.minsize(620, 600)
         dlg.configure(bg=self.colors["page"])
         dlg.resizable(True, False)
@@ -2881,7 +2905,7 @@ class MusubiTunerGUI:
         row1_fields = [
             ("Width", "width", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
             ("Height", "height", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
-            ("Steps", "steps", "28" if is_h3 else ("50" if is_moss else (("8" if is_krea2_turbo else "28") if is_krea2 else "20")), 5),
+            ("Steps", "steps", "28" if is_h3 else ("25" if is_moss else (("8" if is_krea2_turbo else "28") if is_krea2 else "20")), 5),
             ("Guidance", "guidance", "1.0" if is_h3 else ("3.0" if is_moss else (("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0")), 6),
         ]
         if not is_image_mode:
@@ -2914,6 +2938,9 @@ class MusubiTunerGUI:
                 ("Flow Shift", "flow_shift", existing.get("flow_shift", "12.0" if is_h3 else "5.0"), 7),
                 ("Seed", "seed", existing.get("seed", "42"), 10),
             ]
+            if is_h3:
+                row2_fields.extend([("Frames", "frames", existing.get("frames", "39"), 6),
+                                    ("FPS", "fps", existing.get("fps", "24"), 6)])
         else:
             row2_fields = [
                 ("Flow Shift", "flow_shift", existing.get("flow_shift", ""), 6),
@@ -2933,6 +2960,17 @@ class MusubiTunerGUI:
                 ToolTip(e, field_tooltips[key])
             row2.__dict__[f"e_{key}"] = e
 
+        sampler_var = tk.StringVar(value=existing.get("sampler", "ddim"))
+        scheduler_var = tk.StringVar(value=existing.get("scheduler", "simple"))
+        preview_lora_var = tk.BooleanVar(value=existing.get("_preview_use_lora", True))
+        if is_moss:
+            controls = ttk.Frame(dlg); controls.pack(fill="x", padx=10, pady=8)
+            ttk.Label(controls, text="Sampler").pack(side="left")
+            ttk.Combobox(controls, textvariable=sampler_var, values=["ddim", "euler"], state="readonly", width=10).pack(side="left", padx=8)
+            ttk.Label(controls, text="Schedule").pack(side="left")
+            ttk.Combobox(controls, textvariable=scheduler_var, values=["simple", "official"], state="readonly", width=10).pack(side="left", padx=8)
+        if is_image_mode:
+            ttk.Checkbutton(dlg, text="Standalone preview uses current LoRA (off = base model)", variable=preview_lora_var).pack(anchor="w", padx=10, pady=5)
         e_img_entry = None
         if is_krea2:
             ttk.Label(
@@ -2945,13 +2983,13 @@ class MusubiTunerGUI:
         elif is_h3:
             ttk.Label(
                 dlg,
-                text="MiniMax H3 image notes: guidance is fixed at 1.0, negative prompts and CFG are unused, and shift 12 is recommended.",
+                text="MiniMax H3: use 39 frames for a short standalone video; 5, 22, 39, ... are supported. Guidance is 1, negative prompts are unused, and shift 12 is recommended. Scheduled sample length is set separately.",
                 foreground=self.colors["muted"],
                 font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
         elif is_moss:
-            ttk.Label(dlg, text="MOSS defaults: 50 steps, guidance 3, flow shift 5. These control preview generation only.",
+            ttk.Label(dlg, text="MOSS preview recipe: 25 steps, DDIM + Simple, CFG 3, shift 5. Optional Turbo LoRA and strength live at the top of Samples. These settings affect generation only.",
                       foreground=self.colors["muted"], wraplength=580).pack(anchor="w", padx=10, pady=(12, 0))
         else:
             lbl(dlg, "Image path  (I2V only — optional)")
@@ -2984,9 +3022,17 @@ class MusubiTunerGUI:
                 data["y2"]         = row2.e_y2.get().strip()
             else:
                 data["flow_shift"] = row2.e_flow_shift.get().strip()
+                if is_h3:
+                    data["frames"] = row2.e_frames.get().strip()
+                    data["fps"] = row2.e_fps.get().strip()
             data["seed"]       = row2.e_seed.get().strip()
             data["image_path"] = e_img_entry.get().strip() if e_img_entry is not None else ""
             data["enabled"]    = existing.get("enabled", True)
+            if is_image_mode:
+                data["_preview_use_lora"] = preview_lora_var.get()
+            if is_moss:
+                data.update(sampler=sampler_var.get(), scheduler=scheduler_var.get())
+            data.update({key: value for key, value in existing.items() if str(key).startswith("_library_")})
             # Remove empty optional keys
             data = {k: v for k, v in data.items() if v != "" or k == "enabled"}
             if idx is not None:
@@ -3030,6 +3076,10 @@ class MusubiTunerGUI:
                 line += f" --fs {prompt_data['flow_shift']}"
             if prompt_data.get("cfg_scale") and not is_moss:
                 line += f" --l {prompt_data['cfg_scale']}"
+            if is_moss:
+                for key in ("sampler", "scheduler"):
+                    if prompt_data.get(key):
+                        line += f" --moss_{key} {prompt_data[key]}"
         if prompt_data.get("seed"):
             line += f" --d {prompt_data['seed']}"
         if prompt_data.get("neg"):
@@ -3088,6 +3138,9 @@ class MusubiTunerGUI:
 
     def _get_sample_files(self):
         output_dir = self.entries["output_dir"].get()
+        if not output_dir.strip():
+            from preview_profiles import standalone_preview_root
+            output_dir = str(standalone_preview_root())
         if not output_dir or not os.path.isdir(output_dir):
             return []
         results = []
@@ -7057,6 +7110,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self._minimax_training_preview_frame.pack(fill="x", padx=8, pady=(0, 8))
             else:
                 self._minimax_training_preview_frame.pack_forget()
+        if hasattr(self, "_moss_sampling_frame"):
+            if mode == moss_settings.MODE:
+                self._moss_sampling_frame.pack(fill="x", padx=10, pady=8, before=self._moss_sampling_anchor)
+            else:
+                self._moss_sampling_frame.pack_forget()
 
         if mode == moss_settings.MODE:
             self.mode_note_label.config(text="MOSS image LoRA · Qwen3.5-9B text encoder · Flux.2 VAE")

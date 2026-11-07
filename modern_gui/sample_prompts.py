@@ -50,6 +50,8 @@ def serialize_sample_prompt(prompt: dict[str, Any], mode: str) -> str:
         add("y2", "y2")
     elif is_moss:
         add("fs", "flow_shift")
+        add("moss_sampler", "sampler")
+        add("moss_scheduler", "scheduler")
     else:
         add("f", "frames")
         add("fs", "flow_shift")

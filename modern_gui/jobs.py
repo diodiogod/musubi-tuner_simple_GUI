@@ -679,7 +679,7 @@ class JobSupervisor:
         images = [
             path for path in save_path.glob("*")
             if path.is_file()
-            and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
             and str(path.resolve()) not in before
         ]
         images.sort(key=lambda path: (path.stat().st_mtime, path.name))
@@ -691,6 +691,7 @@ class JobSupervisor:
                 image_path,
                 str(context.get("mode") or "Krea 2"),
                 metadata={
+                    **context.get("preview_metadata", {}),
                     "test_type": "standalone_zero_step",
                     "output_name": context.get("output_name", ""),
                     "network_weights": context.get("network_weights", ""),

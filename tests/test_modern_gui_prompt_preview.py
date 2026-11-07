@@ -1,4 +1,6 @@
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -6,11 +8,31 @@ from modern_gui.prompt_preview import build_krea_preview, build_minimax_h3_previ
 from modern_gui.sample_prompts import serialize_sample_prompt
 
 
-def test_modern_plan_uses_full_preview_dialog_hook_for_prompt_cards():
-    app_js = Path("modern_gui/static/app.js").read_text(encoding="utf-8")
-    assert 'visual.addEventListener("dblclick"' in app_js
-    assert 'openSamplePreview({' in app_js
-    assert 'url:previewUrl' in app_js
+def test_saved_and_live_previews_share_mouse_and_keyboard_opening():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is needed to exercise browser-independent preview helpers")
+    script = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync('modern_gui/static/app.js','utf8');
+function definition(name){const start=source.indexOf(`function ${name}(`);assert(start>=0);return source.slice(start,source.indexOf('\n}',start)+2)}
+const opened=[],context={libraryCoverUrl:id=>`/saved-cover/${id}`,openSamplePreview:item=>opened.push(item)};
+vm.createContext(context);vm.runInContext(definition('promptCardPreviewItem')+'\n'+definition('bindPreviewOpener'),context);
+const prompt={_library_id:'saved',_library_name:'Portrait'},saved=context.promptCardPreviewItem(prompt,0),live=context.promptCardPreviewItem(prompt,0,'J:/outputs/a.png'),video=context.promptCardPreviewItem(prompt,0,'J:/outputs/a.mp4');
+assert.equal(saved.url,'/saved-cover/saved');assert.equal(saved.media_kind,'image');
+assert.equal(live.url,'/api/sample-file?path=J%3A%2Foutputs%2Fa.png');assert.equal(video.media_kind,'video');
+assert.equal(context.promptCardPreviewItem({},0),null);
+function target(tagName){return {tagName,attrs:{},events:{},classList:{add(){}},setAttribute(key,value){this.attrs[key]=value},addEventListener(type,fn){this.events[type]=fn}}}
+for(const item of [saved,live,video]){
+ const surface=target('DIV');context.bindPreviewOpener(surface,item);
+ assert.equal(surface.attrs.role,'button');assert.equal(surface.tabIndex,0);
+ surface.events.click();assert.equal(opened.at(-1),item);
+ let prevented=false;surface.events.keydown({key:'Enter',preventDefault(){prevented=true}});assert(prevented);assert.equal(opened.at(-1),item);
+}
+const card=target('BUTTON');context.bindPreviewOpener(card,saved);card.events.click();assert.equal(opened.at(-1),saved);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_minimax_face_runtime_group_opens_for_preview_controls():

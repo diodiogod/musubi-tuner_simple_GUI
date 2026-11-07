@@ -440,10 +440,14 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     if key in MOSS_DEFAULTS:
         field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
         field.update(NUMERIC_CONTROLS.get(key, {}))
-        from backends.moss_settings import REPA_LABELS, REPA_DETAILS
+        from backends.moss_settings import REPA_LABELS, REPA_DETAILS, SAMPLE_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
         if key == "moss_repa_enabled":
             field["help_detail"] = REPA_DETAILS
+        if key == "moss_sample_lora":
+            field["help_detail"] = SAMPLE_DETAILS
+        if key == "moss_sample_lora_multiplier":
+            field.update(type="number", step=0.05)
         if key in MOSS_CHOICES:
             field.update(type="select", options=MOSS_CHOICES[key], allow_custom=True)
         elif key in MOSS_PATHS:

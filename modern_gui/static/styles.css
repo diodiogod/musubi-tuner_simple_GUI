@@ -235,3 +235,53 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 /* The existing source icon is also the include/exclude switch. */
 .dataset-source .source-toggle{padding:0;border:1px solid transparent;cursor:pointer;font-size:15px;font-weight:900}.dataset-source .source-toggle.included{border-color:color-mix(in srgb,var(--accent2) 58%,var(--line));background:color-mix(in srgb,var(--accent2) 17%,var(--bg));color:var(--accent)}.dataset-source .source-toggle.excluded{border-color:color-mix(in srgb,var(--danger) 58%,var(--line));background:color-mix(in srgb,var(--danger) 13%,var(--bg));color:var(--danger)}.dataset-source .source-toggle:hover,.dataset-source .source-toggle:focus-visible{transform:scale(1.05);outline:2px solid color-mix(in srgb,currentColor 35%,transparent);outline-offset:1px}.dataset-source .source-copy{min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left}.dataset-source.disabled-source{border-color:color-mix(in srgb,var(--danger) 40%,var(--line));background:color-mix(in srgb,var(--danger) 6%,transparent);opacity:.76}.dataset-source.disabled-source:hover{border-color:color-mix(in srgb,var(--danger) 65%,var(--line))}
+
+.library-cover-empty{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px}.library-cover-label{display:block;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}#moss-preview-settings{grid-column:1/-1;margin-top:12px}
+
+/* Saved covers and live results share the same full-image viewer. */
+.can-open-preview{cursor:zoom-in}
+.can-open-preview:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
+#sample-preview-dialog{box-sizing:border-box;width:96vw;max-width:none;height:94vh;height:94dvh;max-height:94vh;max-height:94dvh;padding:14px 18px;overflow:hidden}
+#sample-preview-dialog[open]{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:8px}
+#sample-preview-dialog>.dialog-close{position:absolute;z-index:5;top:10px;right:10px;width:42px;height:42px;border:1px solid var(--line);border-radius:50%;background:var(--surface);box-shadow:var(--shadow)}
+#sample-preview-image,#sample-preview-video{grid-area:1/1;min-width:0;min-height:0;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain}
+#sample-preview-dialog>[hidden]{display:none}
+#sample-preview-name{grid-row:2;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px;line-height:1.6}
+
+/* A wide, responsive prompt gallery with compact cards and uncropped covers. */
+#prompt-library-dialog{box-sizing:border-box;width:min(1680px,96vw);max-width:none;height:92vh;height:92dvh;max-height:92vh;max-height:92dvh;padding:24px;overflow:auto}
+#prompt-library-dialog .dialog-sticky-header{top:-24px;margin:-24px -4px 18px;padding:22px 4px 14px}
+#prompt-library-dialog .dialog-sticky-header h2{margin:0 48px 7px 0;font-size:24px}
+#prompt-library-dialog .kicker{margin-bottom:7px}
+#prompt-library-dialog .library-description{margin:0 40px 15px 0;color:var(--muted);font-size:13px;line-height:1.5}
+.library-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+#prompt-library-dialog .library-toolbar .search{flex:1;min-width:200px;width:auto;margin:0}
+#library-count{color:var(--muted);font-size:12px;white-space:nowrap}
+#library-list{grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:16px;align-items:stretch}
+#library-list>.empty{grid-column:1/-1}
+#prompt-library-dialog .library-card{display:flex;flex-direction:column;min-width:0;padding:0;gap:0;overflow:hidden}
+.library-cover{position:relative;flex:none;aspect-ratio:16/10;background:var(--surface2)}
+.library-cover-button{position:absolute;inset:0;width:100%;height:100%;padding:0;overflow:hidden;border:0;border-radius:0;background:#080a0e}
+#prompt-library-dialog .library-thumbnail{display:block;width:100%;height:100%;object-fit:contain;border-radius:0}
+.library-view-hint{position:absolute;right:9px;bottom:9px;padding:5px 8px;border-radius:6px;background:#080a0dcc;color:#fff;font-size:11px;opacity:0;transition:opacity .15s}
+.library-cover-button:hover .library-view-hint,.library-cover-button:focus-visible .library-view-hint{opacity:1}
+#prompt-library-dialog .library-cover-empty{position:absolute;inset:0;display:flex;flex-direction:column;gap:6px;background:linear-gradient(145deg,var(--surface2),var(--surface));color:var(--muted)}
+.library-cover-empty>span{font-size:28px;font-weight:700;opacity:.4}
+.library-cover-empty>small{font-size:11px}
+.library-favorite{position:absolute;z-index:2;top:8px;right:8px;width:34px;height:34px;padding:0;border:1px solid #ffffff25;border-radius:8px;background:#080a0dbb;color:#fff;font-size:17px}
+#prompt-library-dialog .library-copy{display:flex;flex:1;flex-direction:column;gap:9px;padding:14px;min-width:0}
+.library-card-heading{display:flex;align-items:flex-start;gap:10px;justify-content:space-between}
+.library-card-heading strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-size:14px;line-height:1.4}
+.library-card-heading .text-action{flex:none;padding:2px 0;color:var(--muted);font-size:12px}
+#prompt-library-dialog .library-cover-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin:0;font-size:10px;line-height:1.4}
+.library-tags{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+#prompt-library-dialog .library-prompt-copy{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;margin:0 0 3px;font-size:12px;line-height:1.5;color:var(--soft)}
+.library-card-actions{display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:auto;padding-top:5px}
+.library-card-actions button{min-height:36px;padding:7px 10px;font-size:11px;white-space:nowrap}
+@media(max-width:620px){
+  #prompt-library-dialog{width:98vw;height:96vh;height:96dvh;max-height:96vh;max-height:96dvh;padding:16px}
+  #prompt-library-dialog .dialog-sticky-header{top:-16px;margin:-16px -2px 14px;padding:18px 2px 12px}
+  #library-list{grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px}
+  #prompt-library-dialog .library-description{margin-right:25px}
+  .library-toolbar{gap:10px}#prompt-library-dialog .library-toolbar .search{flex-basis:100%;min-width:0}
+}

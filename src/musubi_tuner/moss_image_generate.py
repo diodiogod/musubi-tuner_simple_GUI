@@ -10,12 +10,23 @@ from safetensors.torch import load_file
 from musubi_tuner.modules.custom_offloading_utils import BlockSwapConfig
 from musubi_tuner.moss_image.checkpoint import load_model
 from musubi_tuner.moss_image.sampling import generate_latents, parse_skip_layers
+from musubi_tuner.moss_image.sampling_adapter import load_sampling_adapter, normalize_lora_keys, sampling_adapter_enabled
 from musubi_tuner.moss_image.text_encoder import load_text_encoder, load_tokenizer, encode_prompts, pad_text_embeds
 from musubi_tuner.moss_image.vae import load_vae
 from musubi_tuner.networks import lora_moss_image
 from musubi_tuner.utils.device_utils import clean_memory_on_device
 
 logger = logging.getLogger(__name__)
+
+
+def preview_attention_mode(requested):
+    from musubi_tuner.modules import attention
+    available = {"torch": True, "flash": attention.flash_attn_varlen_func is not None,
+                 "sageattn": attention.sageattn_varlen is not None, "xformers": attention.xops is not None}
+    if not available.get(requested, False):
+        logger.warning("Preview attention %s is unavailable; using PyTorch SDPA.", requested)
+        return "torch"
+    return requested
 
 
 def generate(args):
@@ -28,8 +39,11 @@ def generate(args):
     torch.cuda.set_device(index)
     device = torch.device("cuda", index)
     logger.info("MOSS preview using GPU %d: %s", index, torch.cuda.get_device_name(index))
+    logger.info("MOSS preview recipe: %d steps, %s / %s, CFG %s, sampling-only adapter %s at %s",
+                args.steps, args.sampler, args.scheduler, args.cfg_scale, args.sample_lora or "off", args.sample_lora_multiplier)
     if not 0 <= args.blocks_to_swap <= 40:
         raise ValueError("MOSS previews support between 0 and 40 swapped blocks.")
+    args.attn_mode = preview_attention_mode(args.attn_mode)
     encoder = load_text_encoder(args.text_encoder, device=device, cpu_streaming=args.text_encoder_cpu_streaming)
     tokenizer = load_tokenizer(args.tokenizer_cache_dir)
     embeddings = encode_prompts(encoder, tokenizer, [args.prompt, args.negative_prompt], args.moss_max_token_length)
@@ -43,7 +57,7 @@ def generate(args):
                        attn_mode=args.attn_mode, split_attn=args.split_attn)
     networks = []
     if args.network_weights:
-        state = load_file(args.network_weights, device="cpu")
+        state = normalize_lora_keys(load_file(args.network_weights, device="cpu"))
         if any(".lokr_w1" in key for key in state):
             from musubi_tuner.networks import lokr as network_module
         elif any(".hada_w1_a" in key for key in state):
@@ -55,18 +69,20 @@ def generate(args):
         network.load_state_dict(state, strict=True)
         network.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
         networks.append(network)
+    extra = load_sampling_adapter(args.sample_lora, args.sample_lora_multiplier, model, device) if args.sample_lora else None
     if args.blocks_to_swap:
         model.enable_block_swap(args.blocks_to_swap, BlockSwapConfig(
             device=device, supports_backward=False, use_pinned_memory=False, h2d_only=True,
         ))
         model.move_to_device_except_swap_blocks(device)
         model.switch_block_swap_for_inference()
-    latents = generate_latents(model, positive, mask, negative, negative_mask, args.height, args.width,
-                               args.steps, args.cfg_scale, args.flow_shift, parse_skip_layers(args.skip_layers),
-                               args.seed, device).cpu()
+    with sampling_adapter_enabled(extra):
+        latents = generate_latents(model, positive, mask, negative, negative_mask, args.height, args.width,
+                                   args.steps, args.cfg_scale, args.flow_shift, parse_skip_layers(args.skip_layers),
+                                   args.seed, device, sampler=args.sampler, scheduler=args.scheduler).cpu()
     if model.offloader is not None and hasattr(model.offloader, "copier"):
         model.offloader.copier.sync()
-    del model, networks
+    del model, networks, extra
     gc.collect()
     clean_memory_on_device(device)
     vae = load_vae(args.vae, dtype=torch.float32, device=device)
@@ -90,6 +106,10 @@ def setup_parser():
     parser.add_argument("--moss_max_token_length", type=int, default=4096)
     parser.add_argument("--network_weights")
     parser.add_argument("--lora_multiplier", type=float, default=1.0)
+    parser.add_argument("--sample_lora")
+    parser.add_argument("--sample_lora_multiplier", type=float, default=0.6)
+    parser.add_argument("--sampler", choices=("euler", "ddim"), default="euler")
+    parser.add_argument("--scheduler", choices=("official", "simple"), default="official")
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--steps", type=int, default=50)

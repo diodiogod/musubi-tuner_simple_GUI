@@ -84,6 +84,8 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 **`musubi_tuner_gui.py`** - Main Tkinter application; the center of GUI behavior
 **`dataset_config_builder.py`** - Visual/raw dataset TOML builder with validation and safe round-tripping
 **`prompt_library.py`** - Global prompt-library persistence, searchable gallery, job migration, and test thumbnails
+**`preview_profiles.py`** - Shared preview defaults, checkpoint identity, sampling-adapter metadata and portable library starter prompts
+**`modern_gui/path_dialogs.py`** - Lightweight Modern UI native file/folder pickers; normalizes existing file paths into starting folders without loading the Classic GUI
 **`UPSTREAM_BASELINE.json`** - Machine-readable upstream Musubi baseline and protected downstream paths
 **`README.md`** - Main project docs
 **`LAUNCH_GUI.bat`** - Windows launcher
@@ -121,6 +123,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - `recovery.py` - additive continuation versus verified exact failed-run recovery
 - `monitor.py` / `samples.py` - training metrics, GPU snapshots, and protected sample discovery/serving
 - `static/` - dependency-free responsive browser application
+- Preview rendering and opening share one resolved media item for fresh results and persisted covers. Verify media interactions after a page reload as well as immediately after generation; image/video sources must retain the same full-preview and keyboard behavior.
 - `README.md` - launch, capability, compatibility, and safety reference
 - `PARITY.md` - audited classic-to-modern feature contract and preserved invariants
 

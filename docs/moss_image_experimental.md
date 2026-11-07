@@ -70,11 +70,47 @@ not a full-dataset throughput or trained-quality benchmark.
 4. The recommended MOSS pretraining noise schedule uses its published defaults:
    logit mean −1.09, standard deviation 0.95, cutoff 0.95, and a 1% uniform
    mixture. Disable the MOSS schedule to use the general timestep controls.
-5. Configure sample cards as images. Standard MOSS preview defaults are 50
-   denoising steps, guidance 3, and shift 5. Block 22 is skipped in the
+5. Configure sample cards as images. New cards use the experimental 25-step
+   preview recipe: DDIM, Simple schedule, guidance 3 and shift 5. Existing
+   cards keep their saved values; use the card's model defaults/recipe button
+   to change them. Euler with the Official schedule remains available.
+   Block 22 is skipped in the
    negative guidance pass by default; this does **not** skip it during
    training. Scheduled previews run between training steps, while standalone
    previews can optionally apply the selected LoRA.
+
+### Preview-only Turbo LoRA and library covers
+
+In **Training plan → Sample prompts**, expand **MOSS preview recipe and optional
+Turbo LoRA**. Classic GUI users find these settings at the top of **Samples**.
+Select an optional MOSS acceleration LoRA and start with strength **0.6**.
+Each prompt card controls its steps, sampler, schedule, CFG and seed; its
+settings apply to both standalone and scheduled samples. In Classic, use
+**Edit** on the prompt. ComfyUI-style MOSS LoRA keys are accepted.
+
+The sampling-only adapter stays frozen and disabled on CPU during training.
+It moves to the training GPU and turns on only for generation, then is
+disabled/offloaded in a `finally` block. It is not merged into your training
+model, optimizer or exported LoRA. The trained LoRA has its own preview
+strength, normally 1.0. DDIM here follows ComfyUI's text-to-image Euler updates;
+Simple uses ComfyUI's shifted discrete noise grid instead of the Official
+snapped grid. A missing optional preview attention package falls back to SDPA.
+
+Use **Generate base cover** from a card or the **Prompt Library** before
+training. Only model, VAE and text encoder paths are required, with no dataset
+or trained LoRA needed. This disables the trained LoRA while retaining any
+sampling-only Turbo adapter, so base/trained comparisons use the same recipe.
+Clear the Turbo path too for an unmodified base-model control.
+With no output folder selected, standalone previews are saved under the
+user's prompt-library data folder and remain viewable in Samples.
+
+The library stores covers by model family and selected checkpoint. Matching
+base covers take priority; an earlier example is used when no matching cover
+exists. Repeated MOSS previews do not evict another model's covers. H3 video
+previews save a still cover from their first decoded frame. **Add starter
+examples** adds ordinary subjects suitable for generating baseline covers.
+Standalone generation is currently available for Krea 2, MiniMax H3 and MOSS.
+This does not switch between SFT and Base checkpoints during denoising.
 
 Starting from LoRA weights creates a fresh optimizer. Resuming a compatible
 saved state restores the optimizer and run state through Musubi's normal

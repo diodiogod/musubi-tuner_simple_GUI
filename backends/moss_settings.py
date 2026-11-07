@@ -6,6 +6,8 @@ DEFAULTS = {
     "moss_convrot_int8": False, "moss_convrot_bwd_mode": "bf16",
     "moss_lora_target_preset": "All main-block projections",
     "moss_sample_flow_shift": "5.0", "moss_sample_skip_layers": "22",
+    "moss_sample_sampler": "euler", "moss_sample_scheduler": "official",
+    "moss_sample_lora": "", "moss_sample_lora_multiplier": "0.6",
     "moss_pretraining_schedule": True, "moss_logit_mean": "-1.09", "moss_logit_std": "0.95",
     "moss_timestep_cutoff": "0.95", "moss_timestep_uniform_ratio": "0.01",
     "moss_depth_anchor_weight": "0.0",
@@ -21,14 +23,20 @@ DEFAULTS = {
     "moss_repa_cache_dir": "",
 }
 CHOICES = {
+    "moss_sample_sampler": ["euler", "ddim"],
+    "moss_sample_scheduler": ["official", "simple"],
     "moss_convrot_bwd_mode": ["bf16", "int8"],
     "moss_lora_target_preset": ["All main-block projections", "Attention only"],
     "moss_depth_anchor_vae_device": ["training", "secondary", "cpu"],
     "moss_weight_noise_mode": ["relative", "absolute"],
     "moss_repa_device": ["training", "cpu"],
 }
-PATHS = {"moss_dit_model", "moss_text_encoder", "moss_tokenizer_cache_dir", "moss_repa_cache_dir"}
+PATHS = {"moss_dit_model", "moss_text_encoder", "moss_tokenizer_cache_dir", "moss_repa_cache_dir", "moss_sample_lora"}
 REPA_LABELS = {
+    "moss_sample_sampler": "Default preview sampler",
+    "moss_sample_scheduler": "Default preview noise schedule",
+    "moss_sample_lora": "Sampling-only Turbo LoRA (optional)",
+    "moss_sample_lora_multiplier": "Sampling-only Turbo strength",
     "moss_repa_enabled": "Use REPA visual guidance (experimental)",
     "moss_repa_weight": "REPA strength", "moss_repa_encoder": "DINOv2 model or local folder",
     "moss_repa_block": "MOSS layer to guide", "moss_repa_image_size": "Visual teacher image size",
@@ -57,7 +65,25 @@ REPA_DETAILS = (
     "resume states; generation LoRAs need no DINO or extra head. To turn REPA on/off or change its encoder, layer "
     "or image size between runs, continue from LoRA weights with a fresh optimizer."
 )
+SAMPLE_DETAILS = (
+    "Want previews to use the same Turbo LoRA you use for generation? Select that MOSS LoRA here. "
+    "It turns on only while generating a standalone preview or a scheduled training sample, then turns off before learning continues. "
+    "It is never merged into the training model or exported inside your trained LoRA.\n\n"
+    "A useful experimental recipe is 25 steps, DDIM, Simple schedule, CFG 3, flow shift 5 and Turbo strength 0.6. "
+    "The prompt card's settings control both standalone and scheduled samples. Existing prompts keep their values until you apply the recipe. "
+    "ComfyUI uses Euler updates for text-to-image DDIM; Simple selects different noise levels from MOSS's Official schedule.\n\n"
+    "Your trained LoRA has a separate strength, normally 1.0. Turning off Current LoRA or clicking Generate base cover removes that trained LoRA, "
+    "while keeping the optional Turbo adapter. This gives a fair before/after comparison with the same generation setup. "
+    "Clear the Turbo file too if you want a completely unmodified base-model result.\n\n"
+    "Generate base cover works before training: only the model, VAE and text encoder paths are needed. Covers are stored separately for each selected checkpoint; "
+    "the library falls back to an earlier example until that model has one. H3 video covers use the first decoded frame. "
+    "This uses the selected checkpoint throughout generation; it does not switch between SFT and Base models."
+)
 HELP = {
+    "moss_sample_sampler": "Fallback when a prompt has no sampler of its own. A prompt card's sampler takes priority for standalone and scheduled samples. DDIM + Simple is the 25-step recipe; Euler + Official keeps the original behavior.",
+    "moss_sample_scheduler": "Fallback when a prompt has no schedule of its own. A prompt card's schedule takes priority. Simple matches ComfyUI's noise levels; Official keeps MOSS's original schedule. Does not change training noise or require recaching.",
+    "moss_sample_lora": "Optional MOSS Turbo LoRA used only for previews and scheduled samples. It is disabled during learning. Try strength 0.6 with 25 steps, DDIM + Simple and CFG 3. Click ? for the full explanation.",
+    "moss_sample_lora_multiplier": "Strength of the optional sampling-only Turbo LoRA. Try 0.6 for the 25-step recipe. This does not change the trained LoRA's strength or training. Keep this setting the same when comparing base and trained samples.",
     "moss_repa_enabled": "Add an image-understanding teacher to normal MOSS training. Experimental and off by default. Click ? for how it works, memory costs and resume advice.",
     "moss_repa_weight": "How strongly the visual teacher guides learning. 0.5 is an experimental starting point. Too much can compete with the details you want to learn; disable REPA with its switch.",
     "moss_repa_encoder": "Hugging Face DINOv2 model ID or local model folder containing config and weights. Small downloads automatically and uses less memory. Base, Large and Giant cost more; SimpleTuner's example uses facebook/dinov2-giant. Other encoder families and register-token variants are not supported.",

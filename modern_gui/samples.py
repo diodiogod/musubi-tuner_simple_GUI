@@ -129,7 +129,8 @@ def discover_samples(
     limit: int = 300,
     source_paths: list[dict[str, str] | str] | None = None,
 ) -> dict[str, Any]:
-    root = _resolved_directory(output_dir)
+    from preview_profiles import standalone_preview_root
+    root = _resolved_directory(output_dir) if str(output_dir or "").strip() else standalone_preview_root()
     search_root = root / output_name if output_name and (root / output_name).is_dir() else root
     roots: list[tuple[Path, str]] = []
     if search_root.is_dir():
@@ -237,8 +238,9 @@ def discover_samples(
 
 
 def allowed_sample_roots(settings: dict[str, Any], history: list[dict[str, Any]]) -> list[Path]:
+    from preview_profiles import standalone_preview_root
     roots = []
-    values = [settings.get("output_dir")]
+    values = [settings.get("output_dir"), standalone_preview_root()]
     values.extend(item["path"] for item in load_sample_sources())
     for job in history:
         snapshot = job.get("settings_snapshot") or job.get("settings") or {}

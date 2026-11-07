@@ -13,7 +13,8 @@ def _sigma_grid(count: int, shift: float, total: int) -> torch.Tensor:
 
 
 def get_sampling_sigmas(
-    num_inference_steps: int, shift: float = 5.0, training_shift: float = 1.0, num_train_timesteps: int = NUM_TRAIN_TIMESTEPS
+    num_inference_steps: int, shift: float = 5.0, training_shift: float = 1.0, num_train_timesteps: int = NUM_TRAIN_TIMESTEPS,
+    scheduler: str = "official",
 ) -> torch.Tensor:
     """Return the sampling sigmas [steps + 1] (descending, the last value is 0) on the CPU in float32.
 
@@ -23,6 +24,16 @@ def get_sampling_sigmas(
     if num_inference_steps < 1 or shift <= 0 or training_shift <= 0:
         raise ValueError("Steps and shifts must be positive.")
     total = num_train_timesteps
+    if scheduler == "simple":
+        # Matches ComfyUI simple_scheduler + ModelSamplingDiscreteFlow:
+        # https://github.com/comfyanonymous/ComfyUI/blob/master/comfy/samplers.py
+        # Select descending entries of its ascending shifted 1/N .. 1 grid.
+        grid = torch.arange(1, total + 1, dtype=torch.float32) / total
+        grid = shift * grid / (1 + (shift - 1) * grid)
+        indices = total - 1 - (torch.arange(num_inference_steps) * (total / num_inference_steps)).long()
+        return torch.cat([grid[indices], grid.new_zeros(1)])
+    if scheduler != "official":
+        raise ValueError(f"Unknown MOSS scheduler: {scheduler}")
     sigmas = _sigma_grid(num_inference_steps, shift, total)
     training = _sigma_grid(total, training_shift, total).flip(0)  # ascending
     upper = torch.searchsorted(training, sigmas).clamp(max=total - 1)
@@ -63,6 +74,8 @@ def generate_latents(
     seed: Optional[int],
     device: torch.device,
     show_progress: bool = True,
+    sampler: str = "euler",
+    scheduler: str = "official",
 ) -> torch.Tensor:
     """Sample normalized, patchified latents [1, 128, H/16, W/16] (float32).
 
@@ -71,6 +84,8 @@ def generate_latents(
     """
     if height < 16 or width < 16 or height % 16 or width % 16:
         raise ValueError("MOSS image dimensions must be positive multiples of 16.")
+    if sampler not in {"euler", "ddim"}:
+        raise ValueError(f"Unknown MOSS sampler: {sampler}")
     if any(i < 0 or i >= dit.num_layers for i in uncond_skip_layers):
         raise ValueError("Unconditional skip layer is outside the model block range.")
     generator = torch.Generator(device="cpu")
@@ -88,7 +103,9 @@ def generate_latents(
         negative = negative_embeds.to(device, dtype=dit.dtype)
         negative_mask = negative_mask.to(device)
 
-    sigmas = get_sampling_sigmas(steps, flow_shift).to(device)
+    # ComfyUI's DDIM sampler uses Euler updates; its random-inpaint option has
+    # no effect for text-to-image generation without an inpainting mask.
+    sigmas = get_sampling_sigmas(steps, flow_shift, scheduler=scheduler).to(device)
     num_steps = len(sigmas) - 1
 
     with torch.no_grad(), tqdm(total=num_steps, desc="Denoising steps", disable=not show_progress) as pbar:

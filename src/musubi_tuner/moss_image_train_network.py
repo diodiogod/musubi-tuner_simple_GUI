@@ -1,6 +1,7 @@
 """MOSS LoRA training through Musubi's optimizer, dataset and resume runtime."""
 import gc
 import math
+from pathlib import Path
 import torch
 
 from musubi_tuner.hv_train_network import NetworkTrainer, DiTOutput, setup_parser_common, read_config_from_file, load_prompts
@@ -26,6 +27,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
         self._repa_capture = None
         self._repa_dataset = None
         self._repa_targets = None
+        self._sampling_adapter = None
 
     @property
     def architecture(self):
@@ -41,6 +43,9 @@ class MossImageNetworkTrainer(NetworkTrainer):
         self.dit_dtype = torch.bfloat16
         self._i2v_training = self._control_training = False
         self.default_guidance_scale = 3.0
+        if getattr(args, "moss_sample_lora", None):
+            if not Path(args.moss_sample_lora).is_file() or not math.isfinite(args.moss_sample_lora_multiplier):
+                raise ValueError("Sampling-only MOSS LoRA needs an existing file and a finite strength.")
         if args.depth_anchor_weight < 0 or args.weight_noise_sigma < 0:
             raise ValueError("Depth strength and adapter noise must be non-negative.")
         if args.depth_anchor_input_size <= 0 or args.depth_anchor_input_size % 14:
@@ -267,18 +272,31 @@ class MossImageNetworkTrainer(NetworkTrainer):
             prompt["negative_moss_embed"] = encoded[prompt.get("negative_prompt") or ""]
         return prompts
 
+    def _build_network(self, args, accelerator, transformer, vae, weight_dtype):
+        network = super()._build_network(args, accelerator, transformer, vae, weight_dtype)
+        if network is not None and getattr(args, "moss_sample_lora", None):
+            from musubi_tuner.moss_image.sampling_adapter import load_sampling_adapter
+            self._sampling_adapter = load_sampling_adapter(
+                args.moss_sample_lora, args.moss_sample_lora_multiplier, transformer, "cpu",
+            )
+        return network
+
     def do_inference(self, accelerator, args, sample_parameter, vae, dit_dtype, transformer,
                      discrete_flow_shift, sample_steps, width, height, frame_count, generator,
                      do_classifier_free_guidance, guidance_scale, cfg_scale, image_path=None, control_video_path=None):
         positive, mask = pad_text_embeds([sample_parameter["moss_embed"]])
         negative, negative_mask = pad_text_embeds([sample_parameter["negative_moss_embed"]])
-        latents = generate_latents(
-            transformer, positive, mask, negative, negative_mask, height, width, sample_steps,
-            cfg_scale if cfg_scale is not None else 3.0,
-            float(sample_parameter.get("discrete_flow_shift", args.moss_sample_flow_shift)),
-            parse_skip_layers(args.moss_sample_skip_layers), generator.initial_seed() if generator is not None else None,
-            accelerator.device,
-        )
+        from musubi_tuner.moss_image.sampling_adapter import sampling_adapter_enabled
+        with sampling_adapter_enabled(self._sampling_adapter, accelerator.device, offload=True):
+            latents = generate_latents(
+                transformer, positive, mask, negative, negative_mask, height, width, sample_steps,
+                cfg_scale if cfg_scale is not None else 3.0,
+                float(sample_parameter.get("discrete_flow_shift", args.moss_sample_flow_shift)),
+                parse_skip_layers(args.moss_sample_skip_layers), generator.initial_seed() if generator is not None else None,
+                accelerator.device,
+                sampler=sample_parameter.get("moss_sampler", args.moss_sample_sampler),
+                scheduler=sample_parameter.get("moss_scheduler", args.moss_sample_scheduler),
+            )
         vae.to(accelerator.device)
         try:
             with torch.no_grad(), torch.autocast(device_type=accelerator.device.type, enabled=False):
@@ -302,6 +320,10 @@ def moss_setup_parser(parser):
     parser.add_argument("--convrot_bwd_mode", choices=["bf16", "int8"], default="bf16")
     parser.add_argument("--moss_sample_flow_shift", type=float, default=5.0)
     parser.add_argument("--moss_sample_skip_layers", default="22")
+    parser.add_argument("--moss_sample_sampler", choices=("euler", "ddim"), default="euler")
+    parser.add_argument("--moss_sample_scheduler", choices=("official", "simple"), default="official")
+    parser.add_argument("--moss_sample_lora")
+    parser.add_argument("--moss_sample_lora_multiplier", type=float, default=0.6)
     parser.add_argument("--moss_pretraining_schedule", action="store_true")
     parser.add_argument("--moss_logit_mean", type=float, default=-1.09)
     parser.add_argument("--moss_logit_std", type=float, default=0.95)

@@ -10,6 +10,7 @@ from typing import Any
 
 from modern_gui.sample_prompts import serialize_sample_prompt
 from backends._common import setting_or_default
+from preview_profiles import with_preview_output
 
 
 def _same_path(left: str, right: str) -> bool:
@@ -107,6 +108,7 @@ def _write_batch_prompt_snapshot(save_path: Path, prompts: list[dict[str, Any]])
 
 
 def build_krea_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    settings = with_preview_output(settings)
     if settings.get("training_mode") != "Krea 2":
         raise ValueError("Standalone sample preview is currently supported for Krea 2 only.")
     required = {
@@ -180,6 +182,7 @@ def build_krea_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
 
 
 def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    settings = with_preview_output(settings)
     if settings.get("training_mode") != "MiniMax H3 (Experimental)":
         raise ValueError("MiniMax H3 preview requires MiniMax H3 mode.")
     required = {
@@ -263,6 +266,7 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
 
 
 def build_moss_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    settings = with_preview_output(settings)
     required = {"MOSS DiT": settings.get("moss_dit_model"), "Flux.2 VAE": settings.get("vae_model"),
                 "Qwen3.5 text encoder": settings.get("moss_text_encoder")}
     missing = [name for name, value in required.items() if not value or not Path(str(value)).is_file()]
@@ -307,6 +311,19 @@ def build_moss_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
         command.append("--convrot_int8")
     if settings.get("split_attn"):
         command.append("--split_attn")
+    sampler = str(prompt.get("sampler") or settings.get("moss_sample_sampler") or "euler")
+    scheduler = str(prompt.get("scheduler") or settings.get("moss_sample_scheduler") or "official")
+    if sampler not in {"euler", "ddim"} or scheduler not in {"official", "simple"}:
+        raise ValueError("MOSS preview supports Euler/DDIM and Official/Simple schedules.")
+    command.extend(["--sampler", sampler, "--scheduler", scheduler])
+    extra = str(settings.get("moss_sample_lora") or "").strip()
+    if extra:
+        if not Path(extra).is_file():
+            raise ValueError("The sampling-only Turbo LoRA file does not exist.")
+        strength = float(setting_or_default(settings, "moss_sample_lora_multiplier", 0.6))
+        if not math.isfinite(strength):
+            raise ValueError("Sampling-only Turbo strength must be finite.")
+        command.extend(["--sample_lora", extra, "--sample_lora_multiplier", str(strength)])
     lora = resolve_preview_lora(settings)
     if lora:
         command.extend(["--network_weights", lora, "--lora_multiplier", str(preview_lora_multiplier(settings))])

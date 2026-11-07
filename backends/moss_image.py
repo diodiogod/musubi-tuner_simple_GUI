@@ -37,6 +37,8 @@ def build_commands(settings):
             if key.startswith("moss_repa_") and key != "moss_repa_enabled":
                 add_arg(cmd, "--" + key, settings.get(key, DEFAULTS[key]))
     add_arg(cmd, "--moss_sample_flow_shift", settings.get("moss_sample_flow_shift", 5.0))
+    for key in ("moss_sample_sampler", "moss_sample_scheduler", "moss_sample_lora", "moss_sample_lora_multiplier"):
+        add_arg(cmd, "--" + key, settings.get(key), is_path=key == "moss_sample_lora")
     if settings.get("moss_pretraining_schedule", True):
         cmd.append("--moss_pretraining_schedule")
         for key in ("moss_logit_mean", "moss_logit_std", "moss_timestep_cutoff", "moss_timestep_uniform_ratio"):

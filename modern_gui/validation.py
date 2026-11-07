@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,16 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 raise ValueError
         except (TypeError, ValueError):
             error("moss_sample_skip_layers", "Skipped layers must be block numbers from 0 to 41.")
+        for key, options in (("moss_sample_sampler", {"euler", "ddim"}), ("moss_sample_scheduler", {"official", "simple"})):
+            if settings.get(key) and settings[key] not in options:
+                error(key, "Choose a supported MOSS preview option.")
+        if settings.get("moss_sample_lora") and not Path(str(settings["moss_sample_lora"])).is_file():
+            error("moss_sample_lora", "The sampling-only Turbo LoRA file does not exist.")
+        try:
+            if not math.isfinite(float(settings.get("moss_sample_lora_multiplier", 0.6))):
+                raise ValueError
+        except (TypeError, ValueError):
+            error("moss_sample_lora_multiplier", "Sampling-only Turbo strength must be a finite number.")
     elif mode == "Krea 2":
         require("krea2_dit_model", "Krea 2 RAW DiT")
         require("krea2_text_encoder", "Krea 2 text encoder")

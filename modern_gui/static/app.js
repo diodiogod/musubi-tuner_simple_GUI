@@ -312,7 +312,7 @@ function fieldControl(field, {wide = false} = {}) {
       const pathRow=document.createElement("div");pathRow.className="path-control";pathRow.append(input);
       const browse=document.createElement("button");browse.type="button";browse.className="quiet";browse.textContent="Browse";
       const directoryKeys=new Set(["output_dir","project_root","logging_dir","convert_output_dir","resume_path","moss_tokenizer_cache_dir","moss_repa_cache_dir"]);
-      browse.addEventListener("click",async()=>{try{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:directoryKeys.has(field.key)?"directory":"file",initial:input.value})});if(result.path){input.value=result.path;commit()}}catch(e){toast(e.message,"error")}});pathRow.append(browse);wrap.append(pathRow);
+      browse.addEventListener("click",()=>withBusy(browse,"Opening…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:directoryKeys.has(field.key)?"directory":"file",initial:input.value})});if(result.path){input.value=result.path;commit()}}).catch(e=>toast(e.message,"error")));pathRow.append(browse);wrap.append(pathRow);
     }else wrap.append(input);
     if(customInput)wrap.append(customInput);
   }
@@ -792,7 +792,7 @@ function uniqueStageLabel(base="Stage"){
 function defaultPromptForMode(){
   const mode=state.settings.training_mode||"Wan 2.2",turbo=mode==="Krea 2"&&(String(state.settings.krea2_turbo_dit||"").trim()||String(state.settings.krea2_turbo_lora||"").trim());
   if(mode==="Krea 2")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:turbo?8:28,seed:42,guidance:turbo?1:5.5,...(turbo?{mu:1.15}:{})};
-  if(mode==="MOSS-Image (Experimental)")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:50,seed:42,guidance:3,flow_shift:5};
+  if(mode==="MOSS-Image (Experimental)")return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:25,seed:42,guidance:3,flow_shift:5,sampler:"ddim",scheduler:"simple"};
   if(mode==="MiniMax H3 (Experimental)")return {enabled:true,prompt:"",neg:"",width:768,height:768,frames:39,fps:24,steps:20,seed:42,guidance:1,cfg_scale:1,flow_shift:12};
   if(mode==="Wan 2.2")return {enabled:true,prompt:"",neg:"",width:832,height:480,frames:25,steps:20,seed:42,guidance:5,cfg_scale:1};
   return {enabled:true,prompt:"",neg:"",width:1024,height:1024,steps:20,seed:42,guidance:5,cfg_scale:1};
@@ -901,6 +901,7 @@ function renderPlanOverview(){
 function promptMeta(prompt){
   const values=[`${prompt.width||"—"} × ${prompt.height||"—"}`,`${prompt.steps||"—"} steps`,String(prompt.seed??"").trim()?`Seed ${prompt.seed}`:"Random seed"];
   if(String(prompt.guidance??"").trim())values.push(`Guidance ${prompt.guidance}`);
+  if(prompt.sampler||prompt.scheduler)values.push([prompt.sampler,prompt.scheduler].filter(Boolean).join(" · "));
   if(String(prompt.frames??"").trim())values.push(`${prompt.frames} frames`);
   return values;
 }
@@ -921,22 +922,18 @@ function renderPromptCards(){
     const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index),previewIssues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),previewKind=state.settings.training_mode==="MiniMax H3 (Experimental)"&&Number(prompt.frames??39)>1?"video":"preview";
     const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
-    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewUrl=previewPath?`/api/sample-file?path=${encodeURIComponent(previewPath)}`:"",previewIsVideo=/\.(mp4|webm|mov|m4v)$/i.test(previewPath||"");
-    const thumbnail=previewUrl?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated preview">`):linked?`<img src="/api/prompt-library/thumbnail?id=${encodeURIComponent(prompt._library_id)}" loading="lazy" alt="Latest tested library preview">`:"";
+    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewItem=promptCardPreviewItem(prompt,index,previewPath),previewUrl=previewItem?.url||"",previewIsVideo=previewItem?.media_kind==="video";
+    const thumbnail=previewItem?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated or saved preview">`):"";
     card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
     const footerActions=card.querySelector(".prompt-card-footer>div"),defaults=document.createElement("button"),source=document.createElement("label"),previewButton=card.querySelector('[data-action="preview"]');
     defaults.type="button";defaults.className="text-action";defaults.dataset.action="defaults";defaults.textContent=`Use ${modelLabel} defaults`;defaults.title=`Reset only this prompt's sampling values to the recommended ${modelLabel} settings. Prompt text is preserved.`;
     source.className="preview-card-toggle";source.title=useLora?"This card generates with the selected/current LoRA. Turn it off for the base model; use Edit to choose the LoRA file and strength.":"This card generates with the base model. Turn it on for the selected/current LoRA; use Edit to choose the file and strength.";source.innerHTML=`<input type="checkbox" data-action="preview-lora" ${useLora?"checked":""}><span>${useLora?"LoRA":"Base"}</span>`;
-    if(previewSupported){previewButton.textContent=previewing?"Previewing…":previewReady?`Again: ${previewKind} with ${useLora?"LoRA":"base"}`:`Generate ${previewKind} with ${useLora?"LoRA":"base"}`;footerActions.prepend(defaults,source)}else footerActions.prepend(defaults);
+    if(previewSupported){const cover=document.createElement("button");cover.type="button";cover.className="text-action";cover.textContent="Generate base cover";cover.title="Generate now, before training, without the trained LoRA. Keeps the sampling-only Turbo LoRA if configured. Saves a cover for this model in the library.";cover.disabled=Boolean(previewIssues.length)||previewing;cover.addEventListener("click",()=>startPromptPreview([{...prompt,enabled:true,_preview_use_lora:false}],{indices:[index]}));footerActions.prepend(cover);previewButton.textContent=previewing?"Previewing…":previewReady?`Again: ${previewKind} with ${useLora?"LoRA":"base"}`:`Generate ${previewKind} with ${useLora?"LoRA":"base"}`;footerActions.prepend(defaults,source)}else footerActions.prepend(defaults);
     card.querySelector("img")?.addEventListener("error",event=>event.currentTarget.remove());
     const cardVideo=card.querySelector(".prompt-card-visual video");
     if(cardVideo){cardVideo.addEventListener("canplay",()=>cardVideo.play().catch(()=>{}),{once:true});cardVideo.addEventListener("error",()=>cardVideo.remove())}
     const visual=card.querySelector(".prompt-card-visual");
-    if(previewUrl){
-      visual.title="Double-click to open the full preview";
-      visual.setAttribute("aria-label","Double-click to open the full generated preview");
-      visual.addEventListener("dblclick",()=>openSamplePreview({media_kind:previewIsVideo?"video":"image",url:previewUrl,name:prompt._library_name||`Sample prompt ${index+1}`}));
-    }
+    if(previewItem)bindPreviewOpener(visual,previewItem);
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
     card.querySelector('[data-action="defaults"]').addEventListener("click",()=>applyPromptModelDefaults(index));
     card.querySelector('[data-action="preview-lora"]')?.addEventListener("change",event=>{prompt._preview_use_lora=event.target.checked;renderPlan();sync()});
@@ -998,11 +995,20 @@ function renderPlanPromptEditor(){
   seedActions.querySelector('[data-seed-mode="fixed"]').addEventListener("click",()=>{if(!String(prompt.seed??"").trim())prompt.seed=42;renderPlanPromptEditor();sync()});
   seedActions.querySelector('[data-seed-mode="random"]').addEventListener("click",()=>{prompt.seed="";renderPlanPromptEditor();sync()});
   sampling.append(seedActions);
+  if(mode==="MOSS-Image (Experimental)"){
+    sampling.querySelector(".guided-fields").append(
+      objectField("Sampler","sampler",prompt.sampler||state.settings.moss_sample_sampler||"euler",value=>prompt.sampler=value,{type:"select",options:["euler","ddim"],help:"DDIM matches ComfyUI's text-to-image DDIM behavior. Use Simple for the 25-step recipe."}),
+      objectField("Noise schedule","scheduler",prompt.scheduler||state.settings.moss_sample_scheduler||"official",value=>prompt.scheduler=value,{type:"select",options:["official","simple"],help:"Simple uses ComfyUI's noise levels. Official keeps the original MOSS schedule. Applies to standalone and scheduled samples."})
+    );
+    const recipe=document.createElement("button");recipe.type="button";recipe.className="quiet";recipe.textContent="Use 25-step MOSS recipe";recipe.addEventListener("click",()=>{Object.assign(prompt,{steps:25,guidance:3,flow_shift:5,sampler:"ddim",scheduler:"simple"});renderPlanPromptEditor();renderPromptCards();sync()});sampling.append(recipe);
+    const extra=document.createElement("details");extra.className="plan-editor-advanced";extra.innerHTML='<summary>Optional sampling-only Turbo LoRA</summary><p>Shared by every MOSS sample, including samples between epochs. Your trained LoRA stays separate. Leave the file blank for a clean base-model control.</p><div class="guided-fields"></div>';
+    appendFields(extra.querySelector(".guided-fields"),["moss_sample_lora","moss_sample_lora_multiplier"]);sampling.append(extra);
+  }
   host.append(words,resolution,sampling);
   if(["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(mode)){
     const previewSource=planEditorSection("Standalone preview source","This affects Generate Preview for this card only. The selected LoRA file and strength are shared so every LoRA-enabled card compares the same checkpoint.");
     previewSource.querySelector(".guided-fields").append(
-      objectField("Generate this card with","_preview_use_lora",promptPreviewUsesLora(prompt)?"lora":"base",value=>prompt._preview_use_lora=value==="lora",{type:"select",options:[{label:state.settings.minimax_h3_foundation_lora_enabled?"Foundation + current LoRA":"Current / selected LoRA",value:"lora"},{label:"Base model only",value:"base"}],help:state.settings.minimax_h3_foundation_lora_enabled?"LoRA mode loads the frozen foundation first and the current refinement second, matching training. Base model only disables both for a clean control.":"Choose LoRA to test what training learned, or Base to create a control image without the LoRA."}),
+      objectField("Generate this card with","_preview_use_lora",promptPreviewUsesLora(prompt)?"lora":"base",value=>prompt._preview_use_lora=value==="lora",{type:"select",options:[{label:state.settings.minimax_h3_foundation_lora_enabled?"Foundation + current LoRA":"Current / selected LoRA",value:"lora"},{label:"Base (no trained LoRA)",value:"base"}],help:state.settings.minimax_h3_foundation_lora_enabled?"LoRA mode loads the frozen foundation first and the current refinement second, matching training. Base model only disables both for a clean control.":"Choose LoRA to test what training learned, or Base to create a control image without the LoRA."}),
       objectField("LoRA file (blank = automatic)","preview_lora_path",state.settings.preview_lora_path||"",value=>state.settings.preview_lora_path=value,{wide:true,browseKind:"file",help:"Leave blank to use the continuation LoRA or latest checkpoint matching this run. Browse to test a specific safetensors file."}),
       objectField("LoRA strength","preview_lora_multiplier",state.settings.preview_lora_multiplier||"1.0",value=>state.settings.preview_lora_multiplier=value,{type:"number",help:"1.0 applies the LoRA at its normal strength. This shared value is used by every prompt card set to LoRA."})
     );
@@ -1121,6 +1127,8 @@ function renderPlan(){
   appendFields($("#run-cache-policies"),["recache_latents","recache_text","cache_incremental"]);
   appendFields($("#stage-policies"),["staged_recache_latents","staged_recache_text","cache_incremental"]);
   appendFields($("#sampling-frequency-fields"),["sample_every_n_epochs","sample_every_n_steps","sample_at_first","minimax_h3_training_preview_mode","moss_sample_flow_shift","moss_sample_skip_layers"]);
+  $("#moss-preview-settings").hidden=state.settings.training_mode!=="MOSS-Image (Experimental)";
+  appendFields($("#moss-preview-fields"),["moss_sample_lora","moss_sample_lora_multiplier"]);
   appendFields($("#checkpoint-frequency-fields"),["save_every_n_epochs","save_every_n_steps","rename_final_artifacts_to_epoch"]);
   appendFields($("#notes-fields"),["training_comment","auto_training_settings_summary"]);
   ensurePreviewSettings();renderSamplingEstimate();renderPromptCards();renderStageTimeline();renderPlanOverview();renderTrainingSummary();
@@ -1193,22 +1201,23 @@ function renderTrainingSummary(){
 }
 let libraryEntries=[];
 async function openPromptLibrary(){
-  const payload=await api("/api/prompt-library");libraryEntries=payload.prompts||[];renderLibrary();if(!$("#prompt-library-dialog").open)$("#prompt-library-dialog").showModal();
+  const payload=await api(`/api/prompt-library?${libraryModelQuery()}`);libraryEntries=payload.prompts||[];renderLibrary();if(!$("#prompt-library-dialog").open)$("#prompt-library-dialog").showModal();
 }
 async function startPromptPreview(prompts,{indices=[],stayInPlan=true}={}){
   const sources=new Set(prompts.map(prompt=>promptPreviewUsesLora(prompt)));
   if(sources.size>1)return toast("These cards mix Base and LoRA preview sources. Generate them individually, or set them to the same source first.","error");
   const previewSettings={...state.settings,preview_use_lora:sources.values().next().value??state.settings.preview_use_lora};
-  state.promptPreview={status:"starting",indices:[...indices],jobId:null,message:"Preparing preview"};renderPlan();
+  state.promptPreview={status:"starting",indices:[...indices],libraryId:prompts[0]?._library_id||"",jobId:null,message:"Preparing preview"};renderPlan();if($("#prompt-library-dialog").open)renderLibrary();
   try{
     const payload=await api("/api/prompts/preview",{method:"POST",body:JSON.stringify({settings:previewSettings,prompts})});
-    state.promptPreview={status:"running",indices:[...indices],jobId:payload.job?.id||null,message:"Generating preview",savePath:payload.save_path};
+    indices.forEach((index,position)=>{if(state.settings.sample_prompts_data?.[index]&&payload.library_ids?.[position])state.settings.sample_prompts_data[index]._library_id=payload.library_ids[position]});
+    state.promptPreview={status:"running",indices:[...indices],libraryId:prompts[0]?._library_id||"",jobId:payload.job?.id||null,message:"Generating preview",savePath:payload.save_path};if($("#prompt-library-dialog").open)renderLibrary();
     lastLogId=0;renderActive(payload.job);renderPlan();
     if(!stayInPlan)go("run");
     const source=payload.network_weights?`LoRA ${String(payload.network_weights).split(/[\\/]/).pop()} at ${payload.lora_multiplier||"1.0"}×`:"the base model (LoRA off)";
     toast(`Preview started with ${source}. You can keep editing this plan.`);
   }catch(e){
-    state.promptPreview={status:"failed",indices:[...indices],jobId:null,message:e.message};renderPlan();toast(e.message,"error");
+    state.promptPreview={status:"failed",indices:[...indices],jobId:null,message:e.message};renderPlan();if($("#prompt-library-dialog").open)renderLibrary();toast(e.message,"error");
   }
 }
 function promptIdentityClient(prompt){
@@ -1216,14 +1225,36 @@ function promptIdentityClient(prompt){
   Object.keys(prompt||{}).filter(key=>key!=="enabled"&&!key.startsWith("_library_")&&!key.startsWith("_preview_")).sort().forEach(key=>{const value=prompt[key];normalized[key]=typeof value==="string"?value.trim():value});
   return JSON.stringify(normalized);
 }
+function libraryModelQuery(){
+  const mode=state.settings.training_mode||"",key={"MOSS-Image (Experimental)":"moss_dit_model","MiniMax H3 (Experimental)":"minimax_h3_dit_model","Krea 2":"krea2_dit_model"}[mode]||"dit_model",path=(mode==="Krea 2"&&state.settings.krea2_turbo_dit)||state.settings[key]||"";
+  return new URLSearchParams({mode,model_key:path}).toString();
+}
+function libraryCoverUrl(id){return `/api/prompt-library/thumbnail?id=${encodeURIComponent(id)}&${libraryModelQuery()}&v=${state.captureNoticeJob||"0"}`}
+function promptCardPreviewItem(prompt,index,previewPath=""){
+  const name=prompt._library_name||`Sample prompt ${index+1}`;
+  if(previewPath)return {name,url:`/api/sample-file?path=${encodeURIComponent(previewPath)}`,media_kind:/\.(mp4|webm|mov|m4v)$/i.test(previewPath)?"video":"image"};
+  if(prompt._library_id)return {name,url:libraryCoverUrl(prompt._library_id),media_kind:"image"};
+  return null;
+}
 function renderLibrary(){
-  const query=($("#library-search").value||"").toLowerCase(),host=$("#library-list"),entries=libraryEntries.filter(entry=>JSON.stringify([entry.name,entry.tags,entry.collection,entry.prompt_data?.prompt]).toLowerCase().includes(query));
-  host.innerHTML=entries.length?"":'<div class="empty">No matching library prompts.</div>';
-  entries.sort((a,b)=>Number(Boolean(b.favorite))-Number(Boolean(a.favorite))||String(a.name).localeCompare(String(b.name))).forEach(entry=>{const card=document.createElement("article");card.className="structured-item library-card";card.innerHTML=`${entry.thumbnails?.length?`<img class="library-thumbnail" src="/api/prompt-library/thumbnail?id=${encodeURIComponent(entry.id)}" loading="lazy" alt="Latest tested result">`:""}<div class="library-copy"><div class="structured-item-head"><div><strong>${esc(entry.favorite?"★ ":"")}${esc(entry.name||"Untitled prompt")}</strong><small>${esc([entry.collection,...(entry.tags||[])].filter(Boolean).join(" · "))}</small></div><div class="structured-item-actions"><button data-library-action="favorite" title="Favorite">${entry.favorite?"★":"☆"}</button><button data-library-action="edit">Edit</button><button class="primary" data-library-action="add">Add to plan</button></div></div><p class="library-prompt-copy">${esc(entry.prompt_data?.prompt||"")}</p></div>`;
-    card.querySelector(".library-thumbnail")?.addEventListener("error",event=>event.currentTarget.remove());
-    card.querySelector('[data-library-action="add"]').addEventListener("click",()=>{const prompt=structuredClone(entry.prompt_data||{}),identity=promptIdentityClient(prompt),existing=(state.settings.sample_prompts_data||[]).findIndex(item=>promptIdentityClient(item)===identity);if(existing>=0){state.openPromptIndex=existing;toast("That prompt is already in this plan.");return}prompt._library_id=entry.id;prompt._library_revision=entry.revision||1;prompt._library_name=entry.name||"";prompt.enabled=true;state.settings.sample_prompts_data.push(prompt);state.openPromptIndex=state.settings.sample_prompts_data.length-1;renderPlan();sync();toast("Prompt added to this training plan.")});
+  const query=($("#library-search").value||"").toLowerCase(),host=$("#library-list"),entries=libraryEntries.filter(entry=>JSON.stringify([entry.name,entry.tags,entry.collection,entry.prompt_data?.prompt]).toLowerCase().includes(query)),supported=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
+  host.innerHTML=entries.length?"":'<div class="empty">No matching library prompts. Add the starter examples to begin.</div>';
+  $("#library-count").textContent=`${entries.length} of ${libraryEntries.length} prompts`;
+  entries.sort((a,b)=>Number(Boolean(b.favorite))-Number(Boolean(a.favorite))||String(a.name).localeCompare(String(b.name))).forEach(entry=>{
+    const generating=state.promptPreview?.libraryId===entry.id&&["starting","running"].includes(state.promptPreview.status),cover=entry.cover,meta=cover?.metadata||{},coverLabel=cover?`${meta.baseline?"Base":"Preview"}${meta.sampling_lora?" + Turbo":""} · ${meta.model_name||cover.mode||"Previous model"}${entry.cover_is_fallback?" · earlier example":""}`:"No cover for this prompt yet",card=document.createElement("article");card.className="structured-item library-card";
+    card.innerHTML=`<div class="library-cover">${cover?`<button type="button" class="library-cover-button"><img class="library-thumbnail" src="${libraryCoverUrl(entry.id)}" loading="lazy" alt="${esc(coverLabel)}"><span class="library-view-hint" aria-hidden="true">⤢ View image</span></button>`:'<div class="library-cover-empty"><span>Aa</span><small>No cover yet</small></div>'}<button class="library-favorite" data-library-action="favorite" title="Favorite" aria-label="${esc(`Favorite ${entry.name||"prompt"}`)}">${entry.favorite?"★":"☆"}</button></div>
+      <div class="library-copy"><div class="library-card-heading"><strong title="${esc(entry.name||"Untitled prompt")}">${esc(entry.name||"Untitled prompt")}</strong><button data-library-action="edit" class="text-action">Edit</button></div>
+      <small class="library-cover-label" title="${esc(coverLabel)}">${esc(coverLabel)}</small>${entry.collection||entry.tags?.length?`<small class="library-tags">${esc([entry.collection,...(entry.tags||[])].filter(Boolean).join(" · "))}</small>`:""}
+      <p class="library-prompt-copy" title="${esc(entry.prompt_data?.prompt||"")}">${esc(entry.prompt_data?.prompt||"")}</p><div class="library-card-actions"><button class="quiet" data-library-action="cover" ${supported&&!generating?"":"disabled"}>${generating?"Generating…":"Generate base cover"}</button><button class="primary" data-library-action="add">Add to plan</button></div></div>`;
+    const coverPreview=card.querySelector(".library-cover-button");
+    if(coverPreview)bindPreviewOpener(coverPreview,{name:entry.name||"Library cover",url:libraryCoverUrl(entry.id),media_kind:"image"});
+    card.querySelector(".library-thumbnail")?.addEventListener("error",()=>{coverPreview.disabled=true;coverPreview.classList.remove("can-open-preview");coverPreview.title="The saved cover is unavailable; generate it again."});
+    const coverButton=card.querySelector('[data-library-action="cover"]');coverButton.title="Generate before training with this model's defaults, without the trained LoRA. An optional sampling-only Turbo LoRA is still used. H3 video covers use the first frame.";
+    coverButton.addEventListener("click",()=>startPromptPreview([{...defaultPromptForMode(),prompt:entry.prompt_data?.prompt||"",_library_id:entry.id,_library_name:entry.name,_preview_use_lora:false}],{}));
+    card.querySelector('[data-library-action="add"]').addEventListener("click",()=>{const prompt={...defaultPromptForMode(),...structuredClone(entry.prompt_data||{})},identity=promptIdentityClient(prompt),existing=(state.settings.sample_prompts_data||[]).findIndex(item=>promptIdentityClient(item)===identity);if(existing>=0){state.openPromptIndex=existing;toast("That prompt is already in this plan.");return}prompt._library_id=entry.id;prompt._library_revision=entry.revision||1;prompt._library_name=entry.name||"";prompt.enabled=true;state.settings.sample_prompts_data.push(prompt);state.openPromptIndex=state.settings.sample_prompts_data.length-1;renderPlan();sync();toast("Prompt added to this training plan.")});
     card.querySelector('[data-library-action="favorite"]').addEventListener("click",async()=>{await api("/api/prompt-library/favorite",{method:"POST",body:JSON.stringify({id:entry.id})});await openPromptLibrary()});
-    card.querySelector('[data-library-action="edit"]').addEventListener("click",()=>openLibraryEditor(entry));host.append(card)})
+    card.querySelector('[data-library-action="edit"]').addEventListener("click",()=>openLibraryEditor(entry));host.append(card);
+  });
 }
 function openLibraryEditor(entry){$("#library-edit-id").value=entry.id;$("#library-edit-name").value=entry.name||"";$("#library-edit-prompt").value=entry.prompt_data?.prompt||"";$("#library-edit-collection").value=entry.collection||"";$("#library-edit-tags").value=(entry.tags||[]).join(", ");$("#prompt-editor-dialog").showModal()}
 function faceConfig(){state.settings.face_refinement_config=state.settings.face_refinement_config&&typeof state.settings.face_refinement_config==="object"?state.settings.face_refinement_config:{};return state.settings.face_refinement_config}
@@ -2125,7 +2156,8 @@ async function pollJob() {
       if(["completed","failed","stopped"].includes(status)&&state.promptPreview.status!==status){
         state.promptPreview={...state.promptPreview,status,outputs:payload.active.sample_outputs||state.promptPreview.outputs||[],message:status==="completed"?"Preview ready":`Preview ${status}`};
         renderPlan();
-        toast(status==="completed"?"Prompt preview finished. Open Samples to compare it.":`Prompt preview ${status}.`,status==="completed"?"info":"error");
+        if($("#prompt-library-dialog").open){if(status==="completed")openPromptLibrary().catch(()=>{});else renderLibrary()}
+        toast(status==="completed"?"Prompt preview finished. Its model cover is saved in the library. Open Samples to compare it.":`Prompt preview ${status}.`,status==="completed"?"info":"error");
       }
     }
   } catch(_) {}
@@ -2256,7 +2288,18 @@ function openSamplePreview(item){
   video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
   image.hidden=isVideo;video.hidden=!isVideo;
   if(isVideo){video.src=item.url;video.autoplay=false;video.loop=false;video.muted=true;video.controls=true;video.load()}else image.src=item.url;
-  $("#sample-preview-name").textContent=item.name;$("#sample-preview-dialog").showModal();
+  $("#sample-preview-name").textContent=item.name||"Preview";
+  const dialog=$("#sample-preview-dialog");if(!dialog.open)dialog.showModal();
+}
+function bindPreviewOpener(target,item){
+  target.classList.add("can-open-preview");
+  target.title="Open full preview · click or double-click";
+  target.setAttribute("aria-label",`Open full preview: ${item.name||"sample"}`);
+  if(target.tagName!=="BUTTON"){
+    target.setAttribute("role","button");target.tabIndex=0;
+    target.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();openSamplePreview(item)}});
+  }
+  target.addEventListener("click",()=>openSamplePreview(item));
 }
 function bindHoverVideoControls(video){
   if(!video||video.dataset.hoverControlsBound)return;
@@ -2536,6 +2579,7 @@ $$("dialog").forEach(dialog=>dialog.addEventListener("click",event=>{
 }));
 $("#dataset-media-dialog").addEventListener("cancel",event=>{if(state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))event.preventDefault();else state.datasetCaptionDirty=false});
 $("#plan-prompt-dialog").addEventListener("close",()=>{const index=state.openPromptIndex;renderPlan();setTimeout(()=>$(`.plan-prompt-card[data-prompt-index="${index}"] [data-action="edit"]`)?.focus({preventScroll:true}),0);state.planEditorReturnFocus=null});
+$("#sample-preview-dialog").addEventListener("close",()=>$("#sample-preview-video").pause());
 $("#stage-editor-dialog").addEventListener("close",()=>{const index=state.openStageIndex;renderPlan();setTimeout(()=>$$(".plan-stage-card")[index]?.querySelector('[data-stage-action="edit"]')?.focus({preventScroll:true}),0);state.stageEditorReturnFocus=null});
 $("#step-back").addEventListener("click",()=>moveStep(-1));$("#step-next").addEventListener("click",()=>moveStep(1));
 $("#save-settings").addEventListener("click",()=>saveSettings().catch(e=>toast(e.message)));$("#save-all-settings").addEventListener("click",()=>saveSettings().catch(e=>toast(e.message)));
@@ -2683,3 +2727,5 @@ window.addEventListener("beforeunload",event=>{if(!state.dirty&&!state.datasetDi
 window.addEventListener("popstate",()=>{const requested=location.hash.replace(/^#/,"")||"home";if($(`.view#${CSS.escape(requested)}`))go(requested,{historyMode:"none"})});
 initialize();pollJob();setInterval(pollJob,1000);pollGpu();setInterval(pollGpu,2500);
 setInterval(()=>{if($("#samples").classList.contains("active")&&state.activeJob&&["starting","running"].includes(state.activeJob.status))loadSamples().catch(()=>{})},5000);
+
+$("#library-starters").addEventListener("click",async()=>{try{const result=await api("/api/prompt-library/import",{method:"POST",body:JSON.stringify({starters:true})});await openPromptLibrary();toast(`${result.added} starter examples added.`)}catch(error){toast(error.message,"error")}});

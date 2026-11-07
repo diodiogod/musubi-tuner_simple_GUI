@@ -19,6 +19,10 @@ def line_to_prompt_dict(line: str) -> dict:
 
     for parg in prompt_args:
         try:
+            m = re.fullmatch(r"moss_(sampler|scheduler) (\w+)", parg.strip(), re.IGNORECASE)
+            if m:
+                prompt_dict["moss_" + m.group(1).lower()] = m.group(2).lower()
+                continue
             m = re.match(r"w (\d+)", parg, re.IGNORECASE)
             if m:
                 prompt_dict["width"] = int(m.group(1))

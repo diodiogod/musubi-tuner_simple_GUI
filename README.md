@@ -422,6 +422,13 @@ separate terms; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 - Collect and deduplicate prompts from current settings or historical jobs
 - Copy library prompts into a run without creating a live dependency on the library
 - Automatically preserve a model-badged library thumbnail after a successful standalone prompt test
+- Generate base-model covers before training, keep separate covers per checkpoint, and add portable starter prompts
+
+MOSS sample cards support a **25-step DDIM + Simple** recipe with CFG 3 and an
+optional **sampling-only Turbo LoRA at 0.6**. Configure the Turbo file in
+**Training plan → Sample prompts** (Classic: **Samples**). It applies only
+during generation; your trained LoRA remains separate. **Generate base cover**
+omits the trained LoRA and keeps the same optional Turbo adapter for comparison.
 
 The global library is user data, stored outside the repository at
 `%APPDATA%\MusubiTuner\prompt_library` on Windows. Each run and job snapshot still stores a

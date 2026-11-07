@@ -31,7 +31,7 @@ def default_library_root():
 def prompt_identity(prompt):
     identity = {}
     for key, value in prompt.items():
-        if key == "enabled" or str(key).startswith("_library_"):
+        if key == "enabled" or str(key).startswith(("_library_", "_preview_")):
             continue
         if isinstance(value, str):
             value = value.strip()
@@ -105,7 +105,8 @@ class PromptLibraryStore:
     def add_or_merge(self, prompt, source=None, name=""):
         clean_prompt = copy.deepcopy(prompt)
         library_id = str(clean_prompt.pop("_library_id", "") or "")
-        clean_prompt.pop("_library_revision", None)
+        name = name or str(clean_prompt.get("_library_name") or "")
+        clean_prompt = {key: value for key, value in clean_prompt.items() if not str(key).startswith(("_library_", "_preview_"))}
         entry = self.find(clean_prompt, library_id=library_id)
         created = False
         now = datetime.now().isoformat(timespec="seconds")
@@ -203,23 +204,46 @@ class PromptLibraryStore:
         value = Path(str(thumbnail.get("file") or ""))
         return value if value.is_absolute() else self.root / value
 
-    def latest_thumbnail(self, entry):
+    def latest_thumbnail(self, entry, mode="", model_key=""):
         valid = [thumb for thumb in entry.get("thumbnails", []) if self.thumbnail_path(thumb).is_file()]
-        return max(valid, key=lambda thumb: str(thumb.get("created_at") or "")) if valid else None
+        if not valid:
+            return None
+        def preference(thumb):
+            metadata = thumb.get("metadata") or {}
+            same_mode = thumb.get("mode") == mode or metadata.get("mode") == mode
+            exact = bool(model_key) and metadata.get("model_key") == model_key and same_mode
+            baseline = metadata.get("baseline", False)
+            return (int(exact) * 4 + int(same_mode) * 2 + int(baseline), str(thumb.get("created_at") or ""))
+        return max(valid, key=preference) if mode or model_key else max(valid, key=lambda thumb: str(thumb.get("created_at") or ""))
 
     def capture_thumbnail(self, prompt, image_path, mode, metadata=None):
         image_path = Path(image_path)
         if not image_path.is_file():
             return None, False
-        entry, created = self.add_or_merge(
-            prompt,
-            source={"type": "standalone_test", "mode": mode},
-        )
+        # A library cover may use different model defaults. Keep it attached to
+        # the original text without changing the saved prompt's recipe.
+        entry = self.find(library_id=str(prompt.get("_library_id") or ""))
+        if entry and str(entry.get("prompt_data", {}).get("prompt") or "").strip() != str(prompt.get("prompt") or "").strip():
+            entry = None
+        created = False
+        if entry is None:
+            entry, created = self.add_or_merge(prompt, source={"type": "standalone_test", "mode": mode})
         destination_dir = self.thumbnail_root / entry["id"]
         destination_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        destination = destination_dir / f"{stamp}{image_path.suffix.lower()}"
-        shutil.copy2(image_path, destination)
+        is_video = image_path.suffix.lower() in {".mp4", ".webm", ".mov", ".m4v"}
+        destination = destination_dir / f"{stamp}{'.jpg' if is_video else image_path.suffix.lower()}"
+        if is_video:
+            import av
+            with av.open(str(image_path)) as container:
+                frame = next(container.decode(video=0), None)
+                if frame is None:
+                    return None, False
+                poster = frame.to_image()
+                poster.thumbnail((768, 768))
+                poster.save(destination, quality=90)
+        else:
+            shutil.copy2(image_path, destination)
         relative = destination.relative_to(self.root).as_posix()
         thumbnail = {
             "file": relative,
@@ -229,9 +253,17 @@ class PromptLibraryStore:
         }
         if metadata:
             thumbnail["metadata"] = copy.deepcopy(metadata)
+        thumbnail.setdefault("metadata", {})["prompt_settings"] = {
+            key: value for key, value in prompt.items() if not str(key).startswith("_")
+        }
         entry.setdefault("thumbnails", []).append(thumbnail)
-        if len(entry["thumbnails"]) > 12:
-            removed = sorted(entry["thumbnails"], key=lambda item: str(item.get("created_at") or ""))[:-12]
+        # Bound history per checkpoint; refreshing MOSS must not evict H3's cover.
+        def group(item):
+            meta = item.get("metadata") or {}
+            return item.get("mode"), meta.get("model_key", ""), bool(meta.get("baseline"))
+        siblings = [item for item in entry["thumbnails"] if group(item) == group(thumbnail)]
+        if len(siblings) > 4:
+            removed = sorted(siblings, key=lambda item: str(item.get("created_at") or ""))[:-4]
             entry["thumbnails"] = [item for item in entry["thumbnails"] if item not in removed]
             for old_thumbnail in removed:
                 try:
@@ -267,13 +299,15 @@ class PromptLibraryStore:
 
 
 class PromptLibraryDialog:
-    def __init__(self, parent, store, colors, current_prompts, jobs, on_use):
+    def __init__(self, parent, store, colors, current_prompts, jobs, on_use, settings=None, on_generate=None):
         self.parent = parent
         self.store = store
         self.colors = colors
         self.current_prompts = current_prompts
         self.jobs = jobs
         self.on_use = on_use
+        self.settings = settings or (lambda: {})
+        self.on_generate = on_generate
         self.images = {}
         self.search_var = tk.StringVar()
         self.collection_var = tk.StringVar(value="All collections")
@@ -299,9 +333,10 @@ class PromptLibraryDialog:
         ttk.Button(header, text="Import File", command=self._import_file).pack(side="right", padx=(6, 0))
         ttk.Button(header, text="Collect from Jobs", command=self._collect_jobs).pack(side="right", padx=(6, 0))
         ttk.Button(header, text="Add Current Prompts", command=self._add_current).pack(side="right")
+        ttk.Button(header, text="Add starter examples", command=self._add_starters).pack(side="right", padx=6)
         ttk.Label(
             host,
-            text="Library prompts are copied into the current run. Editing the library never changes an existing run or job snapshot.",
+            text="Generate base covers before training. Covers follow the selected model; a previous example is used until a matching cover exists. Optional sampling-only Turbo LoRAs still apply.",
             style="PageHelp.TLabel",
             wraplength=900,
         ).pack(anchor="w", pady=(0, 8))
@@ -398,7 +433,9 @@ class PromptLibraryDialog:
         thumb_frame = tk.Frame(card, bg=self.colors.get("surface_alt", "#1E293B"), height=150)
         thumb_frame.pack(fill="x")
         thumb_frame.pack_propagate(False)
-        thumbnail = self.store.latest_thumbnail(entry)
+        from preview_profiles import preview_model_identity
+        identity = preview_model_identity(self.settings())
+        thumbnail = self.store.latest_thumbnail(entry, identity["mode"], identity["model_key"])
         rendered = False
         if thumbnail and PIL_AVAILABLE:
             try:
@@ -419,9 +456,13 @@ class PromptLibraryDialog:
                 fg=self.colors.get("muted", "#94A3B8"),
             ).pack(expand=True)
         if thumbnail:
+            meta = thumbnail.get("metadata") or {}
+            badge = ("Base" if meta.get("baseline") else "Preview") + (" + Turbo" if meta.get("sampling_lora") else "")
+            matches = meta.get("model_key") == identity["model_key"] and (thumbnail.get("mode") == identity["mode"] or meta.get("mode") == identity["mode"])
+            badge += " · " + (str(thumbnail.get("mode") or "Test") if matches else "Earlier example")
             tk.Label(
                 thumb_frame,
-                text=str(thumbnail.get("mode") or "Test"),
+                text=badge,
                 bg=self.colors.get("accent_hover", "#0284C7"),
                 fg="#FFFFFF",
                 font=("Segoe UI Semibold", 8),
@@ -444,13 +485,27 @@ class PromptLibraryDialog:
         actions = ttk.Frame(card, style="Surface.TFrame")
         actions.pack(fill="x", pady=(7, 0))
         ttk.Button(actions, text="Use", command=lambda item=entry: self._use([item])).pack(side="left", fill="x", expand=True)
+        if self.on_generate:
+            ttk.Button(actions, text="Base cover", command=lambda item=entry: self._generate(item)).pack(side="left", padx=(5, 0))
         ttk.Button(actions, text="Edit", command=lambda item=entry: self._edit(item)).pack(side="left", padx=(5, 0))
         ttk.Button(actions, text="Delete", style="Danger.TButton", command=lambda item=entry: self._delete(item)).pack(side="left", padx=(5, 0))
 
     def _use(self, entries):
-        prompts = [self.store.prompt_copy(entry) for entry in entries]
+        from preview_profiles import prompt_defaults
+        prompts = [{**prompt_defaults(self.settings()), **self.store.prompt_copy(entry)} for entry in entries]
         added, duplicates = self.on_use(prompts)
         messagebox.showinfo("Prompts copied", f"Added {added} prompt(s); skipped {duplicates} duplicate(s).", parent=self.window)
+
+    def _add_starters(self):
+        from preview_profiles import starter_prompts
+        self.store.import_prompts(starter_prompts(), source={"type": "starter_examples"})
+        self.refresh()
+
+    def _generate(self, entry):
+        from preview_profiles import prompt_defaults
+        prompt = {**prompt_defaults(self.settings()), "prompt": entry.get("prompt_data", {}).get("prompt", ""),
+                  "_library_id": entry["id"], "_preview_use_lora": False}
+        self.on_generate(prompt)
 
     def _use_visible(self):
         entries = self.visible_entries()

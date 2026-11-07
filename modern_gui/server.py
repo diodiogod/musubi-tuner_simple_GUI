@@ -284,14 +284,30 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 from prompt_library import PromptLibraryStore
 
                 store = PromptLibraryStore()
+                query = parse_qs(parsed.query)
+                mode = query.get("mode", [""])[0]
+                model_key = query.get("model_key", [""])[0]
+                if model_key:
+                    model_key = os.path.normcase(os.path.abspath(model_key))
+                for entry in store.prompts:
+                    entry["cover"] = store.latest_thumbnail(entry, mode, model_key)
+                    meta = (entry["cover"] or {}).get("metadata") or {}
+                    entry["cover_is_fallback"] = bool(entry["cover"]) and (
+                        bool(model_key) and meta.get("model_key") != model_key
+                        or mode and mode not in {entry["cover"].get("mode"), meta.get("mode")}
+                    )
                 return self._json({"prompts": store.prompts, "root": str(store.root)})
             if parsed.path == "/api/prompt-library/thumbnail":
                 from prompt_library import PromptLibraryStore
 
                 store = PromptLibraryStore()
-                entry_id = parse_qs(parsed.query).get("id", [""])[0]
+                query = parse_qs(parsed.query)
+                entry_id = query.get("id", [""])[0]
                 entry = store.find(library_id=entry_id)
-                thumbnail = store.latest_thumbnail(entry) if entry else None
+                model_key = query.get("model_key", [""])[0]
+                if model_key:
+                    model_key = os.path.normcase(os.path.abspath(model_key))
+                thumbnail = store.latest_thumbnail(entry, query.get("mode", [""])[0], model_key) if entry else None
                 if not thumbnail:
                     raise FileNotFoundError("This library prompt has no test thumbnail.")
                 requested = store.thumbnail_path(thumbnail).resolve()
@@ -580,9 +596,10 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 return self._json({"pose_plan": normalized, "warnings": warnings})
             if self.path == "/api/prompt-library/import":
                 from prompt_library import PromptLibraryStore
+                from preview_profiles import starter_prompts
 
                 added, merged = PromptLibraryStore().import_prompts(
-                    body.get("prompts", []),
+                    starter_prompts() if body.get("starters") else body.get("prompts", []),
                     source={"type": "modern_gui"},
                 )
                 return self._json({"added": added, "merged": merged})
@@ -614,31 +631,30 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     raise KeyError("The library prompt no longer exists.")
                 return self._json({"deleted": True})
             if self.path == "/api/prompts/preview":
-                from modern_gui.prompt_preview import build_prompt_preview
+                from modern_gui.prompt_preview import build_prompt_preview, resolve_preview_lora, preview_lora_multiplier
+                from preview_profiles import preview_metadata, with_preview_output
 
                 active = SUPERVISOR.snapshot(after=2**63 - 1).get("active")
                 if active and active.get("status") in {"starting", "running", "stopping"}:
                     raise RuntimeError("A web GUI job is already active.")
-                settings = dict(body.get("settings", {}))
+                settings = with_preview_output(body.get("settings", {}))
                 prompts = [item for item in body.get("prompts", []) if item.get("enabled", True)]
                 command, save_path = build_prompt_preview(settings, prompts)
+                from prompt_library import PromptLibraryStore
+                store = PromptLibraryStore()
+                for prompt in prompts:
+                    entry = store.find(library_id=str(prompt.get("_library_id") or ""))
+                    if entry is None or str(entry.get("prompt_data", {}).get("prompt") or "").strip() != str(prompt.get("prompt") or "").strip():
+                        entry, _ = store.add_or_merge(prompt)
+                    prompt["_library_id"] = entry["id"]
+                store.save()
                 prompt_file = (
                     Path(command[command.index("--from_file") + 1])
                     if "--from_file" in command
                     else None
                 )
-                resolved_lora = (
-                    str(command[command.index("--lora_weight") + 1])
-                    if "--lora_weight" in command
-                    else str(command[command.index("--network_weights") + 1])
-                    if "--network_weights" in command
-                    else ""
-                )
-                resolved_lora_multiplier = (
-                    str(command[command.index("--lora_multiplier") + 1])
-                    if "--lora_multiplier" in command
-                    else ""
-                )
+                resolved_lora = resolve_preview_lora(settings)
+                resolved_lora_multiplier = str(preview_lora_multiplier(settings)) if resolved_lora else ""
                 is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
                 preview_mode = ("MiniMax H3 (Experimental)" if is_h3 else
                                 "MOSS-Image (Experimental)" if settings.get("training_mode") == "MOSS-Image (Experimental)" else
@@ -659,6 +675,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                             "existing_outputs": existing_outputs, "prompts": prompts, "mode": preview_mode,
                             "output_name": settings.get("output_name", ""),
                             "network_weights": resolved_lora,
+                            "preview_metadata": preview_metadata(settings, resolved_lora),
                         },
                     )
                 except Exception:
@@ -672,23 +689,13 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                         "preview_mode": preview_mode,
                         "network_weights": resolved_lora,
                         "lora_multiplier": resolved_lora_multiplier,
+                        "library_ids": [prompt.get("_library_id") for prompt in prompts],
                     }
                 )
             if self.path == "/api/path/select":
-                import tkinter as tk
-                from tkinter import filedialog
+                from modern_gui.path_dialogs import choose_path
 
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                try:
-                    if body.get("kind") == "directory":
-                        selected = filedialog.askdirectory(initialdir=body.get("initial") or None, parent=root)
-                    else:
-                        selected = filedialog.askopenfilename(initialdir=body.get("initial") or None, parent=root)
-                finally:
-                    root.destroy()
-                return self._json({"path": selected or ""})
+                return self._json({"path": choose_path(body.get("kind", "file"), body.get("initial", ""))})
             if self.path == "/api/path/drop":
                 from modern_gui.path_drop import choose_directories
 

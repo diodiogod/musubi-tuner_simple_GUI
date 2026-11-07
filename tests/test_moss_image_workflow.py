@@ -110,6 +110,50 @@ def test_moss_preview_preserves_zero_seed_and_rejects_invalid_shift(tmp_path):
             build_prompt_preview(settings, [dict(prompt, flow_shift=bad_shift)])
 
 
+def test_moss_turbo_is_separate_from_trained_lora_and_prompt_recipe_roundtrips(tmp_path):
+    from preview_profiles import prompt_defaults
+    from musubi_tuner.training.sampling_prompts import line_to_prompt_dict
+    settings = recipe(tmp_path)
+    trained, turbo = tmp_path / "trained.safetensors", tmp_path / "turbo.safetensors"
+    trained.touch()
+    turbo.touch()
+    settings.update(preview_use_lora=True, preview_lora_path=str(trained), moss_sample_lora=str(turbo),
+                    moss_sample_lora_multiplier="0.6", moss_sample_sampler="ddim", moss_sample_scheduler="simple")
+    prompt = dict(prompt_defaults(settings), prompt="a teapot")
+    command, _ = build_prompt_preview(settings, [prompt])
+    args = preview_parser().parse_args(command[2:])
+    assert args.network_weights == str(trained) and args.lora_multiplier == 1
+    assert args.sample_lora == str(turbo) and args.sample_lora_multiplier == 0.6
+    assert (args.steps, args.sampler, args.scheduler) == (25, "ddim", "simple")
+    parsed = line_to_prompt_dict(serialize_sample_prompt(prompt, MODE))
+    assert parsed["moss_sampler"] == "ddim" and parsed["moss_scheduler"] == "simple"
+    assert parsed["sample_steps"] == 25
+    from backends.moss_image import build_commands
+    training = build_commands(settings)[0]
+    offset = training.index("src/musubi_tuner/moss_image_train_network.py")
+    train_args = moss_setup_parser(setup_parser_common()).parse_args(training[offset + 1:])
+    assert Path(train_args.moss_sample_lora) == turbo and train_args.moss_sample_lora_multiplier == 0.6
+    settings["preview_use_lora"] = False
+    command, _ = build_prompt_preview(settings, [prompt])
+    assert "--network_weights" not in command and "--sample_lora" in command
+
+
+def test_preview_before_training_needs_no_dataset_or_output_workspace(tmp_path, monkeypatch):
+    import prompt_library
+    from modern_gui.samples import discover_samples, allowed_sample_roots, resolve_sample_file
+    from PIL import Image
+    monkeypatch.setattr(prompt_library, "default_library_root", lambda: tmp_path / "library")
+    settings = recipe(tmp_path)
+    settings.update(dataset_config="", output_dir="", output_name="", preview_use_lora=False)
+    command, directory = build_prompt_preview(settings, [{"prompt": "a teapot"}])
+    assert directory == tmp_path / "library" / "preview_outputs" / "moss_test" / "sample_test"
+    image = Path(command[command.index("--output") + 1])
+    Image.new("RGB", (32, 32)).save(image)
+    assert resolve_sample_file(str(image), allowed_sample_roots(settings, []))[0] == image.resolve()
+    assert discover_samples("")["count"] == 1
+    assert settings["output_dir"] == ""
+
+
 def test_moss_face_stage_is_validated_and_built_with_moss_backend(tmp_path):
     settings = recipe(tmp_path)
     lora = tmp_path / "subject.safetensors"
