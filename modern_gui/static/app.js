@@ -2180,6 +2180,32 @@ function secondsPerStep(metrics,progress,elapsed,step){
   if(rate){const value=Number(rate[1]);if(Number.isFinite(value)&&value>0)return rate[2].toLowerCase()==="it/s"?1/value:value}
   return step>0&&elapsed>0?elapsed/step:0;
 }
+function renderRepaMetrics(metrics,progressLine="") {
+  // A running server can predate this monitor update. Read its existing log
+  // until the next server restart enables the structured REPA metric fields.
+  const logged=parseProgressLine(progressLine)?.text||"";
+  const value=(key,logKey,digits)=>{
+    const raw=metrics[key]??logged.match(new RegExp(`(?:^|[\\s,])${logKey}=([-+\\d.eE]+)(?=[\\s,\\]]|$)`))?.[1];
+    return raw!=null&&Number.isFinite(Number(raw))?Number(raw).toFixed(digits):"—";
+  };
+  const loss=value("repa_loss","loss/repa",5),weighted=value("repa_weighted","loss/repa_weighted",5),similarity=value("repa_similarity","repa/cosine_similarity",3);
+  $("#metric-repa").textContent=loss;
+  $("#metric-repa-group").hidden=loss==="—"&&weighted==="—"&&similarity==="—";
+  const button=$("#repa-metrics-help");button.dataset.repaWeighted=weighted;button.dataset.repaSimilarity=similarity;
+}
+function renderOptionalMetrics(metrics) {
+  for(const [name,key] of [["depth","depth_loss"],["dop","dop_loss"]]){
+    const used=metrics[key]!=null&&Number.isFinite(Number(metrics[key]));
+    $(`#metric-${name}-group`).hidden=!used;
+    $(`#metric-${name}`).textContent=used?Number(metrics[key]).toFixed(5):"—";
+  }
+}
+function openRepaMetricsHelp() {
+  const button=$("#repa-metrics-help"),field=findField("moss_repa_enabled");
+  const values=`Latest logged batch\nREPA loss: ${$("#metric-repa").textContent}\nAdded loss: ${button.dataset.repaWeighted||"—"}\nVisual-teacher similarity: ${button.dataset.repaSimilarity||"—"}`;
+  const explanation=field?.metrics_help||"REPA loss: lower means closer agreement with the visual teacher. Added loss: this loss multiplied by your REPA strength. For example, 0.54 at strength 0.5 adds 0.27 to the training objective.\n\nSimilarity: higher means closer agreement, from -1 to 1. REPA loss is 1 minus similarity. This is not an image-quality score or a percentage of correct details; compare generated samples too. A dash means no value has been reported.";
+  openHelp({key:"loss/repa · loss/repa_weighted · repa/cosine_similarity",label:"REPA statistics",help_detail:`${values}\n\n${explanation}`});
+}
 function renderMetrics(m,job) {
   const progress=parseProgressLine(latestProgressLine),phase=String(job?.phase||""),cachePhase=/caching/i.test(phase),cache=cachePhase&&m.cache_progress||{};
   const step=Number(m.step||progress?.step||0),total=Number(m.total_steps||progress?.total||0);
@@ -2202,7 +2228,7 @@ function renderMetrics(m,job) {
     if(total&&totalEpochs){const perEpoch=Math.max(1,Math.ceil(total/totalEpochs)),currentEpoch=Math.min(totalEpochs,Math.max(1,epoch||1)),boundary=Math.min(total,currentEpoch*perEpoch),remaining=Math.max(0,boundary-step),nextEpoch=Math.min(totalEpochs,currentEpoch+1);if(remaining){const nextEta=pace?formatDuration(remaining*pace):"time pending";nextMetric.textContent=`${remaining.toLocaleString()} steps · ~${nextEta}`;nextMetric.title=`About ${remaining.toLocaleString()} steps until epoch ${nextEpoch} (target step ${boundary.toLocaleString()}).`;}else{nextMetric.textContent=currentEpoch>=totalEpochs?"Final epoch · complete":"Epoch boundary reached";nextMetric.title="The next epoch boundary has been reached.";}}else{nextMetric.textContent="Waiting for epoch data";nextMetric.removeAttribute("title");}
     $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&pace)?formatDuration(pace*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||(pace?pace.toFixed(2)+"s / step":"—");
   }
-  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5);$("#metric-depth").textContent=m.depth_loss==null?"—":Number(m.depth_loss).toFixed(5);$("#metric-dop").textContent=m.dop_loss==null?"—":Number(m.dop_loss).toFixed(5);drawLoss(m.loss_history||[]);
+  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5);renderOptionalMetrics(m);renderRepaMetrics(m,progress?.text);drawLoss(m.loss_history||[]);
 }
 function drawLoss(history) {
   const canvas=$("#loss-canvas"),ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height; ctx.clearRect(0,0,w,h); ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--line"); ctx.lineWidth=1;
@@ -2625,6 +2651,7 @@ $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{met
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});
 $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{state.sampleMode=button.dataset.sampleMode;$$("[data-sample-mode]").forEach(x=>x.classList.toggle("active",x===button));if(state.samples){if(state.sampleMode==="gallery")renderSampleGallery();else if(state.samples.groups.length)renderComparison(Math.min(compareState.group,state.samples.groups.length-1))}}));
 $("#stop-job").addEventListener("click",async()=>{try{renderActive((await api("/api/jobs/stop",{method:"POST",body:"{}"})).job);toast("Stop requested.")}catch(e){toast(e.message)}});
+$("#repa-metrics-help").addEventListener("click",openRepaMetricsHelp);
 $("#stop-next-epoch").addEventListener("click",async event=>{const enabled=!event.currentTarget.classList.contains("active");try{const payload=await api("/api/jobs/stop-after-epoch",{method:"POST",body:JSON.stringify({enabled})});renderActive(payload.job);toast(enabled?`Armed: training will stop at the end of epoch ${payload.job.stop_after_epoch}, after its checkpoint and scheduled samples.`:"Current-epoch stop cancelled.")}catch(e){toast(e.message,"error")}});
 $("#clear-log").addEventListener("click",()=>{$("#live-log").textContent="";latestProgressLine="";$("#live-progress").hidden=true});
 $("#copy-log").addEventListener("click",()=>navigator.clipboard.writeText($("#live-log").textContent+(latestProgressLine?"\n"+latestProgressLine:"")).then(()=>toast("Console output copied.")));

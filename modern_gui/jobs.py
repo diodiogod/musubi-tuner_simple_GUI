@@ -204,6 +204,9 @@ class JobSupervisor:
                     "depth_loss": None,
                     "dop_loss": None,
                     "dop_weighted": None,
+                    "repa_loss": None,
+                    "repa_weighted": None,
+                    "repa_similarity": None,
                     "loss_history": [],
                     "speed_history": [],
                 },
@@ -260,7 +263,8 @@ class JobSupervisor:
                     "step": 0, "total_steps": 0, "epoch": 0, "total_epochs": 0,
                     "cache_progress": None,
                     "loss": None, "depth_loss": None, "dop_loss": None,
-                    "dop_weighted": None, "loss_history": [], "speed_history": [],
+                    "dop_weighted": None, "repa_loss": None, "repa_weighted": None,
+                    "repa_similarity": None, "loss_history": [], "speed_history": [],
                 },
                 "stop_after_epoch": None,
                 "stop_after_epoch_triggered": False,
@@ -424,6 +428,9 @@ class JobSupervisor:
                     phase = self._phase(command)
                     if "caching" in phase.casefold():
                         self._active.setdefault("metrics", {})["cache_progress"] = None
+                    if phase == "Training":
+                        for key in ("repa_loss", "repa_weighted", "repa_similarity"):
+                            self._active.setdefault("metrics", {})[key] = None
                     self._active["phase"] = f"{phase_prefix} · {phase}" if phase_prefix else phase
                     job_id = str(self._active["id"])
                 self._append_log("system", f"$ {subprocess.list2cmdline([str(value) for value in command])}")

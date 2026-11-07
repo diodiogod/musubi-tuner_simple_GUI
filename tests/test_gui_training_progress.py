@@ -15,6 +15,23 @@ class GuiTrainingProgressTests(unittest.TestCase):
         self.assertAlmostEqual(parsed["loss"], 0.119)
         self.assertAlmostEqual(parsed["depth_loss"], 0.238)
 
+    def test_parses_and_formats_repa_metrics(self):
+        parsed = MusubiTunerGUI._parse_main_training_progress(
+            "steps: 1%|#| 1/100 [00:03<05:00, 3.0s/it, avr_loss=0.9, "
+            "loss/repa=0.54, loss/repa_weighted=0.27, repa/cosine_similarity=0.46]"
+        )
+        self.assertAlmostEqual(parsed["repa_loss"], 0.54)
+        self.assertAlmostEqual(parsed["repa_weighted"], 0.27)
+        self.assertAlmostEqual(parsed["repa_similarity"], 0.46)
+        self.assertEqual(MusubiTunerGUI._repa_monitor_text(parsed),
+                         "REPA: active · loss 0.5400 · added loss 0.27000\nVisual teacher similarity: 0.460")
+
+    def test_repa_monitor_preserves_zero_and_does_not_invent_missing_values(self):
+        self.assertIn("loss 0.0000 · added loss 0.00000", MusubiTunerGUI._repa_monitor_text({
+            "repa_loss": 0.0, "repa_weighted": 0.0,
+        }))
+        self.assertIn("similarity: —", MusubiTunerGUI._repa_monitor_text({"repa_loss": 0.0}))
+
     def test_epoch_markers_only_include_reached_boundaries(self):
         markers = MusubiTunerGUI._epoch_marker_positions(1320, 3, 467)
 

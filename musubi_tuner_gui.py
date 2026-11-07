@@ -29,6 +29,7 @@ from job_performance import (
     compact_speed_history,
     job_log_path,
     load_modern_history_for_classic,
+    parse_training_metrics,
     parse_training_speed,
     performance_summary,
     read_job_log,
@@ -3660,6 +3661,16 @@ class MusubiTunerGUI:
         self.dop_status_label = ttk.Label(monitor_frame, textvariable=self.dop_status_var, style="PageHelp.TLabel")
         self.dop_status_label.pack(anchor="w", padx=10, pady=(3, 0))
         ToolTip(self.dop_status_label, "When DOP is enabled, this shows its raw preservation error and the amount added to the total training loss. Changing finite values confirm DOP is actively protecting the selected class.")
+        repa_status_row = ttk.Frame(monitor_frame)
+        repa_status_row.pack(fill="x", padx=10, pady=(3, 0))
+        self.repa_status_var = tk.StringVar(value="REPA: Off")
+        self.repa_status_label = ttk.Label(repa_status_row, textvariable=self.repa_status_var,
+                                          style="PageHelp.TLabel", wraplength=500)
+        self.repa_status_label.pack(side="left", fill="x", expand=True)
+        ToolTip(self.repa_status_label, "REPA loss, its added contribution and visual-teacher similarity. Click ? to understand the numbers.")
+        ttk.Button(repa_status_row, text="?", width=3, command=lambda: messagebox.showinfo(
+            "REPA statistics", moss_settings.REPA_METRICS_HELP, parent=self.root,
+        )).pack(side="right", padx=(6, 0))
         ttk.Button(monitor_frame, text="Generate Command", command=self.show_command).pack(pady=(10,5), padx=10, fill='x')
 
         bottom_pane_host = ttk.Frame(self.monitor_bottom_pane)
@@ -8635,6 +8646,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 f"DOP: waiting for first training step · strength {dop_strength:g}"
                 if dop_active and dop_strength > 0 else "DOP: Off"
             )
+            repa_entry = self.entries.get("moss_repa_enabled")
+            repa_active = self.training_mode_var.get() == moss_settings.MODE and repa_entry and repa_entry.var.get()
+            self.repa_status_var.set("REPA: waiting for first training step" if repa_active else "REPA: Off")
         self.last_progress_milestone = 0
         command_display = ' '.join(f'"{part}"' if ' ' in part else part for part in command)
         output_widget.insert(tk.END, f"\n--- Running command ---\n{command_display}\n\n")
@@ -8813,19 +8827,23 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         match = re.search(r"steps:\s*\d{1,3}%.*?(\d+)\s*/\s*(\d+)\s*\[", text)
         if not match:
             return None
-        number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
-        def metric(name):
-            found = re.search(rf"{re.escape(name)}=({number})", text)
-            return float(found.group(1)) if found else None
+        metrics = parse_training_metrics(text)
         return {
             "step": int(match.group(1)),
             "total": int(match.group(2)),
-            "loss": metric("avr_loss"),
-            "depth_loss": metric("loss/depth_anchor"),
-            "diffusion_loss": metric("loss/diffusion"),
-            "dop_loss": metric("loss/dop"),
-            "dop_weighted": metric("loss/dop_weighted"),
+            **{key: metrics.get(key) for key in (
+                "loss", "depth_loss", "diffusion_loss", "dop_loss", "dop_weighted",
+                "repa_loss", "repa_weighted", "repa_similarity",
+            )},
         }
+
+    @staticmethod
+    def _repa_monitor_text(progress):
+        def value(key, digits):
+            number = progress.get(key)
+            return f"{number:.{digits}f}" if number is not None and math.isfinite(number) else "—"
+        return (f"REPA: active · loss {value('repa_loss', 4)} · added loss {value('repa_weighted', 5)}\n"
+                f"Visual teacher similarity: {value('repa_similarity', 3)}")
 
     def read_output(self, process, on_complete, output_widget):
         if not process:
@@ -8932,6 +8950,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                                 self.dop_status_var.set,
                                 f"DOP: active · class error {dop_loss:.4f} · added loss {weighted:.5f}",
                             )
+                        if training_progress and training_progress["repa_loss"] is not None:
+                            self.root.after(0, self.repa_status_var.set, self._repa_monitor_text(training_progress))
 
                         epoch_match = re.search(r"epoch\s*=?\s*(\d+)\s*/\s*(\d+)", chunk, re.IGNORECASE)
                         if epoch_match:

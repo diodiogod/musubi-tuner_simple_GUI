@@ -285,3 +285,15 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   #prompt-library-dialog .library-description{margin-right:25px}
   .library-toolbar{gap:10px}#prompt-library-dialog .library-toolbar .search{flex-basis:100%;min-width:0}
 }
+
+/* Preserve the compact, right-aligned summary; secondary values open on click. */
+.run-overview{flex-wrap:wrap}
+.metric-strip{display:flex;flex:0 0 auto;min-width:0;margin-left:auto;align-items:center}
+.metric-strip>div{flex:0 0 auto;min-width:84px;padding:8px 14px}
+.metric-strip>[hidden]{display:none}
+.metric-button{display:block;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.metric-button:focus-visible{outline:2px solid var(--accent);outline-offset:5px;border-radius:2px}
+.metric-button:hover small{color:var(--text)}
+.metric-heading{display:flex;align-items:center;gap:6px}
+.metric-question{display:inline-grid;place-items:center;width:14px;height:14px;border:1px solid var(--line);border-radius:50%;color:var(--muted);font-size:10px;line-height:1}
+@media(max-width:680px){.metric-strip{flex-wrap:wrap;justify-content:flex-end;max-width:100%}.metric-strip>div{padding-inline:10px}}

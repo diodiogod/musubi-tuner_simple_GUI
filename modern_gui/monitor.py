@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
 
+from job_performance import parse_training_metrics
 
-METRIC_PATTERN = re.compile(r"(?P<key>avr_loss|loss/current|loss/depth_anchor|loss/dop_weighted|loss/dop)=([-+\d.eE]+)")
+
 STEP_PATTERN = re.compile(r"^\s*steps:.*?\b(?P<step>\d+)\s*/\s*(?P<total>\d+)\b", re.IGNORECASE)
 EPOCH_PATTERN = re.compile(r"\bepoch\s*=?\s*(?P<epoch>\d+)\s*/\s*(?P<total>\d+)", re.IGNORECASE)
 FACE_STEP_PATTERN = re.compile(r"^step=(?P<step>\d+)/(?P<total>\d+)")
@@ -33,22 +33,7 @@ def parse_training_line(line: str) -> dict[str, Any]:
     if epoch_match:
         update["epoch"] = int(epoch_match.group("epoch"))
         update["total_epochs"] = int(epoch_match.group("total"))
-    for match in METRIC_PATTERN.finditer(line):
-        try:
-            value = float(match.group(2))
-        except ValueError:
-            continue
-        if not math.isfinite(value):
-            continue
-        key = match.group("key")
-        if key in {"avr_loss", "loss/current"}:
-            update["loss"] = value
-        elif key == "loss/depth_anchor":
-            update["depth_loss"] = value
-        elif key == "loss/dop":
-            update["dop_loss"] = value
-        elif key == "loss/dop_weighted":
-            update["dop_weighted"] = value
+    update.update(parse_training_metrics(line))
     return update
 
 

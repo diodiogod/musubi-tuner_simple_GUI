@@ -43,6 +43,17 @@ REPA_LABELS = {
     "moss_repa_device": "Teacher compute device", "moss_repa_cache_size": "Remembered images (RAM)",
     "moss_repa_cache_dir": "REPA feature cache folder",
 }
+REPA_METRICS_HELP = (
+    "REPA compares features learned by MOSS with features from a frozen visual teacher (DINOv2). "
+    "These numbers describe that agreement for the latest logged training batch.\n\n"
+    "REPA loss: lower means closer agreement with the teacher. Added loss: the REPA loss multiplied by "
+    "your REPA strength; this is the amount added to the training objective. For example, loss 0.54 "
+    "at strength 0.5 adds 0.27.\n\n"
+    "Similarity: higher means closer agreement, on a scale from -1 to 1. REPA loss is 1 minus this similarity. "
+    "It is not an image-quality score or a percentage of correct details. A better number alone does not "
+    "prove that your LoRA looks better or is protected against overtraining; compare generated samples too. "
+    "A dash means no value has been reported."
+)
 REPA_DETAILS = (
     "Want to give MOSS an extra visual teacher while it learns your pictures? REPA adds guidance from DINOv2, "
     "a frozen image-understanding model. Normal training still teaches your captioned images. REPA also encourages "
@@ -63,7 +74,8 @@ REPA_DETAILS = (
     "still decodes the current prediction during training; REPA caching does not remove that separate cost.\n\n"
     "REPA works with the MOSS BF16 and ConvRot training paths. It adds a small learned projection head to full "
     "resume states; generation LoRAs need no DINO or extra head. To turn REPA on/off or change its encoder, layer "
-    "or image size between runs, continue from LoRA weights with a fresh optimizer."
+    "or image size between runs, continue from LoRA weights with a fresh optimizer.\n\n"
+    + REPA_METRICS_HELP
 )
 SAMPLE_DETAILS = (
     "Want previews to use the same Turbo LoRA you use for generation? Select that MOSS LoRA here. "

@@ -20,6 +20,26 @@ _STATE_EPOCH_RE = re.compile(r"-(\d+)-state$", re.IGNORECASE)
 _STATE_STEP_RE = re.compile(r"-step(\d+)-state$", re.IGNORECASE)
 _LORA_EPOCH_RE = re.compile(r"-(\d+)$", re.IGNORECASE)
 _LORA_STEP_RE = re.compile(r"-step(\d+)$", re.IGNORECASE)
+_TRAINING_METRIC_KEYS = {
+    "avr_loss": "loss", "loss/current": "loss", "loss/diffusion": "diffusion_loss",
+    "loss/depth_anchor": "depth_loss", "loss/dop": "dop_loss", "loss/dop_weighted": "dop_weighted",
+    "loss/repa": "repa_loss", "loss/repa_weighted": "repa_weighted",
+    "repa/cosine_similarity": "repa_similarity",
+}
+_TRAINING_METRIC_RE = re.compile(
+    r"(?<![\w/])(?P<key>" + "|".join(re.escape(key) for key in _TRAINING_METRIC_KEYS)
+    + r")=(?P<value>[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)(?=[\s,\]]|$)"
+)
+
+
+def parse_training_metrics(line: str) -> dict[str, float]:
+    """Read finite logged losses consistently in both training monitors."""
+    result = {}
+    for match in _TRAINING_METRIC_RE.finditer(line):
+        value = float(match.group("value"))
+        if math.isfinite(value):
+            result[_TRAINING_METRIC_KEYS[match.group("key")]] = value
+    return result
 
 
 def _number(value: Any) -> int:
