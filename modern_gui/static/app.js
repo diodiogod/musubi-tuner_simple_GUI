@@ -311,7 +311,7 @@ function fieldControl(field, {wide = false} = {}) {
     if(field.type==="path"){
       const pathRow=document.createElement("div");pathRow.className="path-control";pathRow.append(input);
       const browse=document.createElement("button");browse.type="button";browse.className="quiet";browse.textContent="Browse";
-      const directoryKeys=new Set(["output_dir","project_root","logging_dir","convert_output_dir","resume_path","moss_tokenizer_cache_dir"]);
+      const directoryKeys=new Set(["output_dir","project_root","logging_dir","convert_output_dir","resume_path","moss_tokenizer_cache_dir","moss_repa_cache_dir"]);
       browse.addEventListener("click",async()=>{try{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:directoryKeys.has(field.key)?"directory":"file",initial:input.value})});if(result.path){input.value=result.path;commit()}}catch(e){toast(e.message,"error")}});pathRow.append(browse);wrap.append(pathRow);
     }else wrap.append(input);
     if(customInput)wrap.append(customInput);

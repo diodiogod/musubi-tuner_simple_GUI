@@ -129,13 +129,15 @@ def test_gui_settings_reach_parser_and_detailed_help():
     from modern_gui.settings import settings_schema
     from modern_gui.validation import validate_training_settings
     settings = dict(DEFAULTS, training_mode=MODE, moss_repa_enabled=True, moss_repa_device="cpu",
-                    output_dir="out", output_name="repa")
+                    output_dir="out", output_name="repa", moss_repa_cache_dir="shared REPA features")
     command = build_commands(settings)[0]
     args = moss_setup_parser(setup_parser_common()).parse_args(command[command.index("src/musubi_tuner/moss_image_train_network.py") + 1:])
     assert args.moss_repa_enabled and args.moss_repa_device == "cpu" and args.moss_repa_weight == .5
+    assert args.moss_repa_cache_dir == "shared REPA features"
     fields = {field["key"]: field for section in settings_schema(settings)["sections"] for field in section["fields"]}
     assert "fresh optimizer" in fields["moss_repa_enabled"]["help_detail"]
     assert fields["moss_repa_enabled"]["modes"] == [MODE]
+    assert fields["moss_repa_cache_dir"]["type"] == "path"
     settings["moss_repa_image_size"] = "225"
     assert any("REPA" in item["message"] for item in validate_training_settings(settings)["errors"])
     settings["moss_repa_enabled"] = False

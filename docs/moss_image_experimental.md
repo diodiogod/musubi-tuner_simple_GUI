@@ -27,6 +27,15 @@ check REPA-only gradients into the adapter/head, frozen teachers, rectangular
 buckets, checkpointing, bounded cache reuse and projection-state restoration.
 These are wiring and backward-pass checks, not a trained-quality comparison.
 
+The persistent REPA target path was also tested at 2048×2048, rank 24, with
+zero swapped blocks and depth enabled on the RTX 4090. Both the initial feature
+preparation and a later launch reusing its saved target completed two updates,
+including a full state save. With RAM target caching disabled, measured REPA
+feature reads were approximately 0.01–0.05 seconds in this one-image probe;
+the previous uncached full-resolution target computation took 7–13 seconds.
+Preparation is now paid before DiT loading. This is a short mechanism check,
+not a full-dataset throughput or trained-quality benchmark.
+
 ## Files
 
 - **DiT:** MOSS-Image Base BF16 or the ComfyUI `moss_image_base_int8_convrot.safetensors`.
@@ -117,26 +126,50 @@ families and DINO register-token variants are rejected. The teacher downloads
 on first use; no additional dependencies or dataset annotations are required.
 
 REPA uses the same clean cached latents that supply the normal training target.
-On a cache miss, the frozen Flux.2 VAE decodes one image **without gradients**,
-then DINO reads the resized image. The VAE and DINO run sequentially and return
-to CPU before the training forward. This avoids depth guidance's differentiable
-VAE graph, but high-resolution decoding and the teacher still need memory.
-Select **cpu** for teacher compute to run both helpers on CPU when GPU memory
-is tight; this can be very slow. Teacher size **224** is a cheaper experiment
-than 518 and does not change your dataset resolution.
+Before loading the DiT, the trainer prepares missing teacher features: the frozen
+Flux.2 VAE decodes each unique image **without gradients**, then DINO reads the
+resized image. The first preparation can take time, especially at 2K, but does
+not compete with a resident DiT for GPU memory. The helpers stay resident during
+preparation and DINO is released before the training model loads. The same FP32
+decoding, preprocessing and target features are used; this optimization does
+not lower the target resolution or change the learning objective.
 
-A bounded CPU RAM cache remembers teacher features for **64** images by default;
-0 disables reuse. Features are keyed by exact latent contents and spatial shape.
-They are rebuilt on demand after restarting, so **neither text nor latent
-recaching is needed when enabling REPA**. Normal image/VAE/resolution cache
-rules still apply when those inputs change. Rectangular image buckets use
-two-dimensional spatial alignment; caption tokens never enter the REPA loss.
+Features are saved under `moss_repa_features/` beside each dataset's latent cache.
+Both GUIs offer an optional **REPA feature cache folder** for a shared location
+(`--moss_repa_cache_dir` on the CLI). A signature identifies the VAE checkpoint,
+the pinned DINOv2 revision or local teacher weights, preprocessing settings and
+exact latent contents/shape/dtype. Missing, stale or damaged files rebuild during
+preparation. Writes are atomic. A missing file during training produces a clear
+restart message instead of silently decoding a large image in the middle of a
+step. Preparation preserves training RNG state.
+
+A bounded RAM cache remembers **64** feature tensors for quicker access. An
+image evicted from RAM still reuses its saved disk features. A RAM-cache size of
+**0** reads from disk each time; it does not disable persistent reuse. Later epochs,
+restarts and compatible runs reuse these files, so the RAM cache no longer needs
+to contain the whole dataset to avoid repeated VAE decoding. For DINOv2 Small at
+518, each saved feature tensor is about 2 MB. Budget disk space accordingly.
+
+**Neither text nor latent recaching is needed to enable this optimization.**
+Normal image/VAE/resolution cache rules still apply when those inputs change.
+Keep the generated feature folders for reuse, or remove them while stopped to
+rebuild on the next launch. Select **cpu** for preparation when GPU memory is
+tight; this can be very slow. Teacher size **224** reduces DINO work but does not
+change your dataset resolution or the VAE's full-resolution clean-image decode.
+Rectangular buckets use two-dimensional alignment; caption tokens are excluded.
+
+Training reads features from RAM or disk without loading DINO, decoding REPA
+targets, moving the VAE or flushing its allocator. This also preserves the depth
+helper residency option. Depth, if enabled, still decodes the current prediction
+and runs its own backward pass; REPA caching does not eliminate that separate cost.
 
 The projection head participates in optimizer updates and full Accelerate state
 saves. Resume with the same REPA configuration to restore it and its optimizer
 state. To enable/disable REPA or change its encoder, layer or image size, start
 from LoRA weights with a fresh optimizer. Exported LoRAs contain only the normal
 adapter weights; inference requires no DINO or projection head.
+Changing the feature-cache folder, RAM capacity or preparation device does not
+change the learned head and does not require a fresh optimizer.
 
 Track `loss/diffusion`, `loss/repa`, `loss/repa_weighted` and
 `repa/cosine_similarity` in TensorBoard/W&B. The logged alignment loss is

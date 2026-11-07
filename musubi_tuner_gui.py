@@ -676,7 +676,7 @@ class MusubiTunerGUI:
             widget = self._add_widget(
                 parent, key, moss_settings.REPA_LABELS.get(key, key.removeprefix('moss_').replace('_', ' ').capitalize()), moss_settings.HELP[key],
                 kind=kind, options=moss_settings.CHOICES.get(key),
-                is_path=key in moss_settings.PATHS, is_dir=key == 'moss_tokenizer_cache_dir',
+                is_path=key in moss_settings.PATHS, is_dir=key in {'moss_tokenizer_cache_dir', 'moss_repa_cache_dir'},
                 default_val=default if isinstance(default, bool) else False,
             )
             if kind in ('entry', 'path_entry'):

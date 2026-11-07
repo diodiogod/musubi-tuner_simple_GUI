@@ -39,7 +39,15 @@ from musubi_tuner.moss_image.models import MossImage
 from musubi_tuner.moss_image_train_network import MossImageNetworkTrainer, moss_setup_parser, setup_parser_common
 torch.set_num_threads(2)
 trainer=MossImageNetworkTrainer()
-trainer.load_transformer=lambda *a, **k: MossImage(dim=32, ffn_dim=48, num_heads=2, num_layers=2, text_dim=4096, freq_dim=16, latent_channels=128)
+def load_transformer(*a, **k):
+    if args.moss_repa_enabled:
+        assert trainer._repa_targets.paths, 'targets must be ready before loading the DiT'
+        assert trainer._repa_targets.encoder is None, 'teacher must be released before loading the DiT'
+        def forbidden_decode(*a, **k):
+            raise AssertionError('REPA must not encode a target during training')
+        trainer._repa_targets._encode = forbidden_decode
+    return MossImage(dim=32, ffn_dim=48, num_heads=2, num_layers=2, text_dim=4096, freq_dim=16, latent_channels=128)
+trainer.load_transformer=load_transformer
 class TinyVAE(torch.nn.Module):
     def decode(self, x):
         return torch.nn.functional.interpolate(x[:, :3], size=(28, 28))
@@ -77,7 +85,13 @@ trainer.train(args)
     assert state.is_dir(), result.stdout + "\n" + result.stderr
     if repa:
         assert (state / "custom_checkpoint_0.pkl").is_file()
+        feature_files = list(tmp_path.glob("moss_repa_features/**/*.safetensors"))
+        assert len(feature_files) == 1
+        feature_mtime = feature_files[0].stat().st_mtime_ns
     resumed = subprocess.run(cmd + ["--resume", str(state), "--output_name", "resumed"], env=env,
                              capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert resumed.returncode == 0, resumed.stdout + "\n" + resumed.stderr
     assert (tmp_path / "out" / "resumed.safetensors").is_file()
+    if repa:
+        assert feature_files[0].stat().st_mtime_ns == feature_mtime
+        assert "0 generated, 1 reused" in resumed.stderr

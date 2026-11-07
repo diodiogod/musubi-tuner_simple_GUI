@@ -24,6 +24,8 @@ class MossImageNetworkTrainer(NetworkTrainer):
         self._weight_noise_logs = {}
         self._repa = None
         self._repa_capture = None
+        self._repa_dataset = None
+        self._repa_targets = None
 
     @property
     def architecture(self):
@@ -63,6 +65,8 @@ class MossImageNetworkTrainer(NetworkTrainer):
         dataset, collator, epoch = super()._build_dataset(args)
         if any(not isinstance(item, ImageDataset) for item in dataset.datasets):
             raise ValueError("MOSS-Image supports image datasets only. Remove video datasets from this run.")
+        if getattr(args, "moss_repa_enabled", False):
+            self._repa_dataset = dataset
         return dataset, collator, epoch
 
     def _prepare_sampling(self, args, accelerator, vae_dtype):
@@ -73,6 +77,16 @@ class MossImageNetworkTrainer(NetworkTrainer):
             if not args.vae:
                 raise ValueError("A Flux.2 VAE is required for MOSS previews, depth anchoring and REPA.")
             vae = self.load_vae(args, vae_dtype, args.vae).requires_grad_(False).eval()
+        if getattr(args, "moss_repa_enabled", False):
+            from musubi_tuner.moss_image.repa_cache import MossRepaTargets
+            if accelerator.num_processes != 1:
+                raise ValueError("Experimental MOSS REPA currently supports a single training GPU/process.")
+            self._repa_targets = MossRepaTargets(args, accelerator.device)
+            self._repa_targets.prepare(self._repa_dataset, vae)
+            self._repa_dataset = None
+            if not args.sample_prompts and args.depth_anchor_weight <= 0:
+                vae = None  # Prepared REPA targets need no live decoder.
+                gc.collect()
         return prompts, vae
 
     def load_transformer(self, accelerator, args, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype):
@@ -94,7 +108,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
             raise ValueError("Experimental MOSS REPA currently supports a single training GPU/process.")
         model = accelerator.unwrap_model(transformer)
         validate_config(args, model.num_layers)
-        self._repa = MossRepa(args, model.dim, accelerator.device)
+        self._repa = MossRepa(args, model.dim, accelerator.device, feature_cache=self._repa_targets)
         # Registered before load_state, so true resumes restore the learned head.
         # Kept outside the adapter: generation LoRA files contain no REPA weights.
         accelerator.register_for_checkpointing(self._repa)
@@ -109,7 +123,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
             return {}
         return {"ss_" + key: str(getattr(args, key)) for key in
                 ("moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
-                 "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size")}
+                 "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir")}
 
     def get_noisy_model_input_and_timesteps(self, args, noise, latents, timesteps, noise_scheduler, device, dtype):
         if not args.moss_pretraining_schedule:

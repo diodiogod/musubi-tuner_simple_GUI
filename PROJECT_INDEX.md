@@ -192,6 +192,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `training/weight_noise.py` - isolated adapter-only Gaussian weight-noise implementation used by the Krea trainer hook
 - `training/dop.py` - shared caption replacement/signature validation, temporary adapter bypass, and preservation-loss implementation used by Krea 2 and FLUX.2 Klein
 - `moss_image/repa.py` - optional MOSS image representation alignment with a frozen DINOv2 teacher, bounded CPU feature cache and resume-only projection head; both GUIs use `backends/moss_settings.py` for its defaults and help
+- `moss_image/repa_cache.py` - prepares signed, persistent REPA targets before DiT loading; training reuses disk/RAM features without repeated VAE decoding or teacher transfers
 
 ### Experimental Differential Output Preservation
 
