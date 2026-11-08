@@ -15,9 +15,9 @@ from musubi_tuner.moss_image.cache import save_embeddings, save_latents
 from musubi_tuner.training.dop import dop_signature
 
 
-@pytest.mark.parametrize("repa", [False, True])
-@pytest.mark.parametrize("ema", [False, True])
-def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa, ema):
+@pytest.mark.parametrize("repa,ema,sigmoid_high", [(False, False, False), (True, False, False),
+                                                  (False, True, False), (True, True, False), (True, True, True)])
+def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa, ema, sigmoid_high):
     Image.new("RGB", (32, 32)).save(tmp_path / "a.png")
     (tmp_path / "a.txt").write_text("a person_token portrait", encoding="utf-8")
     dataset = ImageDataset(resolution=(32, 32), caption_extension=".txt", batch_size=1,
@@ -65,6 +65,8 @@ trainer.train(args)
            "--moss_pretraining_schedule", "--gradient_checkpointing",
            "--dop_trigger_word", "person_token", "--dop_class_word", "a person", "--dop_loss_weight", "0.1",
            "--save_state"]
+    if sigmoid_high:
+        cmd[cmd.index("--moss_pretraining_schedule")] = "--moss_sigmoid_high"
     if ema:
         cmd[cmd.index("--optimizer_type") + 1] = "Automagic3"
         cmd[cmd.index("--max_train_steps") + 1] = "2"
@@ -87,6 +89,7 @@ trainer.train(args)
         assert not any("projector" in key or "repa" in key for key in handle.keys())
         if repa:
             assert handle.metadata()["ss_moss_repa_enabled"] == "True"
+        assert handle.metadata()["ss_moss_sigmoid_high"] == str(sigmoid_high)
     state = tmp_path / "out" / "tiny-state"
     assert state.is_dir(), result.stdout + "\n" + result.stderr
     if ema:

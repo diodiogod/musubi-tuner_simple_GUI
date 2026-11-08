@@ -30,6 +30,18 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Optional MOSS Sigmoid + High schedule (2026-11-08)
+
+- `moss_image/timesteps.py` independently adapts AI Toolkit's per-batch sigmoid
+  pool and cubic High/content index bias. It preserves supplied stratified
+  uniform draws and uses the actual mixing sigma for model conditioning and
+  depth/loss weighting, without Musubi's generic one-based timestep offset.
+- Both GUIs expose an explicit schedule selection, retain old pretraining
+  checkbox recipes, and hide the old checkbox to avoid conflicting controls.
+  The existing pretraining distribution remains the default. No caches change.
+- Coverage: `tests/test_moss_image_timesteps.py`, MOSS workflow/parser checks
+  and tiny CPU training. Do not replace the established schedule by default.
+
 ### Optional MOSS EMA and Automagic3 (2026-11-08)
 
 - `optimizers/automagic3.py` wraps the pinned MIT-licensed Ostris implementation

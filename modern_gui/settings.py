@@ -337,6 +337,9 @@ def load_settings() -> dict[str, Any]:
     }
     for key, value in (guided_defaults | MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS | CACHE_DEFAULTS | MOSS_DEFAULTS).items():
         payload.setdefault(key, value)
+    if not payload.get("moss_timestep_schedule"):
+        from backends.moss_settings import timestep_schedule
+        payload["moss_timestep_schedule"] = timestep_schedule(payload)
     return payload
 
 
@@ -444,7 +447,7 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     if key in MOSS_DEFAULTS:
         field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
         field.update(NUMERIC_CONTROLS.get(key, {}))
-        from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS
+        from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS, TIMESTEP_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
         if key == "moss_repa_enabled":
             field["help_detail"] = REPA_DETAILS
@@ -453,6 +456,8 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
             field["help_detail"] = SAMPLE_DETAILS
         if key == "moss_ema_enabled":
             field["help_detail"] = EMA_DETAILS
+        if key == "moss_timestep_schedule":
+            field["help_detail"] = TIMESTEP_DETAILS
         if key.startswith("moss_automagic3_"):
             field.update(type="number", step=0.00001, min=0, help_detail=AUTOMAGIC3_DETAILS)
         if key == "moss_ema_decay":
@@ -461,6 +466,8 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
             field.update(type="number", step=0.05)
         if key in MOSS_CHOICES:
             field.update(type="select", options=MOSS_CHOICES[key], allow_custom=True)
+            if key == "moss_timestep_schedule":
+                field["allow_custom"] = False
         elif key in MOSS_PATHS:
             field["type"] = "path"
         elif isinstance(MOSS_DEFAULTS[key], bool):
@@ -514,9 +521,12 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
 
 def settings_schema(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = settings if settings is not None else load_settings()
+    if ("moss_pretraining_schedule" in settings or "moss_timestep_schedule" in settings or settings.get("training_mode") == MOSS_MODE) and not settings.get("moss_timestep_schedule"):
+        from backends.moss_settings import timestep_schedule
+        settings = {**settings, "moss_timestep_schedule": timestep_schedule(settings)}
     grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in SECTION_TITLES}
     for key, value in settings.items():
-        if key in STRUCTURED_KEYS:
+        if key in STRUCTURED_KEYS or key == "moss_pretraining_schedule":
             continue
         grouped[_section_for(key)].append(_field_for(key, value))
     sections = [

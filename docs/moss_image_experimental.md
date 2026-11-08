@@ -116,6 +116,32 @@ Starting from LoRA weights creates a fresh optimizer. Resuming a compatible
 saved state restores the optimizer and run state through Musubi's normal
 resume mechanism.
 
+## Training noise schedule
+
+In the Modern UI, **New training → Training method → Training noise schedule**
+offers three choices. In Classic, find it under **Parameters → Flow Matching
+Parameters → MOSS training noise schedule**. Click **?** for the explanation.
+
+- **MOSS pretraining (default)** retains the existing published MOSS
+  distribution and its editable logit/cutoff/uniform-mixture settings.
+- **Sigmoid + High (AI Toolkit)** is an optional community-recipe experiment.
+  Following [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit/blob/beb94824c51480a04d3c86c718603676fdef6938/toolkit/samplers/custom_flowmatch_sampler.py), each batch draws 1000 sigmoid-normal noise
+  levels, sorts them from high to low, then samples with a cubic index bias
+  toward high noise. This matches the distribution, not the same random seed
+  across trainers. Musubi's optional stratified timestep draws remain usable.
+  This option ignores the pretraining and general flow-shift/sampling settings.
+- **General timestep controls** uses the shared Timestep Sampling and Flow
+  Shift fields, as before when the pretraining checkbox was off.
+
+Older recipes retain their checkbox behavior automatically. Selecting the new
+schedule changes no optimizer, EMA, adapter type or preservation setting and
+requires no latent/text recaching or extra model passes. It is not itself a
+quality-protection method or a demonstrated improvement over the default,
+which already favors noisy examples. The selected schedule is saved in recipes
+and recorded in training metadata. CLI users can select `--moss_sigmoid_high`
+instead of `--moss_pretraining_schedule`; both dedicated schedules require the
+full timestep range. Omit both flags to use the general Musubi controls.
+
 ## Automagic3 and EMA (optional)
 
 The existing AdamW settings and disabled EMA default are unchanged. In the

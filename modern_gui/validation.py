@@ -27,11 +27,18 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
     mode = settings.get("training_mode", "Wan 2.2")
     if mode == "MOSS-Image (Experimental)":
         from backends.moss_image import training_options
+        from backends.moss_settings import timestep_schedule
+        moss_schedule = None
         try:
-            training_options(settings)
-        except (ValueError, TypeError) as exc:
-            key = "optimizer_type" if str(settings.get("optimizer_type", "")).lower() == "automagic3" else "moss_ema_enabled"
-            error(key, str(exc))
+            moss_schedule = timestep_schedule(settings)
+        except ValueError as exc:
+            error("moss_timestep_schedule", str(exc))
+        if moss_schedule is not None:
+            try:
+                training_options(settings)
+            except (ValueError, TypeError) as exc:
+                key = "optimizer_type" if str(settings.get("optimizer_type", "")).lower() == "automagic3" else "moss_ema_enabled"
+                error(key, str(exc))
     if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
         error("gradient_checkpointing_cpu_offload", "Activation CPU offload requires Gradient Checkpointing.")
     configured_stages = [
@@ -151,7 +158,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                     raise ValueError
             except (TypeError, ValueError):
                 error("moss_depth_anchor_input_size", "Depth estimation size must be a positive multiple of 14.")
-        if settings.get("moss_pretraining_schedule", True):
+        if moss_schedule == "MOSS pretraining (default)":
             from backends.moss_settings import DEFAULTS as moss_defaults
             for key, check in (
                 ("moss_logit_mean", lambda v: abs(v) < float("inf")),

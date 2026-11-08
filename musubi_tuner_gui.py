@@ -791,7 +791,7 @@ class MusubiTunerGUI:
         self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
         self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
             key for key in moss_settings.DEFAULTS
-            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_"))
+            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
         ])
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
@@ -1497,6 +1497,14 @@ class MusubiTunerGUI:
         )
 
         flow_frame = ttk.LabelFrame(frame, text="Flow Matching Parameters"); flow_frame.pack(fill="x", padx=10, pady=10)
+        self._moss_timestep_frame = ttk.LabelFrame(flow_frame, text="MOSS training noise schedule")
+        self._add_moss_fields(self._moss_timestep_frame, ["moss_timestep_schedule"])
+        self.entries["moss_timestep_schedule"].bind("<<ComboboxSelected>>", self._on_moss_timestep_schedule_changed)
+        ttk.Button(self._moss_timestep_frame, text="?  Choosing a noise schedule", command=lambda: messagebox.showinfo(
+            "MOSS training noise schedule", moss_settings.TIMESTEP_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=8, pady=4)
+        self._moss_pretraining_options = ttk.Frame(self._moss_timestep_frame)
+        self._add_moss_fields(self._moss_pretraining_options, ["moss_logit_mean", "moss_logit_std", "moss_timestep_cutoff", "moss_timestep_uniform_ratio"])
         self._add_widget(
             flow_frame, "timestep_sampling", "Timestep Sampling:",
             "Compact MiniMax H3 defaults to 'krea2_shift' because it is the tested recipe. 'h3_shifted_uniform' is an "
@@ -7231,7 +7239,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             self._rebuild_prompt_list()
         except AttributeError:
             pass
+        self._on_moss_timestep_schedule_changed()
         self.update_button_states()
+
+    def _on_moss_timestep_schedule_changed(self, event=None):
+        if not hasattr(self, "_moss_timestep_frame"):
+            return
+        is_moss = self.training_mode_var.get() == moss_settings.MODE
+        selected = self.entries["moss_timestep_schedule"].get()
+        if is_moss:
+            self._moss_timestep_frame.pack(fill="x", padx=8, pady=6, before=self.entries["timestep_sampling"].master)
+        else:
+            self._moss_timestep_frame.pack_forget()
+        if selected == "MOSS pretraining (default)":
+            self._moss_pretraining_options.pack(fill="x")
+        else:
+            self._moss_pretraining_options.pack_forget()
+        general = not is_moss or selected == "General timestep controls"
+        self.entries["timestep_sampling"].configure(state="readonly" if general else "disabled")
+        self.entries["discrete_flow_shift"].configure(state="normal" if general else "disabled")
 
     def setup_graph_style(self):
         self.fig.patch.set_facecolor(self.colors["page"]); self.ax.set_facecolor(self.colors["field"])
@@ -8102,6 +8128,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         return settings
 
     def set_values(self, settings):
+        if not settings.get("moss_timestep_schedule"):
+            settings = {**settings, "moss_timestep_schedule": moss_settings.timestep_schedule(settings)}
         requested_appearance = settings.get("appearance_mode")
         if requested_appearance in ("Light", "Dark") and requested_appearance != self.current_appearance_mode:
             if not self.current_process:
@@ -8146,6 +8174,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except AttributeError: pass
         try: self._sync_starting_point_from_settings(settings)
         except AttributeError: pass
+        self._on_moss_timestep_schedule_changed()
         self.update_button_states()
 
     def load_default_settings(self):

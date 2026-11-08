@@ -55,6 +55,10 @@ class MossImageNetworkTrainer(NetworkTrainer):
             raise ValueError("Depth input size must be a positive multiple of 14.")
         if args.fp8_base or args.fp8_scaled:
             raise ValueError("MOSS currently supports BF16 and ConvRot INT8 weights, not FP8.")
+        if getattr(args, "moss_sigmoid_high", False) and args.moss_pretraining_schedule:
+            raise ValueError("Choose either MOSS pretraining or Sigmoid + High, not both.")
+        if getattr(args, "moss_sigmoid_high", False) and (args.min_timestep is not None or args.max_timestep is not None):
+            raise ValueError("MOSS Sigmoid + High uses the full noise range. Remove minimum/maximum timestep limits or use general timestep controls.")
         if args.moss_pretraining_schedule:
             if not math.isfinite(args.moss_logit_mean) or not math.isfinite(args.moss_logit_std) or args.moss_logit_std <= 0:
                 raise ValueError("MOSS logit mean must be finite and logit standard deviation must be positive.")
@@ -127,7 +131,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return groups
 
     def extra_metadata(self, args):
-        keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device"]
+        keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device", "moss_pretraining_schedule", "moss_sigmoid_high"]
         if getattr(args, "moss_repa_enabled", False):
             keys += ["moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
                      "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir"]
@@ -171,6 +175,11 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return self._ema.average_parameters() if self._ema is not None else super().network_export_context(args)
 
     def get_noisy_model_input_and_timesteps(self, args, noise, latents, timesteps, noise_scheduler, device, dtype):
+        if getattr(args, "moss_sigmoid_high", False):
+            from musubi_tuner.moss_image.timesteps import sigmoid_high_timesteps
+            times = sigmoid_high_timesteps(noise.shape[0], device, timesteps)
+            sigma = (times / 1000).view(-1, 1, 1, 1, 1)
+            return ((1 - sigma) * latents + sigma * noise).to(dtype), times
         if not args.moss_pretraining_schedule:
             return super().get_noisy_model_input_and_timesteps(args, noise, latents, timesteps, noise_scheduler, device, dtype)
         # OpenMOSS technical report Eq. 4, as implemented in Kohya sd-scripts
@@ -197,9 +206,9 @@ class MossImageNetworkTrainer(NetworkTrainer):
     @staticmethod
     def _model_timesteps(args, timesteps):
         # Musubi's continuous samplers add one to the time after mixing noise.
-        # MOSS conditions on sigma*1000. Its grid sampler and the shared sigma
+        # MOSS conditions on sigma*1000. Its own schedules and the shared sigma
         # sampler already return that exact value.
-        if args.moss_pretraining_schedule or args.timestep_sampling == "sigma":
+        if args.moss_pretraining_schedule or getattr(args, "moss_sigmoid_high", False) or args.timestep_sampling == "sigma":
             return timesteps
         return timesteps - 1
 
@@ -371,6 +380,7 @@ def moss_setup_parser(parser):
     parser.add_argument("--moss_sample_lora")
     parser.add_argument("--moss_sample_lora_multiplier", type=float, default=0.6)
     parser.add_argument("--moss_pretraining_schedule", action="store_true")
+    parser.add_argument("--moss_sigmoid_high", action="store_true", help="Experimental AI Toolkit Sigmoid + High noise distribution; mutually exclusive with MOSS pretraining.")
     parser.add_argument("--moss_logit_mean", type=float, default=-1.09)
     parser.add_argument("--moss_logit_std", type=float, default=0.95)
     parser.add_argument("--moss_timestep_cutoff", type=float, default=0.95)

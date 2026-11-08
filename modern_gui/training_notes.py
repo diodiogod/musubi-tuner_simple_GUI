@@ -131,6 +131,8 @@ def training_settings_summary(settings: dict[str, Any]) -> str:
             parts.append(f"projector={Path(projector).name}@{strength}")
 
     if str(settings.get("training_mode")) == "MOSS-Image (Experimental)":
+        from backends.moss_settings import timestep_schedule
+        parts.append(f"noise={timestep_schedule(settings)}")
         if settings.get("moss_repa_enabled"):
             parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
         if settings.get("moss_ema_enabled"):

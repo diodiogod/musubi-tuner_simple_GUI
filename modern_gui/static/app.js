@@ -390,7 +390,7 @@ function fieldControl(field, {wide = false} = {}) {
       state.settings.lr_scheduler="constant";state.settings.lr_warmup_steps="0";
       toast("Automagic3 controls its learning rate. Scheduler set to constant with zero warmup.");
     }
-    if(["network_type","optimizer_type","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided","moss_pretraining_schedule"].includes(field.key)){
+    if(["network_type","optimizer_type","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided","moss_timestep_schedule"].includes(field.key)){
       sync();renderGuided();return;
     }
     if(field.key === "krea2_generalization_preset" && applyGeneralizationPreset(input.value)) return;
@@ -491,7 +491,14 @@ function renderStartingPoint(host) {
   host.append(section);
 }
 
+function normalizeMossTimestepSchedule(settings){
+  if(!settings.moss_timestep_schedule)settings.moss_timestep_schedule=settings.moss_pretraining_schedule===false?"General timestep controls":"MOSS pretraining (default)";
+  settings.moss_pretraining_schedule=settings.moss_timestep_schedule==="MOSS pretraining (default)";
+  return settings;
+}
+
 function renderGuided() {
+  normalizeMossTimestepSchedule(state.settings);
   $("#mode-choices").innerHTML = state.schema.modes.map(mode => `<button class="choice-card ${mode === state.settings.training_mode ? "selected" : ""}" data-mode="${esc(mode)}"><i></i><span><strong>${esc(mode)}</strong></span></button>`).join("");
   $$("#mode-choices [data-mode]").forEach(button => button.addEventListener("click", () => selectMode(button.dataset.mode)));
   const mode = state.settings.training_mode;
@@ -521,9 +528,9 @@ function renderGuided() {
   if(state.settings.network_type==="LoKr")methodKeys.splice(1,0,"lokr_factor");
   if(mode==="MOSS-Image (Experimental)"){
     if(String(state.settings.optimizer_type).toLowerCase()==="automagic3")methodKeys.push("moss_automagic3_min_lr","moss_automagic3_max_lr","optimizer_args");
-    methodKeys.push("moss_pretraining_schedule");
+    methodKeys.push("moss_timestep_schedule");
     if(state.settings.moss_pretraining_schedule)methodKeys.push("moss_logit_mean","moss_logit_std","moss_timestep_cutoff","moss_timestep_uniform_ratio");
-    else methodKeys.push("timestep_sampling","discrete_flow_shift");
+    else if(state.settings.moss_timestep_schedule==="General timestep controls")methodKeys.push("timestep_sampling","discrete_flow_shift");
   }else if(!h3Multimodal)methodKeys.push("timestep_sampling","discrete_flow_shift");
   if(!h3Multimodal&&(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"))methodKeys.push("krea2_generalization_preset");
   appendFields($("#method-fields"),methodKeys);
@@ -2565,7 +2572,7 @@ function showJobDetails(job,row){
 async function loadJobConsole(){if(!detailRow)return;const host=$("#job-console-log");try{const payload=await api(`/api/jobs/log?source=${encodeURIComponent(detailRow.dataset.source)}&index=${encodeURIComponent(detailRow.dataset.index)}`);host.textContent=payload.log;host.hidden=false;host.scrollTop=host.scrollHeight}catch(error){host.textContent=`No saved console log is available for this job.\n\n${error.message}`;host.hidden=false}}
 function toggleJobComparison(job){state.jobComparison ||= [];const key=`${job._source}:${job._history_index}`,index=state.jobComparison.findIndex(item=>item.key===key);if(index>=0)state.jobComparison.splice(index,1);else{if(state.jobComparison.length>=2)state.jobComparison.shift();state.jobComparison.push({key,job})}const button=$("#compare-jobs");button.disabled=state.jobComparison.length!==2;button.textContent=`Compare selected (${state.jobComparison.length}/2)`;renderJobs()}
 function showJobComparison(){const jobs=(state.jobComparison||[]).map(item=>item.job);if(jobs.length!==2)return;$("#job-compare-summary").innerHTML=jobs.map(job=>{const p=job.performance||{};return `<article><strong>${esc(job.name||job.output_name||job.title||"Unnamed")}</strong><small>${esc(job._source)} GUI · ${esc(job.mode||job.settings?.training_mode||job.settings_snapshot?.training_mode||"")}</small><p>Median: ${formatJobSpeed(p.median_seconds_per_iteration)}<br>Recent: ${formatJobSpeed(p.recent_seconds_per_iteration)}<br>Whole-job estimate: ${formatJobSpeed(p.overall_seconds_per_iteration)}<br>Samples: ${p.sample_count||0}</p></article>`}).join("");$("#job-compare-dialog").showModal();requestAnimationFrame(()=>drawJobSpeedChart($("#job-compare-chart"),jobs))}
-async function replaySettings(job){const p=await api("/api/jobs/replay-settings",{method:"POST",body:JSON.stringify({source:job._source,index:Number(job._history_index)})});return structuredClone(p.settings||{})}
+async function replaySettings(job){const p=await api("/api/jobs/replay-settings",{method:"POST",body:JSON.stringify({source:job._source,index:Number(job._history_index)})});const settings=structuredClone(p.settings||{});return Object.keys(settings).length?normalizeMossTimestepSchedule(settings):settings}
 function splitRepeatName(name){let base=String(name||"").trim()||"run",generation=0,match;while((match=base.match(/-repeat(\d*)$/i))){generation+=Number(match[1]||1);base=base.slice(0,match.index).replace(/-+$/g,"")||"run"}return {base,generation}}
 function nextRepeatName(name){const parsed=splitRepeatName(name);let generation=parsed.generation+1;for(const job of state.jobs||[]){const snapshot=job.settings_snapshot||job.settings||{},existing=splitRepeatName(snapshot.output_name||job.output_name||job.name);if(existing.base.toLowerCase()===parsed.base.toLowerCase())generation=Math.max(generation,existing.generation+1)}return `${parsed.base}-repeat${generation===1?"":generation}`}
 async function repeatJob(job){const snapshot=await replaySettings(job);if(!Object.keys(snapshot).length)return toast("This older job has no complete settings snapshot.");if(!confirmWorkspaceReplacement("Load this job as a new editable run?"))return;discardWorkspaceDrafts();snapshot.resume_path="";snapshot.network_weights="";snapshot.starting_point_mode="new";snapshot.recovery_mode=false;snapshot.resume_exact_position=false;snapshot.output_name=nextRepeatName(snapshot.output_name||job.output_name||job.name||"run");state.settings=snapshot;renderGuided();renderAllSettings();sync();const datasetLoaded=await loadDatasetForSettings();go("setup");setStep("review");toast(datasetLoaded?"Repeat loaded as a new editable run.":"Repeat loaded, but its saved Dataset TOML could not be loaded. Choose a valid file before starting.",datasetLoaded?"info":"error")}

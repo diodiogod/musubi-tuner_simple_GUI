@@ -47,6 +47,8 @@ def build_commands(settings):
         cmd.append("--moss_pretraining_schedule")
         for key in ("moss_logit_mean", "moss_logit_std", "moss_timestep_cutoff", "moss_timestep_uniform_ratio"):
             add_arg(cmd, "--" + key, settings.get(key))
+    elif settings["moss_timestep_schedule"] == "Sigmoid + High (AI Toolkit)":
+        cmd.append("--moss_sigmoid_high")
     # Preserve an explicit empty value: it disables the official skip-layer guidance.
     cmd.extend(["--moss_sample_skip_layers", str(settings.get("moss_sample_skip_layers", "22"))])
     target_args = []
@@ -66,8 +68,8 @@ def build_commands(settings):
 def training_options(settings):
     """Validate new opt-ins on a copy; never rewrite the saved recipe."""
     import math
-    from .moss_settings import DEFAULTS
-    result = dict(settings)
+    from .moss_settings import DEFAULTS, with_timestep_schedule
+    result = with_timestep_schedule(settings)
     resume = str(settings.get("resume_path") or "").strip()
     if resume:
         import json

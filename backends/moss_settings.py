@@ -9,6 +9,8 @@ DEFAULTS = {
     "moss_sample_sampler": "euler", "moss_sample_scheduler": "official",
     "moss_sample_lora": "", "moss_sample_lora_multiplier": "0.6",
     "moss_pretraining_schedule": True, "moss_logit_mean": "-1.09", "moss_logit_std": "0.95",
+    # Empty means inherit the legacy pretraining checkbox when loading old recipes.
+    "moss_timestep_schedule": "",
     "moss_timestep_cutoff": "0.95", "moss_timestep_uniform_ratio": "0.01",
     "moss_depth_anchor_weight": "0.0",
     "moss_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
@@ -25,6 +27,7 @@ DEFAULTS = {
     "moss_automagic3_min_lr": "0.00005", "moss_automagic3_max_lr": "0.001",
 }
 CHOICES = {
+    "moss_timestep_schedule": ["MOSS pretraining (default)", "Sigmoid + High (AI Toolkit)", "General timestep controls"],
     "moss_ema_device": ["training", "cpu"],
     "moss_sample_sampler": ["euler", "ddim"],
     "moss_sample_scheduler": ["official", "simple"],
@@ -36,6 +39,7 @@ CHOICES = {
 }
 PATHS = {"moss_dit_model", "moss_text_encoder", "moss_tokenizer_cache_dir", "moss_repa_cache_dir", "moss_sample_lora"}
 REPA_LABELS = {
+    "moss_timestep_schedule": "Training noise schedule",
     "moss_ema_enabled": "Use EMA smoothed checkpoints (optional)",
     "moss_ema_decay": "EMA smoothing", "moss_ema_device": "Store averaged adapter on",
     "moss_automagic3_min_lr": "Automagic3 minimum learning rate",
@@ -50,6 +54,42 @@ REPA_LABELS = {
     "moss_repa_device": "Teacher compute device", "moss_repa_cache_size": "Remembered images (RAM)",
     "moss_repa_cache_dir": "REPA feature cache folder",
 }
+TIMESTEP_DETAILS = (
+    "This chooses how noisy the training examples are. At high noise, the model must recover the overall "
+    "subject and composition; at low noise, more of the picture is visible and it practices finer corrections. "
+    "A schedule changes how often each difficulty is practiced. It does not change the dataset resolution.\n\n"
+    "MOSS pretraining keeps our existing default, based on MOSS's published training distribution. "
+    "Its advanced values remain editable below. Older recipes keep this behavior unless they had explicitly "
+    "turned it off, in which case they keep General timestep controls.\n\n"
+    "Sigmoid + High follows the combination used in the community AI Toolkit MOSS recipe. Sigmoid creates "
+    "a spread of noise levels; High then favors the noisier end. This is an alternative distribution, not "
+    "an extra quality-protection method or a promise of better results. Our default already favors noisy "
+    "examples, but the two distributions are different. It works with LoRA, LoKr, EMA and Automagic3; "
+    "none of those other options is required or changed automatically.\n\n"
+    "General timestep controls uses the shared Timestep Sampling and Flow Shift fields instead. "
+    "Those fields and the pretraining-specific values are ignored while Sigmoid + High is selected. "
+    "Switching schedules needs no latent or caption recaching and adds no extra model pass. "
+    "Use the same schedule when reproducing a run; changing it on a continuation changes the training recipe."
+)
+
+
+def timestep_schedule(settings):
+    """Resolve explicit selection, or preserve an older recipe's checkbox."""
+    value = settings.get("moss_timestep_schedule")
+    if value is None or value == "":
+        return CHOICES["moss_timestep_schedule"][0 if settings.get("moss_pretraining_schedule", True) else 2]
+    if value not in CHOICES["moss_timestep_schedule"]:
+        raise ValueError("Choose a valid MOSS Training noise schedule.")
+    return value
+
+
+def with_timestep_schedule(settings):
+    result = dict(settings)
+    result["moss_timestep_schedule"] = timestep_schedule(settings)
+    result["moss_pretraining_schedule"] = result["moss_timestep_schedule"] == CHOICES["moss_timestep_schedule"][0]
+    return result
+
+
 EMA_DETAILS = (
     "Want smoother samples and saved LoRAs while training continues normally? EMA keeps a moving average of "
     "your adapter's recent weights. With smoothing 0.98, each update keeps 98% of the previous average and "
@@ -132,6 +172,7 @@ SAMPLE_DETAILS = (
     "This uses the selected checkpoint throughout generation; it does not switch between SFT and Base models."
 )
 HELP = {
+    "moss_timestep_schedule": "Keep MOSS pretraining for the existing default, or try the community Sigmoid + High recipe. This changes which noise levels are practiced. No recaching is needed. Click ? for the differences.",
     "moss_ema_enabled": "Average recent adapter weights for smoother samples and LoRA exports. Optional and off by default. This is weight smoothing, not quality protection. Click ? for memory and resume details.",
     "moss_ema_decay": "Try 0.98. Each update mixes 2% of the latest adapter into the previous average. Higher smoothing reacts more slowly and may lag behind new details. No recaching is needed.",
     "moss_ema_device": "Training keeps the averaged adapter on the main GPU for speed. CPU saves that VRAM but copies adapter weights every optimizer update and can slow large LoKr runs. The frozen base model is not duplicated.",

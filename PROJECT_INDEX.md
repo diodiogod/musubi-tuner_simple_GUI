@@ -199,6 +199,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `moss_image/repa_cache.py` - prepares signed, persistent REPA targets before DiT loading; training reuses disk/RAM features without repeated VAE decoding or teacher transfers
 - `optimizers/automagic3.py` - non-fused FP32 adapter integration of the pinned, MIT-licensed Ostris optimizer; its scheduler reports adapted rates without imposing an external schedule
 - `moss_image/ema.py` - optional adapter-only EMA; averaged samples/exports and explicit averaged state-preview companion, with live weights retained for optimizer-consistent full resumes
+- `moss_image/timesteps.py` - optional AI Toolkit Sigmoid + High distribution; both GUIs preserve legacy MOSS pretraining/general recipes through a shared schedule resolver
 
 ### Experimental Differential Output Preservation
 
