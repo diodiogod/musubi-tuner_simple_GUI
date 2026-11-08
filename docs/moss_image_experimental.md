@@ -116,6 +116,63 @@ Starting from LoRA weights creates a fresh optimizer. Resuming a compatible
 saved state restores the optimizer and run state through Musubi's normal
 resume mechanism.
 
+## Automagic3 and EMA (optional)
+
+The existing AdamW settings and disabled EMA default are unchanged. In the
+Modern UI, choose **Automagic3** under **New training → Training method**.
+Its minimum/maximum rate controls then appear. Classic exposes the same
+optimizer in its optimizer dropdown and a MOSS bounds panel.
+
+Automagic3 is adapted from [Ostris's AI Toolkit](https://github.com/ostris/ai-toolkit/blob/beb94824c51480a04d3c86c718603676fdef6938/toolkit/optimizers/automagic3.py)
+under its MIT license, preserved in the bundled source. It adjusts the rate
+from recent update-direction consistency. It broadly shares Prodigy's goal
+of adapting the learning rate, but uses a different algorithm.
+
+- Use the **constant** scheduler and **zero warmup**; choosing the optimizer
+  interactively sets these. Existing recipes are validated instead of silently
+  rewritten. LR logging reports the optimizer's actual adapted rate.
+- Learning Rate is the starting rate. The community example starts at `0.0005`
+  with a minimum of `0.00005` and `weight_decay=0.00001`; these are experimental
+  values, not a universally recommended recipe. `0.0001` is a gentler start.
+  Our maximum defaults to `0.001`. A high minimum can stop learning from fading,
+  but can also prevent updates from settling. Bounds are configurable.
+- MOSS supplies `weight_decay=0.00001` unless overridden in Optimizer Args.
+  Set minimum/maximum in their dedicated controls. Other supported upstream
+  options can be entered in Optimizer Args.
+- The integration uses `fused=False` and FP32 trainable adapters so gradient
+  accumulation, global clipping, AMP overflow handling and separate DOP
+  backward passes retain their usual ordering. BF16 mixed precision for the
+  frozen base remains supported. No dependency upgrade is required.
+- To change from AdamW to Automagic3, continue from LoRA weights with a fresh
+  optimizer rather than loading an AdamW full state. Caches can be reused.
+
+Both GUIs expose a collapsed **MOSS · Smoothed checkpoints (EMA, optional)**
+section in Regularization. EMA maintains an average of the trainable adapter
+only: at `0.98`, each real optimizer step mixes 2% of the latest weights into
+98% of the prior average. It updates once per successful optimizer step, not
+once per microbatch. It is weight smoothing, not another preservation loss
+or protection against overtraining. Higher decay responds more slowly.
+
+When EMA is enabled:
+
+- Scheduled samples and ordinary exported LoRA files use averaged weights.
+- Full Accelerate states keep the **live** adapter/optimizer pair and the EMA
+  shadow separately. Their `ema.safetensors` companion supports standalone
+  previews from a selected state; `model.safetensors` remains live training
+  weights. Switching EMA on/off or changing decay requires weight-only
+  continuation; compatible full resumes restore the average and update count.
+- Training-device storage is faster but adds one FP32 adapter copy in VRAM.
+  CPU storage uses system RAM and transfers adapter weights each update, which
+  can be costly for large full-rank LoKr networks. The full base is not copied.
+- Sampling and export restore live weights even if they fail. Saving EMA
+  exports never substitutes averaged weights into optimizer resume states.
+
+These controls do not change the noise schedule or skip training layers.
+The existing MOSS pretraining schedule already favors high noise, but is not
+AI Toolkit's exact Sigmoid + High distribution. While that schedule is on,
+the general Timestep Sampling field does not override it. Layer 22 is trained;
+the skip-layer control applies only to the unconditional preview branch.
+
 ## Optional experiments
 
 - **DOP** caches an additional class caption and adds a frozen-base comparison

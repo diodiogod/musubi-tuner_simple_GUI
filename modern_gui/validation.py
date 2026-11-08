@@ -25,6 +25,13 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error(key, f"{label} is required.")
 
     mode = settings.get("training_mode", "Wan 2.2")
+    if mode == "MOSS-Image (Experimental)":
+        from backends.moss_image import training_options
+        try:
+            training_options(settings)
+        except (ValueError, TypeError) as exc:
+            key = "optimizer_type" if str(settings.get("optimizer_type", "")).lower() == "automagic3" else "moss_ema_enabled"
+            error(key, str(exc))
     if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
         error("gradient_checkpointing_cpu_offload", "Activation CPU offload requires Gradient Checkpointing.")
     configured_stages = [

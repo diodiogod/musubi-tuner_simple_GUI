@@ -154,6 +154,12 @@ def apply_cache_policy(commands, settings, *, native_h3=False):
     return commands
 
 
+def split_optimizer_args(value):
+    """Keep tuple-valued options intact while accepting the existing separators."""
+    import re
+    return [token.strip() for token in re.split(r'[,;\s]+(?![^(]*\))', str(value or "").strip()) if token.strip()]
+
+
 def build_common_train_args(cmd, settings):
     add_arg(cmd, "--optimizer_type", settings.get("optimizer_type"))
     add_arg(cmd, "--learning_rate", settings.get("learning_rate"))
@@ -176,11 +182,10 @@ def build_common_train_args(cmd, settings):
         add_arg(cmd, "--compile_cache_size_limit", settings.get("compile_cache_size_limit"))
     opt_args = (settings.get("optimizer_args") or "").strip()
     if opt_args:
-        # Split on comma/semicolon/whitespace but NOT inside parentheses (e.g. betas=(0.9,0.99))
-        import re as _re
-        tokens = [t.strip() for t in _re.split(r'[,;\s]+(?![^(]*\))', opt_args) if t.strip()]
-        for token in tokens:
-            cmd.extend(["--optimizer_args", token])
+        # argparse's nargs='*' replaces earlier occurrences of this flag.
+        # Supply it once so all optimizer options reach the trainer.
+        cmd.append("--optimizer_args")
+        cmd.extend(split_optimizer_args(opt_args))
 
     lr = settings.get("lr_scheduler")
     if lr and lr != "constant":

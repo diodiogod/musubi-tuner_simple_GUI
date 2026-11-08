@@ -133,6 +133,8 @@ def training_settings_summary(settings: dict[str, Any]) -> str:
     if str(settings.get("training_mode")) == "MOSS-Image (Experimental)":
         if settings.get("moss_repa_enabled"):
             parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
+        if settings.get("moss_ema_enabled"):
+            parts.append(f"EMA {settings.get('moss_ema_decay', '0.98')}")
         depth = _enabled_number(settings, "moss_depth_anchor_weight")
         if depth:
             text = f"depth {depth}@{settings.get('moss_depth_anchor_input_size') or 518}"

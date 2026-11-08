@@ -14,6 +14,7 @@ def _text_options(cmd, settings):
 
 
 def build_commands(settings):
+    settings = training_options(settings)
     cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
            "src/musubi_tuner/moss_image_train_network.py"]
     add_arg(cmd, "--mixed_precision", settings.get("mixed_precision", "bf16"))
@@ -21,6 +22,9 @@ def build_commands(settings):
     add_arg(cmd, "--vae", settings.get("vae_model"), is_path=True)
     add_arg(cmd, "--dataset_config", settings.get("dataset_config"), is_path=True)
     _text_options(cmd, settings)
+    if settings.get("moss_ema_enabled"):
+        for key in ("moss_ema_enabled", "moss_ema_decay", "moss_ema_device"):
+            add_arg(cmd, "--" + key, settings.get(key))
     add_arg(cmd, "--convrot_int8", settings.get("moss_convrot_int8", False))
     add_arg(cmd, "--convrot_bwd_mode", settings.get("moss_convrot_bwd_mode", "bf16"))
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
@@ -57,6 +61,68 @@ def build_commands(settings):
     add_arg(cmd, "--output_dir", output_dir, is_path=True)
     add_arg(cmd, "--output_name", output_name)
     return [cmd]
+
+
+def training_options(settings):
+    """Validate new opt-ins on a copy; never rewrite the saved recipe."""
+    import math
+    from .moss_settings import DEFAULTS
+    result = dict(settings)
+    resume = str(settings.get("resume_path") or "").strip()
+    if resume:
+        import json
+        from pathlib import Path
+        folder = Path(resume)
+        if folder.is_dir():
+            from musubi_tuner.optimizers.config import validate_optimizer_resume
+            validate_optimizer_resume(folder, settings.get("optimizer_type", "adamw8bit"))
+            marker = folder / "moss_ema.json"
+            if marker.is_file() != bool(settings.get("moss_ema_enabled")):
+                raise ValueError("Keep EMA on/off as in the saved state, or continue from LoRA weights with a fresh optimizer.")
+            if marker.is_file() and json.loads(marker.read_text(encoding="utf-8")).get("decay") != float(settings.get("moss_ema_decay", DEFAULTS["moss_ema_decay"])):
+                raise ValueError("Full-state resume must retain the saved EMA smoothing value.")
+    if settings.get("moss_ema_enabled"):
+        value = float(settings.get("moss_ema_decay", DEFAULTS["moss_ema_decay"]))
+        if not math.isfinite(value) or not 0 <= value < 1:
+            raise ValueError("MOSS EMA smoothing must be at least 0 and less than 1. Try 0.98.")
+        result.setdefault("moss_ema_decay", DEFAULTS["moss_ema_decay"])
+        result.setdefault("moss_ema_device", DEFAULTS["moss_ema_device"])
+        if result["moss_ema_device"] not in {"training", "cpu"}:
+            raise ValueError("Choose training or cpu for MOSS EMA storage.")
+    if str(settings.get("optimizer_type", "")).lower() == "automagic3":
+        if settings.get("full_bf16") or settings.get("full_fp16"):
+            raise ValueError("Automagic3 requires FP32 adapter weights. Turn off Full BF16/FP16; mixed precision BF16 is supported.")
+        from ._common import split_optimizer_args
+        tokens = split_optimizer_args(settings.get("optimizer_args"))
+        names = [token.split("=", 1)[0] for token in tokens]
+        allowed = {"beta2", "eps", "clip_threshold", "weight_decay", "polarity_history", "fused", "min_lr", "max_lr"}
+        if set(names) - allowed:
+            raise ValueError("Unsupported Automagic3 Optimizer Args: " + ", ".join(sorted(set(names) - allowed)) + ". It uses beta2, not AdamW betas.")
+        if len(names) != len(set(names)):
+            raise ValueError("Optimizer Args contains a duplicate option.")
+        if any(name in names for name in ("min_lr", "max_lr")):
+            raise ValueError("Set Automagic3 minimum/maximum rates in their dedicated fields, not Optimizer Args.")
+        if any(token.replace(" ", "").lower() == "fused=true" for token in tokens):
+            raise ValueError("Automagic3 needs fused=False in Musubi.")
+        if settings.get("lr_scheduler", "constant") != "constant" or float(settings.get("lr_warmup_steps") or 0):
+            raise ValueError("Automagic3 controls its own rate. Select the constant scheduler and zero warmup.")
+        lo = float(settings.get("moss_automagic3_min_lr", DEFAULTS["moss_automagic3_min_lr"]))
+        hi = float(settings.get("moss_automagic3_max_lr", DEFAULTS["moss_automagic3_max_lr"]))
+        start = float(settings.get("learning_rate") or 0)
+        if not all(math.isfinite(v) and v > 0 for v in (lo, hi, start)) or not lo <= start <= hi:
+            raise ValueError("Automagic3 rates must be finite and positive, with minimum <= Learning Rate <= maximum.")
+        import ast
+        from musubi_tuner.optimizers.config import validate_automagic3
+        try:
+            options = {name: ast.literal_eval(token.split("=", 1)[1]) for name, token in zip(names, tokens)}
+        except (SyntaxError, TypeError, IndexError, ValueError) as exc:
+            raise ValueError("Check Automagic3 Optimizer Args; use name=value with numeric values or True/False.") from exc
+        validate_automagic3(start, min_lr=lo, max_lr=hi, **options)
+        tokens += [f"min_lr={lo}", f"max_lr={hi}"]
+        if "weight_decay" not in names:
+            tokens.append("weight_decay=0.00001")
+        result["optimizer_args"] = " ".join(tokens)
+    return result
 
 
 def build_cache_commands(settings, python_executable):

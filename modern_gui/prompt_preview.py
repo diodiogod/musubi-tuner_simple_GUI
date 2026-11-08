@@ -37,6 +37,10 @@ def resolve_preview_lora(settings: dict[str, Any]) -> str:
             raise ValueError("Preview with resumed weights requires the selected saved-state folder.")
         resume = Path(resume_value).expanduser()
         state_model = resume / "model.safetensors" if resume.is_dir() else resume
+        if resume.is_dir() and (resume / "moss_ema.json").is_file():
+            state_model = resume / "ema.safetensors"
+            if not state_model.is_file():
+                raise ValueError(f"The selected EMA state has no ema.safetensors preview weights: {resume}")
         if not state_model.is_file():
             raise ValueError(f"The selected resume state has no model.safetensors LoRA weights: {resume}")
         return str(state_model)

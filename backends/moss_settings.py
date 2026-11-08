@@ -21,8 +21,11 @@ DEFAULTS = {
     "moss_repa_encoder": "facebook/dinov2-small", "moss_repa_block": "8",
     "moss_repa_image_size": "518", "moss_repa_device": "training", "moss_repa_cache_size": "64",
     "moss_repa_cache_dir": "",
+    "moss_ema_enabled": False, "moss_ema_decay": "0.98", "moss_ema_device": "training",
+    "moss_automagic3_min_lr": "0.00005", "moss_automagic3_max_lr": "0.001",
 }
 CHOICES = {
+    "moss_ema_device": ["training", "cpu"],
     "moss_sample_sampler": ["euler", "ddim"],
     "moss_sample_scheduler": ["official", "simple"],
     "moss_convrot_bwd_mode": ["bf16", "int8"],
@@ -33,6 +36,10 @@ CHOICES = {
 }
 PATHS = {"moss_dit_model", "moss_text_encoder", "moss_tokenizer_cache_dir", "moss_repa_cache_dir", "moss_sample_lora"}
 REPA_LABELS = {
+    "moss_ema_enabled": "Use EMA smoothed checkpoints (optional)",
+    "moss_ema_decay": "EMA smoothing", "moss_ema_device": "Store averaged adapter on",
+    "moss_automagic3_min_lr": "Automagic3 minimum learning rate",
+    "moss_automagic3_max_lr": "Automagic3 maximum learning rate",
     "moss_sample_sampler": "Default preview sampler",
     "moss_sample_scheduler": "Default preview noise schedule",
     "moss_sample_lora": "Sampling-only Turbo LoRA (optional)",
@@ -43,6 +50,39 @@ REPA_LABELS = {
     "moss_repa_device": "Teacher compute device", "moss_repa_cache_size": "Remembered images (RAM)",
     "moss_repa_cache_dir": "REPA feature cache folder",
 }
+EMA_DETAILS = (
+    "Want smoother samples and saved LoRAs while training continues normally? EMA keeps a moving average of "
+    "your adapter's recent weights. With smoothing 0.98, each update keeps 98% of the previous average and "
+    "mixes in 2% of the latest weights. It is compatible with LoRA and LoKr and does not average the frozen base model.\n\n"
+    "Start with 0.98 to try the community MOSS recipe. Higher values respond more slowly and can lag behind "
+    "new details; lower values follow recent learning more closely. EMA smooths weight changes. It is not an "
+    "extra quality-preservation loss, and it cannot prevent overtraining or fix bad training data.\n\n"
+    "When enabled, scheduled samples and ordinary exported LoRA files use the averaged weights. Full saved "
+    "states retain the live training weights, optimizer and EMA average separately, so exact resuming remains "
+    "consistent. A saved-state preview uses its ema.safetensors companion. Keep EMA enabled with the same smoothing "
+    "when resuming a full state. To turn EMA on/off or change smoothing between runs, continue from LoRA weights "
+    "with a fresh optimizer instead. No image or caption recaching is needed.\n\n"
+    "Training stores the extra adapter copy on the main GPU for speed. CPU stores it in system RAM but transfers "
+    "adapter weights after each update, which can slow large full-rank LoKr runs. EMA adds an FP32 adapter-sized "
+    "copy; it does not require another full diffusion model."
+)
+AUTOMAGIC3_DETAILS = (
+    "Automagic3 is an experimental optimizer from Ostris's AI Toolkit. Like Prodigy, it adapts learning rates "
+    "automatically, but it uses a different rule: consistent update directions encourage a larger step; "
+    "repeated direction reversals encourage a smaller one. It also scales and clips updates. It is not a "
+    "guarantee of better LoRAs.\n\n"
+    "Learning rate is its starting point. The shared community MOSS recipe starts at 0.0005 with minimum "
+    "0.00005 and weight_decay=0.00001. A gentler starting point is 0.0001. Our MOSS controls expose the minimum "
+    "and maximum rates; the minimum can stop learning from fading, but forcing it too high can prevent the "
+    "optimizer from settling. These are experiments, not proven best settings.\n\n"
+    "Use the constant scheduler with zero warmup: Automagic3 controls the effective rate itself, and the LR "
+    "logs report that adapted rate. Musubi uses normal step-time updates (fused=False), preserving gradient "
+    "accumulation, clipping and separate DOP backward passes. Trainable adapters stay FP32; mixed-precision "
+    "BF16 for the base model remains supported. No PyTorch upgrade is required.\n\n"
+    "Changing optimizer requires a new optimizer state: continue from LoRA weights, not a full saved state "
+    "created with AdamW. Caption and latent caches can be reused. The optimizer does not change the noise "
+    "schedule, rank, EMA or other regularization settings."
+)
 REPA_METRICS_HELP = (
     "REPA compares features learned by MOSS with features from a frozen visual teacher (DINOv2). "
     "These numbers describe that agreement for the latest logged training batch.\n\n"
@@ -92,6 +132,11 @@ SAMPLE_DETAILS = (
     "This uses the selected checkpoint throughout generation; it does not switch between SFT and Base models."
 )
 HELP = {
+    "moss_ema_enabled": "Average recent adapter weights for smoother samples and LoRA exports. Optional and off by default. This is weight smoothing, not quality protection. Click ? for memory and resume details.",
+    "moss_ema_decay": "Try 0.98. Each update mixes 2% of the latest adapter into the previous average. Higher smoothing reacts more slowly and may lag behind new details. No recaching is needed.",
+    "moss_ema_device": "Training keeps the averaged adapter on the main GPU for speed. CPU saves that VRAM but copies adapter weights every optimizer update and can slow large LoKr runs. The frozen base model is not duplicated.",
+    "moss_automagic3_min_lr": "Lowest rate Automagic3 may choose. 0.00005 follows the shared community recipe, not a proven optimum. Lower it if updates will not settle; a high floor can force continued changes. Use this field rather than min_lr in Optimizer Args.",
+    "moss_automagic3_max_lr": "Highest rate Automagic3 may choose. 0.001 is a conservative ceiling for this experiment. It must be at least your starting Learning Rate. Use this field rather than max_lr in Optimizer Args.",
     "moss_sample_sampler": "Fallback when a prompt has no sampler of its own. A prompt card's sampler takes priority for standalone and scheduled samples. DDIM + Simple is the 25-step recipe; Euler + Official keeps the original behavior.",
     "moss_sample_scheduler": "Fallback when a prompt has no schedule of its own. A prompt card's schedule takes priority. Simple matches ComfyUI's noise levels; Official keeps MOSS's original schedule. Does not change training noise or require recaching.",
     "moss_sample_lora": "Optional MOSS Turbo LoRA used only for previews and scheduled samples. It is disabled during learning. Try strength 0.6 with 25 steps, DDIM + Simple and CFG 3. Click ? for the full explanation.",

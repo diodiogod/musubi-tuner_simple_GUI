@@ -17,6 +17,7 @@ import sys
 import random
 import time
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from multiprocessing import Value
 from typing import Any, List, Optional
@@ -238,6 +239,13 @@ class NetworkTrainer:
             optimizer_class = transformers.optimization.Adafactor
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+        elif optimizer_type == "automagic3":
+            from musubi_tuner.optimizers.automagic3 import Automagic3
+            if getattr(args, "full_bf16", False) or getattr(args, "full_fp16", False):
+                raise ValueError("Automagic3 needs FP32 adapter weights. Disable full_bf16/full_fp16; mixed precision BF16 remains supported.")
+            optimizer_class = Automagic3
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
         elif optimizer_type == "AdamW".lower():
             logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
             optimizer_class = torch.optim.AdamW
@@ -295,6 +303,12 @@ class NetworkTrainer:
         """
         Unified API to get any scheduler from its name.
         """
+        from musubi_tuner.optimizers.automagic3 import Automagic3, Automagic3Scheduler
+        if isinstance(optimizer, Automagic3):
+            if args.lr_scheduler != "constant" or args.lr_warmup_steps:
+                raise ValueError("Automagic3 controls its own learning rate. Choose the constant scheduler with zero warmup.")
+            return Automagic3Scheduler(optimizer)
+
         # if schedulefree optimizer, return dummy scheduler
         if self.is_schedulefree_optimizer(optimizer, args):
             return self.get_dummy_scheduler(optimizer)
@@ -1263,6 +1277,10 @@ class NetworkTrainer:
         Use for EMA updates or any post-step bookkeeping.
         """
 
+    def network_export_context(self, args):
+        """Temporarily select weights for a generation checkpoint, never a resume state."""
+        return nullcontext()
+
     def on_post_save(
         self,
         args: argparse.Namespace,
@@ -2055,7 +2073,8 @@ class NetworkTrainer:
 
             metadata_to_save.update(sai_metadata)
 
-            unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
+            with self.network_export_context(args):
+                unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
             if args.huggingface_repo_id is not None:
                 huggingface_utils.upload(args, ckpt_file, "/" + ckpt_name, force_sync_upload=force_sync_upload)
 

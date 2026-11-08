@@ -65,7 +65,8 @@ The GUI adjusts required fields and available options based on the selected trai
 
 Train image LoRAs from a MOSS-Image Base checkpoint, Qwen3.5-9B text encoder,
 and Flux.2 VAE. Both interfaces expose caption/latent caching, image previews,
-block swapping, optional DOP, REPA visual guidance and depth anchoring, and experimental staged face
+block swapping, optional DOP, REPA visual guidance and depth anchoring, Automagic3,
+optional EMA smoothed checkpoints, and experimental staged face
 refinement. The DiT accepts ComfyUI ConvRot INT8 or BF16 weights; the text
 encoder also accepts ComfyUI W4A8 with an experimental portable decoder.
 Short real-model GPU smoke tests have passed, including a 1024px LoRA update.

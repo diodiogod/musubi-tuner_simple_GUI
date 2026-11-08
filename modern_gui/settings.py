@@ -198,7 +198,7 @@ CHOICES = {
     "training_mode": MODES,
     "starting_point_mode": ["new", "weights", "state"],
     "network_type": ["LoRA", "LoHa", "LoKr"],
-    "optimizer_type": ["adamw8bit", "AdamW", "Adafactor", "Prodigy", "DAdaptation", "Lion"],
+    "optimizer_type": ["adamw8bit", "AdamW", "Automagic3", "Adafactor", "Prodigy", "DAdaptation", "Lion"],
     "lr_scheduler": ["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial", "rex"],
     "mixed_precision": ["no", "fp16", "bf16"],
     "attention_mechanism": ["sdpa", "xformers", "flash", "sageattn"],
@@ -366,6 +366,10 @@ def _humanize(key: str) -> str:
 
 def _section_for(key: str) -> str:
     if key in MOSS_DEFAULTS:
+        if key.startswith("moss_ema_"):
+            return "regularization"
+        if key.startswith("moss_automagic3_"):
+            return "optimization"
         if key.startswith(("moss_depth_", "moss_keep_", "moss_weight_", "moss_repa_")):
             return "regularization"
         if key.startswith("moss_sample_"):
@@ -440,13 +444,19 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     if key in MOSS_DEFAULTS:
         field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
         field.update(NUMERIC_CONTROLS.get(key, {}))
-        from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS
+        from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
         if key == "moss_repa_enabled":
             field["help_detail"] = REPA_DETAILS
             field["metrics_help"] = REPA_METRICS_HELP
         if key == "moss_sample_lora":
             field["help_detail"] = SAMPLE_DETAILS
+        if key == "moss_ema_enabled":
+            field["help_detail"] = EMA_DETAILS
+        if key.startswith("moss_automagic3_"):
+            field.update(type="number", step=0.00001, min=0, help_detail=AUTOMAGIC3_DETAILS)
+        if key == "moss_ema_decay":
+            field.update(type="number", step=0.001, min=0, max=0.999999)
         if key == "moss_sample_lora_multiplier":
             field.update(type="number", step=0.05)
         if key in MOSS_CHOICES:
@@ -468,6 +478,14 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
         field_type = "text"
     field = {"key": key, "label": FIELD_LABELS.get(key, _humanize(key)), "type": field_type}
     field.update(NUMERIC_CONTROLS.get(key, {}))
+    if key == "optimizer_type":
+        from backends.moss_settings import AUTOMAGIC3_DETAILS
+        field["help"] = "Choose how adapter weights are updated. AdamW8bit is the existing stable default. Automagic3 adapts its learning rate; click ? for its settings and how it differs from Prodigy."
+        field["help_detail"] = AUTOMAGIC3_DETAILS
+    if key == "optimizer_args":
+        field["help"] = "Extra name=value optimizer options, separated by spaces. These are retained when changing optimizer, so review them. Automagic3 accepts beta2, not AdamW betas; MOSS uses weight_decay=0.00001 when this field is blank. Its rate bounds have dedicated controls."
+    if key == "lr_scheduler":
+        field["help"] = "Controls how the learning rate changes over training. Cosine gradually lowers it. Constant leaves scheduling to the optimizer; Automagic3 requires constant with zero warmup because it adapts the rate itself."
     if key == "project_root":
         field["help"] = (
             "Choose a main folder for this training project using Browse. This is the workspace folder. "

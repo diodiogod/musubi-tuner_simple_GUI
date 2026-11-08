@@ -386,7 +386,11 @@ function fieldControl(field, {wide = false} = {}) {
       const presetControl=document.querySelector('[data-key="minimax_h3_quality_protection_preset"] select');
       if(presetControl)presetControl.value="Custom";
     }
-    if(["network_type","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided","moss_pretraining_schedule"].includes(field.key)){
+    if(field.key==="optimizer_type"&&String(input.value).toLowerCase()==="automagic3"){
+      state.settings.lr_scheduler="constant";state.settings.lr_warmup_steps="0";
+      toast("Automagic3 controls its learning rate. Scheduler set to constant with zero warmup.");
+    }
+    if(["network_type","optimizer_type","minimax_h3_training_assistant_enabled","minimax_h3_dynamic_sigma_enabled","minimax_h3_base_preservation_enabled","minimax_h3_teacher_matching","minimax_h3_foundation_lora_enabled","flux2_reference_guided","moss_pretraining_schedule"].includes(field.key)){
       sync();renderGuided();return;
     }
     if(field.key === "krea2_generalization_preset" && applyGeneralizationPreset(input.value)) return;
@@ -516,6 +520,7 @@ function renderGuided() {
   const methodKeys=["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps"];
   if(state.settings.network_type==="LoKr")methodKeys.splice(1,0,"lokr_factor");
   if(mode==="MOSS-Image (Experimental)"){
+    if(String(state.settings.optimizer_type).toLowerCase()==="automagic3")methodKeys.push("moss_automagic3_min_lr","moss_automagic3_max_lr","optimizer_args");
     methodKeys.push("moss_pretraining_schedule");
     if(state.settings.moss_pretraining_schedule)methodKeys.push("moss_logit_mean","moss_logit_std","moss_timestep_cutoff","moss_timestep_uniform_ratio");
     else methodKeys.push("timestep_sampling","discrete_flow_shift");
@@ -541,9 +546,12 @@ function renderGuided() {
   const dopKeys=["dop_enabled","dop_trigger_word","dop_class_word","dop_loss_weight"];
   const fluxRefKeys=["flux2_reference_guided","flux2_reference_conditions","flux2_reference_sigma_max","flux2_reference_direct_loss_weight"];
   const repaKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>key.startsWith("moss_repa_"));
+  const emaKeys=["moss_ema_enabled","moss_ema_decay","moss_ema_device"];
+  $("#moss-ema-settings").hidden=mode!=="MOSS-Image (Experimental)";
+  appendFields($("#moss-ema-fields"),emaKeys);
   $("#moss-repa-settings").hidden=mode!=="MOSS-Image (Experimental)";
   appendFields($("#moss-repa-fields"),repaKeys);
-  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!repaKeys.includes(key)&&!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key)&&!fluxRefKeys.includes(key));
+  const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!emaKeys.includes(key)&&!repaKeys.includes(key)&&!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key)&&!fluxRefKeys.includes(key));
   appendFields($("#regularization-fields"),regularizationKeys);
   if(mode==="Flux.2 Klein"){
     appendFields($("#regularization-fields"),["flux2_reference_guided"]);

@@ -28,6 +28,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
         self._repa_dataset = None
         self._repa_targets = None
         self._sampling_adapter = None
+        self._ema = None
 
     @property
     def architecture(self):
@@ -40,6 +41,8 @@ class MossImageNetworkTrainer(NetworkTrainer):
     def handle_model_specific_args(self, args):
         from musubi_tuner.moss_image.repa import validate_config
         validate_config(args)
+        from musubi_tuner.moss_image.ema import validate_ema_args
+        validate_ema_args(args)
         self.dit_dtype = torch.bfloat16
         self._i2v_training = self._control_training = False
         self.default_guidance_scale = 3.0
@@ -124,11 +127,48 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return groups
 
     def extra_metadata(self, args):
-        if not getattr(args, "moss_repa_enabled", False):
-            return {}
-        return {"ss_" + key: str(getattr(args, key)) for key in
-                ("moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
-                 "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir")}
+        keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device"]
+        if getattr(args, "moss_repa_enabled", False):
+            keys += ["moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
+                     "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir"]
+        return {"ss_" + key: str(getattr(args, key)) for key in keys}
+
+    def _register_hooks_and_resume(self, args, accelerator, network):
+        from musubi_tuner.moss_image.ema import AdapterEMA, validate_ema_resume
+        from musubi_tuner.optimizers.config import OPTIMIZER_MANIFEST, validate_optimizer_resume
+        if accelerator.is_main_process:
+            def save_optimizer_identity(models, weights, output_dir):
+                import json
+                Path(output_dir, OPTIMIZER_MANIFEST).write_text(
+                    json.dumps({"optimizer_type": args.optimizer_type.lower()}), encoding="utf-8",
+                )
+            accelerator.register_save_state_pre_hook(save_optimizer_identity)
+        if args.moss_ema_enabled:
+            self._ema = AdapterEMA(accelerator.unwrap_model(network), args.moss_ema_decay, args.moss_ema_device)
+            accelerator.register_for_checkpointing(self._ema)
+            if accelerator.is_main_process:
+                def save_ema_preview(models, weights, output_dir):
+                    # Keep a standard adapter file for standalone previews from
+                    # this state; model.safetensors remains the live optimizer pair.
+                    with self._ema.average_parameters():
+                        accelerator.unwrap_model(network).save_weights(
+                            str(Path(output_dir) / "ema.safetensors"), torch.float32,
+                            {**self.extra_metadata(args), "ss_network_module": args.network_module,
+                             "ss_network_dim": str(args.network_dim), "ss_network_alpha": str(args.network_alpha)},
+                        )
+                    self._ema.save_manifest(models, weights, output_dir)
+                accelerator.register_save_state_pre_hook(save_ema_preview)
+            accelerator.print(f"MOSS EMA enabled: decay={args.moss_ema_decay}, device={args.moss_ema_device}. "
+                              "Samples and exported LoRAs use averaged weights; full resume states keep live weights.")
+        # Runs on the resolved local folder, including downloaded HF resume states.
+        def validate_resume(models, folder):
+            validate_optimizer_resume(folder, args.optimizer_type)
+            validate_ema_resume(folder, args.moss_ema_enabled, args.moss_ema_decay)
+        accelerator.register_load_state_pre_hook(validate_resume)
+        return super()._register_hooks_and_resume(args, accelerator, network)
+
+    def network_export_context(self, args):
+        return self._ema.average_parameters() if self._ema is not None else super().network_export_context(args)
 
     def get_noisy_model_input_and_timesteps(self, args, noise, latents, timesteps, noise_scheduler, device, dtype):
         if not args.moss_pretraining_schedule:
@@ -226,14 +266,17 @@ class MossImageNetworkTrainer(NetworkTrainer):
             self._depth_regularizer.release_after_backward(vae)
 
     def on_post_optimizer_step(self, args, accelerator, network, transformer, sync_gradients, global_step):
-        if not sync_gradients or args.weight_noise_sigma <= 0:
+        if not sync_gradients or accelerator.optimizer_step_was_skipped:
             return
-        if self._weight_noise is None:
-            from musubi_tuner.training.weight_noise import AdapterWeightNoise, WeightNoiseConfig
-            self._weight_noise = AdapterWeightNoise(WeightNoiseConfig(
-                args.weight_noise_sigma, args.weight_noise_mode, args.weight_noise_bound_norm,
-            ))
-        self._weight_noise_logs = self._weight_noise.apply(accelerator.unwrap_model(network).get_trainable_params())
+        if args.weight_noise_sigma > 0:
+            if self._weight_noise is None:
+                from musubi_tuner.training.weight_noise import AdapterWeightNoise, WeightNoiseConfig
+                self._weight_noise = AdapterWeightNoise(WeightNoiseConfig(
+                    args.weight_noise_sigma, args.weight_noise_mode, args.weight_noise_bound_norm,
+                ))
+            self._weight_noise_logs = self._weight_noise.apply(accelerator.unwrap_model(network).get_trainable_params())
+        if self._ema is not None:
+            self._ema.update()
 
     def extra_step_logs(self, args, logs):
         return dict(self._weight_noise_logs)
@@ -287,7 +330,7 @@ class MossImageNetworkTrainer(NetworkTrainer):
         positive, mask = pad_text_embeds([sample_parameter["moss_embed"]])
         negative, negative_mask = pad_text_embeds([sample_parameter["negative_moss_embed"]])
         from musubi_tuner.moss_image.sampling_adapter import sampling_adapter_enabled
-        with sampling_adapter_enabled(self._sampling_adapter, accelerator.device, offload=True):
+        with self.network_export_context(args), sampling_adapter_enabled(self._sampling_adapter, accelerator.device, offload=True):
             latents = generate_latents(
                 transformer, positive, mask, negative, negative_mask, height, width, sample_steps,
                 cfg_scale if cfg_scale is not None else 3.0,
@@ -312,6 +355,9 @@ def moss_setup_parser(parser):
     add_arguments(parser)
     from musubi_tuner.moss_image.repa import add_arguments as add_repa_arguments
     add_repa_arguments(parser)
+    parser.add_argument("--moss_ema_enabled", action="store_true", help="Use adapter-only EMA for samples and LoRA exports.")
+    parser.add_argument("--moss_ema_decay", type=float, default=0.98)
+    parser.add_argument("--moss_ema_device", choices=("training", "cpu"), default="training")
     parser.add_argument("--text_encoder")
     parser.add_argument("--tokenizer_cache_dir")
     parser.add_argument("--moss_max_token_length", type=int, default=4096)

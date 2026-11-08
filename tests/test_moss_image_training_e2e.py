@@ -16,7 +16,8 @@ from musubi_tuner.training.dop import dop_signature
 
 
 @pytest.mark.parametrize("repa", [False, True])
-def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa):
+@pytest.mark.parametrize("ema", [False, True])
+def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa, ema):
     Image.new("RGB", (32, 32)).save(tmp_path / "a.png")
     (tmp_path / "a.txt").write_text("a person_token portrait", encoding="utf-8")
     dataset = ImageDataset(resolution=(32, 32), caption_extension=".txt", batch_size=1,
@@ -30,7 +31,7 @@ def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_pa
     save_embeddings(item, torch.randn(3, 4096), torch.randn(2, 4096), dop_signature("person_token", "a person"))
     dataset_file = tmp_path / "dataset.toml"
     folder = str(tmp_path).replace("\\", "/")
-    dataset_file.write_text(f'[[datasets]]\nresolution = [32, 32]\nbatch_size = 1\nimage_directory = "{folder}"\n', encoding="utf-8")
+    dataset_file.write_text(f'[[datasets]]\nresolution = [32, 32]\nbatch_size = 1\nnum_repeats = {2 if ema else 1}\nimage_directory = "{folder}"\n', encoding="utf-8")
     dit = tmp_path / "tiny-dummy.safetensors"
     dit.touch()
     script = """
@@ -64,6 +65,11 @@ trainer.train(args)
            "--moss_pretraining_schedule", "--gradient_checkpointing",
            "--dop_trigger_word", "person_token", "--dop_class_word", "a person", "--dop_loss_weight", "0.1",
            "--save_state"]
+    if ema:
+        cmd[cmd.index("--optimizer_type") + 1] = "Automagic3"
+        cmd[cmd.index("--max_train_steps") + 1] = "2"
+        cmd += ["--moss_ema_enabled", "--moss_ema_decay", "0.98", "--gradient_accumulation_steps", "2",
+                "--optimizer_args", "min_lr=1e-6", "max_lr=0.001", "fused=False"]
     if repa:
         from transformers import Dinov2Config, Dinov2Model
         encoder_path = tmp_path / "tiny-dino"
@@ -83,6 +89,20 @@ trainer.train(args)
             assert handle.metadata()["ss_moss_repa_enabled"] == "True"
     state = tmp_path / "out" / "tiny-state"
     assert state.is_dir(), result.stdout + "\n" + result.stderr
+    if ema:
+        from safetensors.torch import load_file
+        snapshots = [torch.load(path, map_location="cpu", weights_only=True)
+                     for path in state.glob("custom_checkpoint_*.pkl")]
+        saved_ema = next(value for value in snapshots if value.get("kind") == "moss-adapter-ema-v1")
+        assert saved_ema["num_updates"] == 2  # Four microbatches, two real optimizer steps.
+        assert (state / "moss_ema.json").is_file()
+        averaged = load_file(str(state / "ema.safetensors"))
+        live = load_file(str(state / "model.safetensors"))
+        exported = load_file(str(artifact))
+        for name, value in saved_ema["shadow"].items():
+            torch.testing.assert_close(averaged[name], value, rtol=0, atol=0)
+            torch.testing.assert_close(exported[name].float(), value, rtol=0.01, atol=1e-7)
+        assert any(not torch.equal(live[name], value) for name, value in saved_ema["shadow"].items())
     if repa:
         assert (state / "custom_checkpoint_0.pkl").is_file()
         feature_files = list(tmp_path.glob("moss_repa_features/**/*.safetensors"))
@@ -92,6 +112,10 @@ trainer.train(args)
                              capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert resumed.returncode == 0, resumed.stdout + "\n" + resumed.stderr
     assert (tmp_path / "out" / "resumed.safetensors").is_file()
+    if ema:
+        snapshots = [torch.load(path, map_location="cpu", weights_only=True)
+                     for path in (tmp_path / "out" / "resumed-state").glob("custom_checkpoint_*.pkl")]
+        assert next(value for value in snapshots if value.get("kind") == "moss-adapter-ema-v1")["num_updates"] == 4
     if repa:
         assert feature_files[0].stat().st_mtime_ns == feature_mtime
         assert "0 generated, 1 reused" in resumed.stderr

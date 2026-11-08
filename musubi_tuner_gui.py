@@ -791,7 +791,7 @@ class MusubiTunerGUI:
         self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
         self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
             key for key in moss_settings.DEFAULTS
-            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_"))
+            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_"))
         ])
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
@@ -1147,7 +1147,7 @@ class MusubiTunerGUI:
 
         optimizer_frame = ttk.LabelFrame(frame, text="Optimizer Settings"); optimizer_frame.pack(fill="x", padx=10, pady=10)
         # Optimizer Type: preset dropdown + optional custom path entry
-        _opt_presets = ["adamw", "adamw8bit", "adafactor", "lion", "prodigy",
+        _opt_presets = ["adamw", "adamw8bit", "Automagic3", "adafactor", "lion", "prodigy",
                         "prodigyplus.prodigy_plus_schedulefree.ProdigyPlusScheduleFree", "Custom..."]
         _opt_frame = ttk.Frame(optimizer_frame); _opt_frame.pack(fill="x", padx=5, pady=(5, 0))
         ttk.Label(_opt_frame, text="Optimizer Type:").pack(anchor="w")
@@ -1157,7 +1157,7 @@ class MusubiTunerGUI:
         _opt_combo = ttk.Combobox(_opt_frame, textvariable=_opt_combo_var,
                                   values=_opt_presets, state="readonly")
         _opt_combo.pack(fill="x", pady=(2, 0)); _opt_combo.bind("<MouseWheel>", lambda e: "break")
-        ToolTip(_opt_combo, "'adamw8bit' is a memory-efficient and stable default. 'prodigy' can also work well. Choose 'Custom...' to type any full import path.")
+        ToolTip(_opt_combo, "AdamW8bit is the existing stable default. Automagic3 is an experimental adaptive-rate optimizer from Ostris; use constant scheduling and zero warmup. Choose Custom to type a full import path.")
         _custom_frame = ttk.Frame(_opt_frame)
         _custom_entry = ttk.Entry(_custom_frame)
         _custom_entry.pack(fill="x")
@@ -1170,6 +1170,12 @@ class MusubiTunerGUI:
             else:
                 _custom_frame.forget()
                 _opt_var.set(sel)
+                if sel.lower() == "automagic3" and "lr_scheduler" in self.entries:
+                    self.entries["lr_scheduler"].set("constant")
+                    self.entries["lr_warmup_steps"].delete(0, tk.END)
+                    self.entries["lr_warmup_steps"].insert(0, "0")
+            if "moss_automagic3" in self.hidden_frames:
+                self.update_button_states()
         def _on_custom_entry_change(*_):
             if _opt_combo_var.get() == "Custom...":
                 _opt_var.set(_custom_entry.get())
@@ -1199,6 +1205,11 @@ class MusubiTunerGUI:
             "Note: do NOT put spaces around '=' signs."
         ), kind='entry')
 
+        self.hidden_frames["moss_automagic3"] = ttk.LabelFrame(frame, text="MOSS · Automagic3 learning-rate bounds")
+        self._add_moss_fields(self.hidden_frames["moss_automagic3"], ["moss_automagic3_min_lr", "moss_automagic3_max_lr"])
+        ttk.Button(self.hidden_frames["moss_automagic3"], text="?  How Automagic3 works", command=lambda: messagebox.showinfo(
+            "Automagic3", moss_settings.AUTOMAGIC3_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=8, pady=5)
         lr_frame = ttk.LabelFrame(frame, text="Learning Rate Scheduler"); lr_frame.pack(fill="x", padx=10, pady=10)
         self._add_widget(lr_frame, "lr_scheduler", "LR Scheduler:", "Algorithm to adjust learning rate during training. 'cosine' is a reliable choice.", kind='combobox', options=["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "constant_with_warmup"], command=self.update_button_states)
         self.hidden_frames['lr_warmup'] = ttk.Frame(lr_frame)
@@ -1757,6 +1768,16 @@ class MusubiTunerGUI:
         )
         h3_reference_guided_frame.pack(fill="x", padx=10, pady=(6, 10))
 
+        self.hidden_frames["moss_ema"] = ttk.LabelFrame(self.regularization_frame, text="MOSS · Smoothed checkpoints (EMA, optional)")
+        self._add_moss_fields(self.hidden_frames["moss_ema"], ["moss_ema_enabled"])
+        ttk.Button(self.hidden_frames["moss_ema"], text="?  EMA and resuming", command=lambda: messagebox.showinfo(
+            "EMA smoothed checkpoints", moss_settings.EMA_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=8, pady=4)
+        ema_options = ttk.Frame(self.hidden_frames["moss_ema"])
+        ema_open = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.hidden_frames["moss_ema"], text="Show EMA settings", variable=ema_open,
+                        command=lambda: ema_options.pack(fill="x") if ema_open.get() else ema_options.pack_forget()).pack(anchor="w", padx=8)
+        self._add_moss_fields(ema_options, ["moss_ema_decay", "moss_ema_device"])
         self.hidden_frames['moss_repa'] = ttk.LabelFrame(self.regularization_frame, text="MOSS · REPA visual guidance (Experimental)")
         repa_frame = self.hidden_frames['moss_repa']
         self._add_moss_fields(repa_frame, ["moss_repa_enabled"])
@@ -7672,11 +7693,17 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except KeyError: pass
         try:
             if mode == moss_settings.MODE:
+                self.hidden_frames['moss_ema'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['moss_repa'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['moss_regularization'].pack(fill="x", padx=10, pady=10)
             else:
+                self.hidden_frames['moss_ema'].pack_forget()
                 self.hidden_frames['moss_repa'].pack_forget()
                 self.hidden_frames['moss_regularization'].pack_forget()
+            if mode == moss_settings.MODE and self.entries["optimizer_type"].get().lower() == "automagic3":
+                self.hidden_frames["moss_automagic3"].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames["moss_automagic3"].pack_forget()
             if is_krea2 or is_minimax_h3:
                 self.hidden_frames['krea2_regularization'].configure(
                     text=("MiniMax H3 · Generalization (Experimental)" if is_minimax_h3 else "Krea 2 · Generalization (Experimental)")
@@ -7999,6 +8026,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         if str(settings.get("training_mode")) == moss_settings.MODE:
             if settings.get("moss_repa_enabled"):
                 parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
+            if settings.get("moss_ema_enabled"):
+                parts.append(f"EMA {settings.get('moss_ema_decay', '0.98')}")
             depth = enabled_number("moss_depth_anchor_weight")
             if depth:
                 depth_text = f"depth {depth}@{settings.get('moss_depth_anchor_input_size') or 518}"

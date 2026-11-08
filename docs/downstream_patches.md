@@ -30,6 +30,23 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Optional MOSS EMA and Automagic3 (2026-11-08)
+
+- `optimizers/automagic3.py` wraps the pinned MIT-licensed Ostris implementation
+  with non-fused FP32 adapter updates. Preserve the adaptive LR reporting
+  scheduler; an ordinary constant scheduler would log the wrong rate.
+- The shared trainer's `network_export_context` is a no-op by default and wraps
+  only generation-weight exports, never full optimizer resume saves.
+- MOSS uses adapter-only EMA for scheduled samples and exports. Full states
+  retain live adapter/optimizer weights, registered EMA shadow state, an
+  averaged preview companion and configuration manifests. Keep EMA updates
+  after successful optimizer steps and outside accumulation-only microsteps.
+- Both GUIs validate optimizer/EMA resume consistency and preserve existing
+  recipes when these options are off. Optimizer options use one `nargs='*'`
+  argument group so earlier options are not silently discarded.
+- Coverage: `test_automagic3.py`, `test_moss_image_ema.py`, and combined tiny
+  CPU training/resume in `test_moss_image_training_e2e.py` (EMA/REPA/DOP).
+
 ### Selective correctness fixes (2026-11-06)
 
 - Musubi PR #1150: both H2D copiers register destination use on their private
