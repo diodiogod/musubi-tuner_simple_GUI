@@ -926,6 +926,13 @@ function movePlanItem(list,index,delta,openKey){
 }
 function renderPromptCards(){
   const host=$("#prompt-list"),prompts=state.settings.sample_prompts_data;
+  const previews=prompts.map((prompt,index)=>{
+    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1;
+    const previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"";
+    const item=promptCardPreviewItem(prompt,index,previewPath);
+    return item?{promptIndex:index,item}:null;
+  }).filter(Boolean);
+  const previewByPrompt=new Map(previews.map(entry=>[entry.promptIndex,entry.item]));
   host.innerHTML="";
   if(!prompts.length){
     host.innerHTML='<div class="plan-empty-state"><span>Aa</span><h3>Create a stable visual checkpoint</h3><p>Add two or three prompts you can compare throughout training. Keep the seed fixed when you want changes to reflect the LoRA rather than randomness.</p><div><button class="quiet" data-empty-library>Choose from library</button><button class="primary" data-empty-add>＋ Add first prompt</button></div></div>';
@@ -937,7 +944,7 @@ function renderPromptCards(){
     const text=String(prompt.prompt||"").replace(/\s+/g," ").trim(),empty=!text,enabled=prompt.enabled!==false,hasPreview=state.promptPreview?.indices?.includes(index),previewing=hasPreview&&["starting","running"].includes(state.promptPreview.status),previewReady=hasPreview&&state.promptPreview.status==="completed",previewFailed=hasPreview&&["failed","stopped"].includes(state.promptPreview.status),cardIssues=promptCardIssues(prompt,index),previewIssues=promptCardIssues({...prompt,enabled:true},index,{includeDisabled:true}),previewKind=state.settings.training_mode==="MiniMax H3 (Experimental)"&&Number(prompt.frames??39)>1?"video":"preview";
     const status=previewing?"Previewing":previewReady?"Preview ready":previewFailed?"Preview failed":cardIssues.length?"Needs attention":enabled?"Included":"Off",linked=Boolean(prompt._library_id),useLora=promptPreviewUsesLora(prompt),modelLabel=(state.settings.training_mode||"Model").replace(" (Experimental)",""),previewSupported=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
     const card=document.createElement("article");card.className=`plan-prompt-card${enabled?" is-included":" is-off"}${cardIssues.length?" needs-attention":""}${previewing?" is-previewing":""}${previewReady?" is-preview-ready":""}${previewFailed?" preview-failed":""}`;card.dataset.promptIndex=index;
-    const previewPosition=state.promptPreview?.indices?.indexOf(index)??-1,previewPath=previewPosition>=0?state.promptPreview?.outputs?.[previewPosition]:"",previewItem=promptCardPreviewItem(prompt,index,previewPath),previewUrl=previewItem?.url||"",previewIsVideo=previewItem?.media_kind==="video";
+    const previewItem=previewByPrompt.get(index),previewUrl=previewItem?.url||"",previewIsVideo=previewItem?.media_kind==="video";
     const thumbnail=previewItem?(previewIsVideo?`<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="Latest generated video preview"></video>`:`<img src="${previewUrl}" loading="lazy" alt="Latest generated or saved preview">`):"";
     card.innerHTML=`<div class="prompt-card-visual">${thumbnail}<div class="prompt-visual-placeholder" aria-hidden="true"><span>Aa</span><small>${esc(`${prompt.width||"?"} × ${prompt.height||"?"}`)}</small></div><span class="prompt-status" aria-live="polite">${previewing?'<i class="status-spinner"></i>':""}${esc(status)}</span><span class="prompt-order">#${index+1}</span></div><div class="prompt-card-content"><div class="prompt-card-heading"><div><small>${linked?"LIBRARY PROMPT":"SAMPLE PROMPT"}</small><h3>${esc(prompt._library_name||`Sample prompt ${index+1}`)}</h3></div><details class="item-menu"><summary aria-label="More actions for sample prompt ${index+1}">•••</summary><div><button data-action="up" ${index===0?"disabled":""}>Move earlier</button><button data-action="down" ${index===prompts.length-1?"disabled":""}>Move later</button><button data-action="duplicate">Duplicate</button><button class="danger" data-action="remove">Remove</button></div></details></div><button class="prompt-card-copy" data-action="edit" aria-label="${esc(`Edit ${prompt._library_name||`sample prompt ${index+1}`}: ${(text||"empty prompt").slice(0,120)}`)}"><p>${esc(text||"Write the positive prompt Musubi should sample.")}</p>${prompt.neg?`<small>Negative: ${esc(String(prompt.neg).replace(/\s+/g," ").trim())}</small>`:""}</button><div class="prompt-meta">${promptMeta(prompt).map(value=>`<span>${esc(value)}</span>`).join("")}</div>${cardIssues.length?`<button class="plan-card-warning" data-action="edit"><span>!</span>${esc(cardIssues[0])}</button>`:""}<div class="prompt-card-footer"><label class="plan-switch"><input type="checkbox" data-action="enabled" ${enabled?"checked":""}><span>Include</span></label><div><button class="text-action" data-action="edit">Edit</button><button class="quiet" data-action="preview" title="${esc(previewIssues[0]||"Generate this prompt as a standalone preview.")}" ${!["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode)||previewIssues.length||previewing?"disabled":""}>${previewing?"Previewing…":previewReady?"Generate again":"Generate preview"}</button>${state.promptPreview?.jobId&&hasPreview?'<button class="text-action" data-action="view-run">View run</button>':""}</div></div></div>`;
     const footerActions=card.querySelector(".prompt-card-footer>div"),defaults=document.createElement("button"),source=document.createElement("label"),previewButton=card.querySelector('[data-action="preview"]');
@@ -948,7 +955,7 @@ function renderPromptCards(){
     const cardVideo=card.querySelector(".prompt-card-visual video");
     if(cardVideo){cardVideo.addEventListener("canplay",()=>cardVideo.play().catch(()=>{}),{once:true});cardVideo.addEventListener("error",()=>cardVideo.remove())}
     const visual=card.querySelector(".prompt-card-visual");
-    if(previewItem)bindPreviewOpener(visual,previewItem);
+    if(previewItem)bindPreviewOpener(visual,previewItem,previews.map(entry=>entry.item),previews.findIndex(entry=>entry.promptIndex===index));
     card.querySelector('[data-action="enabled"]').addEventListener("change",event=>{prompt.enabled=event.target.checked;renderPlan();sync()});
     card.querySelector('[data-action="defaults"]').addEventListener("click",()=>applyPromptModelDefaults(index));
     card.querySelector('[data-action="preview-lora"]')?.addEventListener("change",event=>{prompt._preview_use_lora=event.target.checked;renderPlan();sync()});
@@ -1255,14 +1262,16 @@ function renderLibrary(){
   const query=($("#library-search").value||"").toLowerCase(),host=$("#library-list"),entries=libraryEntries.filter(entry=>JSON.stringify([entry.name,entry.tags,entry.collection,entry.prompt_data?.prompt]).toLowerCase().includes(query)),supported=["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(state.settings.training_mode);
   host.innerHTML=entries.length?"":'<div class="empty">No matching library prompts. Add the starter examples to begin.</div>';
   $("#library-count").textContent=`${entries.length} of ${libraryEntries.length} prompts`;
-  entries.sort((a,b)=>Number(Boolean(b.favorite))-Number(Boolean(a.favorite))||String(a.name).localeCompare(String(b.name))).forEach(entry=>{
+  entries.sort((a,b)=>Number(Boolean(b.favorite))-Number(Boolean(a.favorite))||String(a.name).localeCompare(String(b.name)));
+  const coverPreviews=entries.filter(entry=>entry.cover).map(entry=>({id:entry.id,item:{name:entry.name||"Library cover",url:libraryCoverUrl(entry.id),media_kind:"image"}}));
+  entries.forEach(entry=>{
     const generating=state.promptPreview?.libraryId===entry.id&&["starting","running"].includes(state.promptPreview.status),cover=entry.cover,meta=cover?.metadata||{},coverLabel=cover?`${meta.baseline?"Base":"Preview"}${meta.sampling_lora?" + Turbo":""} · ${meta.model_name||cover.mode||"Previous model"}${entry.cover_is_fallback?" · earlier example":""}`:"No cover for this prompt yet",card=document.createElement("article");card.className="structured-item library-card";
     card.innerHTML=`<div class="library-cover">${cover?`<button type="button" class="library-cover-button"><img class="library-thumbnail" src="${libraryCoverUrl(entry.id)}" loading="lazy" alt="${esc(coverLabel)}"><span class="library-view-hint" aria-hidden="true">⤢ View image</span></button>`:'<div class="library-cover-empty"><span>Aa</span><small>No cover yet</small></div>'}<button class="library-favorite" data-library-action="favorite" title="Favorite" aria-label="${esc(`Favorite ${entry.name||"prompt"}`)}">${entry.favorite?"★":"☆"}</button></div>
       <div class="library-copy"><div class="library-card-heading"><strong title="${esc(entry.name||"Untitled prompt")}">${esc(entry.name||"Untitled prompt")}</strong><button data-library-action="edit" class="text-action">Edit</button></div>
       <small class="library-cover-label" title="${esc(coverLabel)}">${esc(coverLabel)}</small>${entry.collection||entry.tags?.length?`<small class="library-tags">${esc([entry.collection,...(entry.tags||[])].filter(Boolean).join(" · "))}</small>`:""}
       <p class="library-prompt-copy" title="${esc(entry.prompt_data?.prompt||"")}">${esc(entry.prompt_data?.prompt||"")}</p><div class="library-card-actions"><button class="quiet" data-library-action="cover" ${supported&&!generating?"":"disabled"}>${generating?"Generating…":"Generate base cover"}</button><button class="primary" data-library-action="add">Add to plan</button></div></div>`;
     const coverPreview=card.querySelector(".library-cover-button");
-    if(coverPreview)bindPreviewOpener(coverPreview,{name:entry.name||"Library cover",url:libraryCoverUrl(entry.id),media_kind:"image"});
+    if(coverPreview)bindPreviewOpener(coverPreview,{name:entry.name||"Library cover",url:libraryCoverUrl(entry.id),media_kind:"image"},coverPreviews.map(cover=>cover.item),coverPreviews.findIndex(cover=>cover.id===entry.id));
     card.querySelector(".library-thumbnail")?.addEventListener("error",()=>{coverPreview.disabled=true;coverPreview.classList.remove("can-open-preview");coverPreview.title="The saved cover is unavailable; generate it again."});
     const coverButton=card.querySelector('[data-library-action="cover"]');coverButton.title="Generate before training with this model's defaults, without the trained LoRA. An optional sampling-only Turbo LoRA is still used. H3 video covers use the first frame.";
     coverButton.addEventListener("click",()=>startPromptPreview([{...defaultPromptForMode(),prompt:entry.prompt_data?.prompt||"",_library_id:entry.id,_library_name:entry.name,_preview_use_lora:false}],{}));
@@ -2301,7 +2310,7 @@ function renderSampleGallery(){
     video.addEventListener("error",()=>{video.style.visibility="visible"},{once:true});
     video.load();
   });
-  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>openSamplePreview(items[Number(button.dataset.index)])));
+  $$(".gallery-card").forEach(button=>button.addEventListener("click",()=>{const index=Number(button.dataset.index);openSamplePreview(items[index],items,index)}));
 }
 function openSampleSources(){renderSampleSources();$("#sample-sources-dialog").showModal()}
 async function addSampleSourceFromDialog(){
@@ -2324,23 +2333,50 @@ async function findAndAddNearbySources(){
 async function removeSampleSource(path){
   try{const payload=await api("/api/samples/sources",{method:"POST",body:JSON.stringify({path,remove:true})});state.sampleSources=payload.sources||[];renderSampleSources();compareState.leftSequence=null;compareState.rightSequence=null;await loadSamples();toast("Sample folder removed from comparisons.")}catch(error){toast(error.message,"error")}
 }
-function openSamplePreview(item){
+let samplePreviewItems=[];
+let samplePreviewIndex=-1;
+function updateSamplePreviewNavigation(){
+  const previous=$("#sample-preview-prev"),next=$("#sample-preview-next");
+  if(!previous||!next)return;
+  previous.disabled=samplePreviewIndex<=0;
+  next.disabled=samplePreviewIndex<0||samplePreviewIndex>=samplePreviewItems.length-1;
+  previous.setAttribute("aria-label",previous.disabled?"No previous image":"Previous image");
+  next.setAttribute("aria-label",next.disabled?"No next image":"Next image");
+}
+function fitSamplePreviewMedia(media){
+  const width=media.naturalWidth||media.videoWidth,height=media.naturalHeight||media.videoHeight;
+  if(!width||!height){media.style.removeProperty("width");media.style.removeProperty("height");return}
+  const availableWidth=Math.max(1,window.innerWidth*.96-38),availableHeight=Math.max(1,window.innerHeight*.94-58),scale=Math.min(availableWidth/width,availableHeight/height);
+  media.style.width=`${Math.round(width*scale)}px`;media.style.height=`${Math.round(height*scale)}px`;
+}
+function openSamplePreview(item,items=[item],index=0){
+  samplePreviewItems=Array.isArray(items)&&items.length?items:[item];
+  samplePreviewIndex=Math.max(0,Math.min(samplePreviewItems.length-1,Number(index)||0));
+  item=samplePreviewItems[samplePreviewIndex]||item;
   const image=$("#sample-preview-image"),video=$("#sample-preview-video"),isVideo=item.media_kind==="video";
+  image.style.removeProperty("width");image.style.removeProperty("height");video.style.removeProperty("width");video.style.removeProperty("height");
   video.pause();video.removeAttribute("src");video.load();image.removeAttribute("src");
   image.hidden=isVideo;video.hidden=!isVideo;
-  if(isVideo){video.src=item.url;video.autoplay=false;video.loop=false;video.muted=true;video.controls=true;video.load()}else image.src=item.url;
+  if(isVideo){video.onloadedmetadata=()=>fitSamplePreviewMedia(video);video.src=item.url;video.autoplay=false;video.loop=false;video.muted=true;video.controls=true;video.load();fitSamplePreviewMedia(video)}else{image.onload=()=>fitSamplePreviewMedia(image);image.src=item.url;fitSamplePreviewMedia(image)}
   $("#sample-preview-name").textContent=item.name||"Preview";
+  updateSamplePreviewNavigation();
   const dialog=$("#sample-preview-dialog");if(!dialog.open)dialog.showModal();
 }
-function bindPreviewOpener(target,item){
+function moveSamplePreview(delta){
+  const index=samplePreviewIndex+delta;
+  if(index<0||index>=samplePreviewItems.length)return false;
+  openSamplePreview(samplePreviewItems[index],samplePreviewItems,index);
+  return true;
+}
+function bindPreviewOpener(target,item,items=[item],index=0){
   target.classList.add("can-open-preview");
-  target.title="Open full preview · click or double-click";
+  target.title="Open full preview · use arrows for adjacent images";
   target.setAttribute("aria-label",`Open full preview: ${item.name||"sample"}`);
   if(target.tagName!=="BUTTON"){
     target.setAttribute("role","button");target.tabIndex=0;
-    target.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();openSamplePreview(item)}});
+    target.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();openSamplePreview(item,items,index)}});
   }
-  target.addEventListener("click",()=>openSamplePreview(item));
+  target.addEventListener("click",()=>openSamplePreview(item,items,index));
 }
 function bindHoverVideoControls(video){
   if(!video||video.dataset.hoverControlsBound)return;
@@ -2380,7 +2416,16 @@ function renderComparison(index) {
       host.innerHTML=`<div class="wipe-stage" id="wipe-stage" tabindex="0" role="slider" aria-label="Comparison reveal position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(compareState.wipe)}"><div class="wipe-layer">${media(b,"b")}</div><div class="wipe-layer a" id="wipe-a">${media(a,"a")}</div><div class="wipe-divider" id="wipe-divider"></div><span class="wipe-label left">A · ${esc(a.source_label||"Current run")} · ${esc(a.sequence_label)}</span><span class="wipe-label right">B · ${esc(b.source_label||"Current run")} · ${esc(b.sequence_label)}</span></div>`;
       setWipe(compareState.wipe);bindWipe();
     }
-    const comparisonMedia=[...host.querySelectorAll(".compare-media")];comparisonMedia.forEach(item=>item.addEventListener(isVideo?"loadedmetadata":"load",()=>requestAnimationFrame(fitComparisonHeight),{once:true}));const fitTarget=compareState.mode==="side"?host.querySelector(".compare-image"):host.querySelector(".wipe-stage");host._compareResizeObserver?.disconnect();if(window.ResizeObserver&&fitTarget){host._compareResizeObserver=new ResizeObserver(()=>fitComparisonHeight());host._compareResizeObserver.observe(fitTarget)}requestAnimationFrame(fitComparisonHeight);
+    const comparisonMedia=[...host.querySelectorAll(".compare-media")];comparisonMedia.forEach(item=>{
+      item.addEventListener(isVideo?"loadedmetadata":"load",()=>requestAnimationFrame(fitComparisonHeight),{once:true});
+      item.classList.add("can-open-preview");item.title="Open full preview";
+      item.addEventListener("click",event=>{
+        event.stopPropagation();
+        if(isVideo&&compareState.videoPlaying)$("#video-play").click();
+        const itemIndex=item.dataset.videoRole==="a"?compareState.leftIndex:compareState.rightIndex;
+        openSamplePreview(items[itemIndex],items,itemIndex);
+      });
+    });const fitTarget=compareState.mode==="side"?host.querySelector(".compare-image"):host.querySelector(".wipe-stage");host._compareResizeObserver?.disconnect();if(window.ResizeObserver&&fitTarget){host._compareResizeObserver=new ResizeObserver(()=>fitComparisonHeight());host._compareResizeObserver.observe(fitTarget)}requestAnimationFrame(fitComparisonHeight);
     if(isVideo)bindVideoSync(host);
     $("#sample-range").value=compareState.rightIndex;
   };
@@ -2612,15 +2657,40 @@ function closeDialogSafely(dialog){
   if(dialog?.id==="sample-preview-dialog"){const video=$("#sample-preview-video"),image=$("#sample-preview-image");video?.pause();if(video)video.hidden=true;if(image)image.hidden=false}
   dialog?.close();return true;
 }
+function previewContentBounds(media){
+  const bounds=media.getBoundingClientRect(),width=media.naturalWidth||media.videoWidth,height=media.naturalHeight||media.videoHeight;
+  if(!width||!height||!bounds.width||!bounds.height)return bounds;
+  const scale=Math.min(bounds.width/width,bounds.height/height),contentWidth=width*scale,contentHeight=height*scale;
+  return {left:bounds.left+(bounds.width-contentWidth)/2,right:bounds.right-(bounds.width-contentWidth)/2,top:bounds.top+(bounds.height-contentHeight)/2,bottom:bounds.bottom-(bounds.height-contentHeight)/2};
+}
+function pointInside(bounds,x,y){return x>=bounds.left&&x<=bounds.right&&y>=bounds.top&&y<=bounds.bottom}
+function hasPreviewTextSelection(){return Boolean(String(window.getSelection?.()||"").trim())}
 $$("[data-close]").forEach(n=>n.addEventListener("click",()=>closeDialogSafely(document.getElementById(n.dataset.close))));
 $$("dialog").forEach(dialog=>dialog.addEventListener("click",event=>{
+  if(dialog.id==="sample-preview-dialog"){
+    if(event.target.closest?.(".dialog-close,.preview-nav")||hasPreviewTextSelection())return;
+    const image=$("#sample-preview-image"),video=$("#sample-preview-video");
+    if(event.target===image||event.target===video){if(pointInside(previewContentBounds(event.target),event.clientX,event.clientY))return}
+    closeDialogSafely(dialog);return;
+  }
   if(event.target!==dialog)return;
   const box=dialog.getBoundingClientRect();
   if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeDialogSafely(dialog);
 }));
+$("#sample-preview-image").addEventListener("dragstart",event=>event.preventDefault());
+$("#sample-preview-prev").addEventListener("click",event=>{event.preventDefault();event.stopPropagation();moveSamplePreview(-1)});
+$("#sample-preview-next").addEventListener("click",event=>{event.preventDefault();event.stopPropagation();moveSamplePreview(1)});
+$$('.preview-nav').forEach(button=>button.addEventListener("dblclick",event=>{event.preventDefault();event.stopPropagation()}));
+$("#sample-preview-dialog").addEventListener("load",event=>{if(event.target===$("#sample-preview-image"))fitSamplePreviewMedia(event.target)},true);
+$("#sample-preview-dialog").addEventListener("loadedmetadata",event=>{if(event.target===$("#sample-preview-video"))fitSamplePreviewMedia(event.target)},true);
+$("#sample-preview-dialog").addEventListener("keydown",event=>{
+  if(!["ArrowLeft","ArrowRight"].includes(event.key)||event.target.matches("input,textarea,select,[contenteditable='true']")||event.target===$("#sample-preview-video")||hasPreviewTextSelection())return;
+  if(moveSamplePreview(event.key==="ArrowLeft"?-1:1))event.preventDefault();
+});
+window.addEventListener("resize",()=>{const dialog=$("#sample-preview-dialog");if(dialog.open)fitSamplePreviewMedia($("#sample-preview-video").hidden?$("#sample-preview-image"):$("#sample-preview-video"))});
 $("#dataset-media-dialog").addEventListener("cancel",event=>{if(state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))event.preventDefault();else state.datasetCaptionDirty=false});
 $("#plan-prompt-dialog").addEventListener("close",()=>{const index=state.openPromptIndex;renderPlan();setTimeout(()=>$(`.plan-prompt-card[data-prompt-index="${index}"] [data-action="edit"]`)?.focus({preventScroll:true}),0);state.planEditorReturnFocus=null});
-$("#sample-preview-dialog").addEventListener("close",()=>$("#sample-preview-video").pause());
+$("#sample-preview-dialog").addEventListener("close",()=>{$("#sample-preview-video").pause();samplePreviewItems=[];samplePreviewIndex=-1;updateSamplePreviewNavigation()});
 $("#stage-editor-dialog").addEventListener("close",()=>{const index=state.openStageIndex;renderPlan();setTimeout(()=>$$(".plan-stage-card")[index]?.querySelector('[data-stage-action="edit"]')?.focus({preventScroll:true}),0);state.stageEditorReturnFocus=null});
 $("#step-back").addEventListener("click",()=>moveStep(-1));$("#step-next").addEventListener("click",()=>moveStep(1));
 $("#save-settings").addEventListener("click",()=>saveSettings().catch(e=>toast(e.message)));$("#save-all-settings").addEventListener("click",()=>saveSettings().catch(e=>toast(e.message)));
@@ -2725,7 +2795,7 @@ $("#run-face-preflight").addEventListener("click",async()=>{const button=$("#run
 async function startFaceEvaluation(comparison){
   const config=faceConfig(),baseline=comparison?config.evaluation_baseline_result||"":"";try{const payload=await api("/api/face/evaluate",{method:"POST",body:JSON.stringify({settings:state.settings,input_lora:config.input_lora,baseline_result:baseline})});if(!comparison){config.evaluation_baseline_result=payload.result}else{config.evaluation_last_result=payload.result}sync();await saveSettings();lastLogId=0;renderActive(payload.job);go("run");toast(`${payload.cases} fixed evaluation cases started.`)}catch(e){toast(e.message)}
 }
-async function loadFaceResult(){const config=faceConfig(),path=config.evaluation_last_result||config.evaluation_baseline_result;if(!path)return toast("No saved evaluation result path is available.");try{const payload=await api("/api/face/result",{method:"POST",body:JSON.stringify({path})}),poses=payload.poses||{},cases=payload.cases||[],deltas=payload.deltas||{};loadedFaceResult=payload;$("#build-weak-pose-plan").disabled=false;$("#face-eval-result").classList.remove("empty");$("#face-eval-result").innerHTML=`<div class="review-summary">${Object.entries(poses).map(([pose,m])=>{const delta=deltas[pose]?.overall_similarity;return `<div class="review-row"><span>${esc(pose.replaceAll("_"," "))} · ${m.samples} samples</span><strong>identity ${m.overall_similarity==null?"—":Number(m.overall_similarity).toFixed(3)}${delta==null?"":` · Δ ${delta>=0?"+":""}${Number(delta).toFixed(3)}`} · pose ${m.pose_success_rate==null?"—":Math.round(m.pose_success_rate*100)+"%"}</strong></div>`}).join("")}</div><div class="sample-gallery">${cases.filter(item=>item.image).map((item,index)=>`<button class="gallery-card" data-face-case="${index}"><img src="/api/evaluation-image?path=${encodeURIComponent(item.image)}" loading="lazy" alt=""><strong>${esc(item.pose)} → ${esc(item.actual_pose||"not detected")}</strong><small>identity ${item.overall_similarity==null?"—":Number(item.overall_similarity).toFixed(3)} · seed ${esc(item.seed)}</small></button>`).join("")}</div><details class="raw-settings"><summary>Complete evaluation data</summary><pre>${esc(JSON.stringify(payload,null,2))}</pre></details>`;$$("[data-face-case]").forEach(button=>button.addEventListener("click",()=>{const item=cases.filter(x=>x.image)[Number(button.dataset.faceCase)];$("#sample-preview-image").src=`/api/evaluation-image?path=${encodeURIComponent(item.image)}`;$("#sample-preview-name").textContent=`${item.pose} · seed ${item.seed}`;$("#sample-preview-dialog").showModal()}))}catch(e){toast(e.message)}}
+async function loadFaceResult(){const config=faceConfig(),path=config.evaluation_last_result||config.evaluation_baseline_result;if(!path)return toast("No saved evaluation result path is available.");try{const payload=await api("/api/face/result",{method:"POST",body:JSON.stringify({path})}),poses=payload.poses||{},cases=payload.cases||[],deltas=payload.deltas||{};loadedFaceResult=payload;$("#build-weak-pose-plan").disabled=false;$("#face-eval-result").classList.remove("empty");$("#face-eval-result").innerHTML=`<div class="review-summary">${Object.entries(poses).map(([pose,m])=>{const delta=deltas[pose]?.overall_similarity;return `<div class="review-row"><span>${esc(pose.replaceAll("_"," "))} · ${m.samples} samples</span><strong>identity ${m.overall_similarity==null?"—":Number(m.overall_similarity).toFixed(3)}${delta==null?"":` · Δ ${delta>=0?"+":""}${Number(delta).toFixed(3)}`} · pose ${m.pose_success_rate==null?"—":Math.round(m.pose_success_rate*100)+"%"}</strong></div>`}).join("")}</div><div class="sample-gallery">${cases.filter(item=>item.image).map((item,index)=>`<button class="gallery-card" data-face-case="${index}"><img src="/api/evaluation-image?path=${encodeURIComponent(item.image)}" loading="lazy" alt=""><strong>${esc(item.pose)} → ${esc(item.actual_pose||"not detected")}</strong><small>identity ${item.overall_similarity==null?"—":Number(item.overall_similarity).toFixed(3)} · seed ${esc(item.seed)}</small></button>`).join("")}</div><details class="raw-settings"><summary>Complete evaluation data</summary><pre>${esc(JSON.stringify(payload,null,2))}</pre></details>`;const faceItems=cases.filter(item=>item.image).map(item=>({name:`${item.pose} · seed ${item.seed}`,url:`/api/evaluation-image?path=${encodeURIComponent(item.image)}`,media_kind:"image"}));$$("[data-face-case]").forEach(button=>button.addEventListener("click",()=>{const index=Number(button.dataset.faceCase);openSamplePreview(faceItems[index],faceItems,index)}))}catch(e){toast(e.message)}}
 $("#build-weak-pose-plan").addEventListener("click",async()=>{if(!loadedFaceResult)return;try{const config=faceConfig(),payload=await api("/api/face/weak-plan",{method:"POST",body:JSON.stringify({result:loadedFaceResult,plan:config.pose_plan,target_similarity:config.stop_similarity??.55,reference_counts:config.preflight_report?.pose_bucket_counts||{},min_references:config.pose_min_references??2})});config.pose_plan=payload.pose_plan;config.pose_aware=true;renderFaceWorkspace();sync();$$("[data-face-step]").find(x=>x.dataset.faceStep==="recipe")?.click();toast(payload.warnings?.length?payload.warnings.join(" "):"Weak-pose training plan created.")}catch(e){toast(e.message)}});
 $("#face-baseline").addEventListener("click",()=>startFaceEvaluation(false));$("#face-compare").addEventListener("click",()=>startFaceEvaluation(true));
 $("#load-face-result").addEventListener("click",loadFaceResult);
