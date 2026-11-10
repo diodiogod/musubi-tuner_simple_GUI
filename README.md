@@ -220,8 +220,15 @@ and `pyproject.toml` is unchanged. Setup details and errors are written to
 Python 3.10, 3.11, or 3.12 must already be installed. To explicitly repair an
 environment, run `venv\Scripts\python.exe tools\bootstrap_environment.py
 --force-repair`. To reinstall PyTorch, add `--refresh-torch`; set
-`MUSUBI_CUDA=cu124`, `cu128`, `cu130`, or `cu132` first when automatic driver
+`MUSUBI_CUDA=cu124`, `cu128`, `cu130`, `cu132`, or `cu134` first when automatic driver
 detection needs to be overridden.
+
+MOSS's optional Fizgig-style speed controls include batched Muon, BF16 LoRA
+compute, unpadded image passes, and compiled blocks. The compiled Inductor path
+uses an **opt-in** newer runtime: run `venv\Scripts\python.exe
+tools\bootstrap_environment.py --performance-runtime` while this trainer is
+closed. Existing environments are not upgraded automatically.
+See [MOSS speed settings and runtime requirements](docs/moss_image_experimental.md#optional-fizgig-style-speed-and-optimizer-settings).
 
 ### Experimental Linux launcher
 

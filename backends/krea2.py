@@ -18,6 +18,8 @@ KREA2_TARGET_PRESET_ARGS = {
 
 def build_commands(settings):
     """Returns a single accelerate launch command for Krea 2 training."""
+    from backends.regularization_switches import effective_settings
+    settings = effective_settings(settings)
     cmd = ["accelerate", "launch", "--num_processes", "1", "--num_cpu_threads_per_process", "1",
            "src/musubi_tuner/krea2_train_network.py"]
 

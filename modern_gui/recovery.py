@@ -171,6 +171,8 @@ def effective_history_settings(job: dict[str, Any]) -> dict[str, Any]:
         settings["krea2_generalization_preset"] = "Off (Baseline)"
         settings["krea2_weight_noise_sigma"] = "0"
         settings["krea2_depth_anchor_weight"] = "0"
+        settings["krea2_weight_noise_enabled"] = False
+        settings["krea2_depth_anchor_enabled"] = False
     if is_minimax:
         # Older snapshots predate the text-encoder streaming field. Keep the
         # safe low-VRAM default visible when those recipes are reopened, while

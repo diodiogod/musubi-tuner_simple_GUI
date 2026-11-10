@@ -15,9 +15,10 @@ from musubi_tuner.moss_image.cache import save_embeddings, save_latents
 from musubi_tuner.training.dop import dop_signature
 
 
-@pytest.mark.parametrize("repa,ema,sigmoid_high", [(False, False, False), (True, False, False),
-                                                  (False, True, False), (True, True, False), (True, True, True)])
-def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa, ema, sigmoid_high):
+@pytest.mark.parametrize("repa,ema,sigmoid_high,optimizer", [(False, False, False, None), (True, False, False, None),
+    (False, True, False, None), (True, True, False, None), (True, True, True, None),
+    (True, True, False, "Muon"), (False, True, False, "Automagic4")])
+def test_one_cpu_training_step_consumes_real_moss_cache_and_saves_adapter(tmp_path, repa, ema, sigmoid_high, optimizer):
     Image.new("RGB", (32, 32)).save(tmp_path / "a.png")
     (tmp_path / "a.txt").write_text("a person_token portrait", encoding="utf-8")
     dataset = ImageDataset(resolution=(32, 32), caption_extension=".txt", batch_size=1,
@@ -79,7 +80,13 @@ trainer.train(args)
                                intermediate_size=32, image_size=28, patch_size=14)).save_pretrained(encoder_path)
         cmd += ["--moss_repa_enabled", "--moss_repa_block", "0", "--moss_repa_image_size", "28",
                 "--moss_repa_encoder", str(encoder_path), "--vae", str(dit)]
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", ACCELERATE_USE_CPU="true", PYTHONIOENCODING="utf-8")
+    if optimizer:
+        cmd[cmd.index("--optimizer_type") + 1] = optimizer
+        position = cmd.index("--optimizer_args")
+        del cmd[position:position + 4]  # remove the Automagic3-specific bounds and fused flag
+        cmd += ["--moss_unpadded_batches", "--moss_clean_end_share", "40",
+                "--network_args", "moss_lowp_lora=True"]
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="-1", ACCELERATE_USE_CPU="true", PYTHONIOENCODING="utf-8")
     result = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
     artifact = tmp_path / "out" / "tiny.safetensors"

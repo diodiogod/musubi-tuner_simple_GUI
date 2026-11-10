@@ -167,11 +167,11 @@ class LoKrModule(torch.nn.Module):
             w2 = self.lokr_w2_a @ self.lokr_w2_b
         return make_kron(w1, w2, self.scale)
 
-    def forward(self, x):
+    def forward(self, x, base_output=None):
         if not self.enabled:
-            return self.org_forward(x)
+            return self.org_forward(x) if base_output is None else base_output
 
-        org_forwarded = self.org_forward(x)
+        org_forwarded = self.org_forward(x) if base_output is None else base_output
 
         # module dropout
         if self.module_dropout is not None and self.training:

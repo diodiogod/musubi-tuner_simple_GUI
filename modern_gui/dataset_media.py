@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
+from musubi_tuner.dataset.mask_files import is_mask_image
 
 from musubi_tuner.dataset.audio_utils import resolve_audio_source
 from musubi_tuner.minimax_h3_native.media import probe_h3_media
@@ -211,6 +212,7 @@ def _control_candidates(root: Path | None, media: Path, kind: str) -> list[Path]
                     for path in stem_directory.iterdir()
                     if path.is_file()
                     and path.suffix.lower() in IMAGE_EXTENSIONS
+                    and not is_mask_image(path)
                     and resolved_root in path.resolve().parents
                 ),
                 key=_natural_key,
@@ -232,6 +234,7 @@ def _control_candidates(root: Path | None, media: Path, kind: str) -> list[Path]
         for path in root.iterdir()
         if path.is_file()
         and path.suffix.lower() in IMAGE_EXTENSIONS
+        and not is_mask_image(path)
         and path.resolve().parent == resolved_root
         and (path.stem.casefold() == media.stem.casefold() or path.stem.casefold().startswith(prefix))
     ]
@@ -256,6 +259,7 @@ def _directory_control_map(
         for path in root.iterdir()
         if path.is_file()
         and path.suffix.lower() in IMAGE_EXTENSIONS
+        and not is_mask_image(path)
         and path.resolve().parent == root.resolve()
     }
     paired: dict[Path, list[Path]] = {}
@@ -331,6 +335,7 @@ def _directory_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], di
             path.resolve()
             for path in root.iterdir()
             if path.is_file() and path.suffix.lower() in extensions and path.resolve().parent == root.resolve()
+            and (kind != "image" or not is_mask_image(path))
         ),
         key=_natural_key,
     )
@@ -546,6 +551,7 @@ def _manifest_inventory(spec: dict[str, Any]) -> tuple[list[dict[str, Any]], dic
                     item.resolve()
                     for item in path.iterdir()
                     if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS
+                    and not is_mask_image(item)
                 ),
                 key=_natural_key,
             )
@@ -688,6 +694,7 @@ def list_dataset_media(
                         item.resolve()
                         for item in control_path.iterdir()
                         if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS
+                        and not is_mask_image(item)
                     ),
                     key=_natural_key,
                 )
@@ -776,7 +783,8 @@ def dataset_source_fingerprint(text: str) -> str:
     allowing the browser to reuse a previous expensive audit safely.
     """
 
-    digest = hashlib.sha256(text.encode("utf-8", errors="replace"))
+    # Invalidate cached audits produced before mask sidecars were excluded.
+    digest = hashlib.sha256(b"mask-sidecars-v1\0" + text.encode("utf-8", errors="replace"))
     plain = plain_document(parse_document(text))
     datasets = plain.get("datasets", [])
 
@@ -863,6 +871,7 @@ def audit_dataset_sources(text: str, source_path: str = "") -> dict[str, Any]:
                     1
                     for path in root.rglob("*")
                     if path.is_file() and path.parent != root and path.suffix.lower() in extensions
+                    and (spec["kind"] != "image" or not is_mask_image(path))
                 )
                 caption_extension = spec["caption_extension"]
                 report["unsupported_count"] = sum(

@@ -44,6 +44,15 @@ cu132 = [
     "torch>=2.12.0",
     "torchvision>=0.27.0",
 ]
+cu134 = [
+    "torch==2.15.0",
+    "torchvision==0.29.2",
+]
+performance = [
+    "bitsandbytes==0.50.2",
+    "triton-windows==3.7.0.post26; sys_platform == 'win32'",
+    "triton==3.7.0; sys_platform == 'linux'",
+]
 gui = [
     "gradio>=4.0.0, <6.0.0",
 ]
@@ -63,6 +72,7 @@ conflicts = [
     { extra = "cu128" },
     { extra = "cu130" },
     { extra = "cu132" },
+    { extra = "cu134" },
   ],
 ]
 
@@ -85,12 +95,14 @@ torch = [
   { index = "pytorch-cu128", extra = "cu128" },
   { index = "pytorch-cu130", extra = "cu130" },
   { index = "pytorch-cu132", extra = "cu132" },
+  { index = "pytorch-cu134", extra = "cu134" },
 ]
 torchvision = [
   { index = "pytorch-cu124", extra = "cu124" },
   { index = "pytorch-cu128", extra = "cu128" },
   { index = "pytorch-cu130", extra = "cu130" },
   { index = "pytorch-cu132", extra = "cu132" },
+  { index = "pytorch-cu134", extra = "cu134" },
 ]
 
 [[tool.uv.index]]
@@ -106,6 +118,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu134"
+url = "https://download.pytorch.org/whl/cu134"
 explicit = true
 
 [[tool.uv.index]]

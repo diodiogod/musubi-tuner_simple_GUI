@@ -46,7 +46,9 @@ try:
     import triton.language as tl
     from triton.language.extra import libdevice
 
-    HAS_TRITON = True
+    # Older Triton initializes its CUDA driver at @autotune decoration time.
+    # A CPU cache/test process can have Triton installed without a visible GPU.
+    HAS_TRITON = torch.cuda.is_available() and torch.cuda.device_count() > 0
 except ImportError:
     HAS_TRITON = False
 

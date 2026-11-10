@@ -9,7 +9,7 @@ try:
     from flash_attn.flash_attn_interface import _flash_attn_forward
     from flash_attn.flash_attn_interface import flash_attn_varlen_func
     from flash_attn.flash_attn_interface import flash_attn_func
-except ImportError:
+except (ImportError, OSError):
     flash_attn = None
     flash_attn_varlen_func = None
     _flash_attn_forward = None
@@ -17,13 +17,13 @@ except ImportError:
 
 try:
     from sageattention import sageattn_varlen, sageattn
-except ImportError:
+except (ImportError, OSError):
     sageattn_varlen = None
     sageattn = None
 
 try:
     import xformers.ops as xops
-except ImportError:
+except (ImportError, OSError):
     xops = None
 
 

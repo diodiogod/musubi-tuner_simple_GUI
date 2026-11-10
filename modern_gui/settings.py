@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 from backends.moss_settings import MODE as MOSS_MODE, DEFAULTS as MOSS_DEFAULTS, CHOICES as MOSS_CHOICES, PATHS as MOSS_PATHS, HELP as MOSS_HELP
+from backends.regularization_switches import FEATURES, LABELS as SWITCH_LABELS, HELP as SWITCH_HELP, controlled_by, normalize_switches
+from backends.numeric_settings import normalize_numbers, decimal_setting
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,7 @@ MINIMAX_H3_DEFAULTS = {
     "minimax_h3_depth_every_n_steps": "1",
 }
 KREA2_DEPTH_DEFAULTS = {
+    "krea2_weight_noise_enabled": False, "krea2_depth_anchor_enabled": False,
     "krea2_depth_vae_device": "training",
     "gradient_checkpointing_cpu_offload": False,
     "krea2_turbo_lora": "",
@@ -91,6 +94,7 @@ FLUX2_REFERENCE_DEFAULTS = {
 }
 
 MINIMAX_H3_SHARED_REGULARIZATION_KEYS = {
+    "krea2_weight_noise_enabled", "krea2_depth_anchor_enabled",
     "krea2_generalization_preset",
     "krea2_weight_noise_sigma",
     "krea2_weight_noise_mode",
@@ -187,6 +191,8 @@ SECTION_TITLES = {
 # particular, an off value of "0" must not turn a fractional strength into an
 # integer control. The shared Krea keys also serve compact MiniMax H3.
 NUMERIC_CONTROLS = {
+    "gradient_accumulation_steps": {"type": "number", "step": 1, "min": 1},
+    "max_grad_norm": {"type": "number", "step": 0.1, "min": 0},
     "moss_depth_anchor_weight": {"step": 0.005, "min": 0},
     "krea2_depth_anchor_weight": {"step": 0.005, "min": 0},
     "moss_depth_anchor_gradient_weight": {"step": 0.05, "min": 0},
@@ -198,7 +204,7 @@ CHOICES = {
     "training_mode": MODES,
     "starting_point_mode": ["new", "weights", "state"],
     "network_type": ["LoRA", "LoHa", "LoKr"],
-    "optimizer_type": ["adamw8bit", "AdamW", "Automagic3", "Adafactor", "Prodigy", "DAdaptation", "Lion"],
+    "optimizer_type": ["adamw8bit", "AdamW", "Muon", "Automagic3", "Automagic4", "Adafactor", "Prodigy", "DAdaptation", "Lion"],
     "lr_scheduler": ["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial", "rex"],
     "mixed_precision": ["no", "fp16", "bf16"],
     "attention_mechanism": ["sdpa", "xformers", "flash", "sageattn"],
@@ -312,6 +318,7 @@ def load_settings() -> dict[str, Any]:
         payload = json.loads(defaults_path.read_text(encoding="utf-8")) if defaults_path.is_file() else {}
     if not isinstance(payload, dict):
         return {}
+    payload = normalize_switches(normalize_numbers(payload))
     if "minimax_h3_quality_protection_method" not in payload:
         payload["minimax_h3_quality_protection_method"] = (
             "Dynamic Sigma (recommended)"
@@ -330,6 +337,7 @@ def load_settings() -> dict[str, Any]:
     # interface offers. Supply them without overwriting saved user choices.
     guided_defaults = {
         "project_root": "",
+        "gradient_accumulation_steps": "1", "max_grad_norm": "1.0",
         "network_type": "LoRA", "lokr_factor": "", "max_train_steps": "",
         "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
         "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
@@ -346,6 +354,7 @@ def load_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(settings, dict):
         raise ValueError("Settings must be a JSON object.")
+    settings = normalize_switches(normalize_numbers(settings))
     temporary = LAST_SETTINGS.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
     temporary.replace(LAST_SETTINGS)
@@ -368,7 +377,14 @@ def _humanize(key: str) -> str:
 
 
 def _section_for(key: str) -> str:
+    if key in FEATURES:
+        return "regularization"
     if key in MOSS_DEFAULTS:
+        from backends.moss_settings import PERFORMANCE_KEYS
+        if key in PERFORMANCE_KEYS:
+            return "runtime"
+        if key == "moss_clean_end_share":
+            return "timesteps"
         if key.startswith("moss_ema_"):
             return "regularization"
         if key.startswith("moss_automagic3_"):
@@ -447,8 +463,18 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     if key in MOSS_DEFAULTS:
         field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
         field.update(NUMERIC_CONTROLS.get(key, {}))
+        if decimal_setting(key):
+            field["decimal"] = True
         from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS, TIMESTEP_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
+        if controlled_by(key):
+            field["enabled_by"] = controlled_by(key)
+        from backends.moss_settings import PERFORMANCE_KEYS
+        if key in PERFORMANCE_KEYS:
+            from backends.performance_help import DETAILS
+            field["help_detail"] = DETAILS[key]
+        if key == "moss_text_pad_multiple":
+            field.update(type="number", step=1, min=0, max=512)
         if key == "moss_repa_enabled":
             field["help_detail"] = REPA_DETAILS
             field["metrics_help"] = REPA_METRICS_HELP
@@ -458,6 +484,9 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
             field["help_detail"] = EMA_DETAILS
         if key == "moss_timestep_schedule":
             field["help_detail"] = TIMESTEP_DETAILS
+        if key == "moss_clean_end_share":
+            from backends.moss_settings import CLEAN_END_DETAILS
+            field["help_detail"] = CLEAN_END_DETAILS
         if key.startswith("moss_automagic3_"):
             field.update(type="number", step=0.00001, min=0, help_detail=AUTOMAGIC3_DETAILS)
         if key == "moss_ema_decay":
@@ -484,11 +513,42 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     else:
         field_type = "text"
     field = {"key": key, "label": FIELD_LABELS.get(key, _humanize(key)), "type": field_type}
+    if key in FEATURES:
+        field.update(type="boolean", label=SWITCH_LABELS[key], help=SWITCH_HELP[key])
+    if controlled_by(key):
+        field["enabled_by"] = controlled_by(key)
     field.update(NUMERIC_CONTROLS.get(key, {}))
+    if decimal_setting(key):
+        field["decimal"] = True
+    from backends.performance_help import DETAILS as PERFORMANCE_HELP
+    if key in PERFORMANCE_HELP:
+        field["help_detail"] = PERFORMANCE_HELP[key]
+        field["help"] = PERFORMANCE_HELP[key].split(". ", 1)[0] + "."
     if key == "optimizer_type":
-        from backends.moss_settings import AUTOMAGIC3_DETAILS
-        field["help"] = "Choose how adapter weights are updated. AdamW8bit is the existing stable default. Automagic3 adapts its learning rate; click ? for its settings and how it differs from Prodigy."
-        field["help_detail"] = AUTOMAGIC3_DETAILS
+        from backends.moss_settings import AUTOMAGIC3_DETAILS, OPTIMIZER_DETAILS
+        field["help"] = "Choose how adapter weights are updated. Muon uses Fizgig-style batched orthogonalized momentum. Automagic3/4 adapt their rate. Click ? for starting settings and resume requirements."
+        field["help_detail"] = OPTIMIZER_DETAILS + "\n\n" + AUTOMAGIC3_DETAILS
+    if key == "gradient_accumulation_steps":
+        field["label"] = "Gradient accumulation steps"
+        field["help"] = "How many batches to combine before updating the LoRA. Start with 1. Batch size 1 and accumulation 4 give a nominal effective batch of 4 on one GPU."
+        field["help_detail"] = (
+            "Start with 1: the LoRA is updated after every batch. With 4, it processes four batches "
+            "in sequence and combines their gradients before one update, using less VRAM than loading "
+            "all four together. This changes training behavior and gives fewer optimizer updates per epoch; "
+            "it is not a shortcut to faster image processing. Batch size 1 with accumulation 4 means "
+            "a nominal effective batch of 4 on one GPU. Partial buckets can contain fewer examples. "
+            "Change the dataset batch size using the shortcut above. No recaching is needed."
+        )
+    if key == "max_grad_norm":
+        field["label"] = "Gradient clipping (Max Grad Norm)"
+        field["help"] = "Caps unusually large gradient spikes before an update. Keep 1.0 as a starting value; 0 disables clipping. This does not change batch size."
+        field["help_detail"] = (
+            "Gradient clipping limits unusually large gradients before the optimizer uses them. "
+            "Keep 1.0 as the usual starting value, or enter 0 to disable it. It does not limit every "
+            "weight change to that number or guarantee protection against overtraining. It is separate "
+            "from gradient accumulation, which controls how many batches contribute to one update. "
+            "No recaching is needed."
+        )
     if key == "optimizer_args":
         field["help"] = "Extra name=value optimizer options, separated by spaces. These are retained when changing optimizer, so review them. Automagic3 accepts beta2, not AdamW betas; MOSS uses weight_decay=0.00001 when this field is blank. Its rate bounds have dedicated controls."
     if key == "lr_scheduler":
@@ -521,6 +581,9 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
 
 def settings_schema(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = settings if settings is not None else load_settings()
+    settings = normalize_switches(normalize_numbers(settings))
+    for key in FEATURES:
+        settings.setdefault(key, False)
     if ("moss_pretraining_schedule" in settings or "moss_timestep_schedule" in settings or settings.get("training_mode") == MOSS_MODE) and not settings.get("moss_timestep_schedule"):
         from backends.moss_settings import timestep_schedule
         settings = {**settings, "moss_timestep_schedule": timestep_schedule(settings)}
@@ -535,6 +598,7 @@ def settings_schema(settings: dict[str, Any] | None = None) -> dict[str, Any]:
         if fields
     ]
     return {
+        "feature_switches": {key: {"strength": spec[0], "initial": spec[1]} for key, spec in FEATURES.items()},
         "modes": MODES,
         "sections": sections,
         "structured_keys": sorted(STRUCTURED_KEYS),

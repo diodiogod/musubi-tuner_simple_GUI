@@ -11,6 +11,8 @@ from modern_gui.sample_prompts import enabled_sample_prompts, validate_sample_pr
 
 
 def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    from backends.regularization_switches import effective_settings
+    settings = effective_settings(settings)
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
 
@@ -37,7 +39,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             try:
                 training_options(settings)
             except (ValueError, TypeError) as exc:
-                key = "optimizer_type" if str(settings.get("optimizer_type", "")).lower() == "automagic3" else "moss_ema_enabled"
+                key = getattr(exc, "field", "optimizer_type" if str(settings.get("optimizer_type", "")).lower() == "automagic3" else "moss_ema_enabled")
                 error(key, str(exc))
     if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
         error("gradient_checkpointing_cpu_offload", "Activation CPU offload requires Gradient Checkpointing.")
@@ -478,6 +480,8 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         ("network_dim_low", "Network rank", 1.0),
     ):
         if refinement_only and key in {"learning_rate", "network_dim_low"}:
+            continue
+        if any(item["key"] == key for item in errors):
             continue
         value = str(settings.get(key) or "").strip()
         if not value:

@@ -21,7 +21,7 @@ _STATE_STEP_RE = re.compile(r"-step(\d+)-state$", re.IGNORECASE)
 _LORA_EPOCH_RE = re.compile(r"-(\d+)$", re.IGNORECASE)
 _LORA_STEP_RE = re.compile(r"-step(\d+)$", re.IGNORECASE)
 _TRAINING_METRIC_KEYS = {
-    "avr_loss": "loss", "loss/current": "loss", "loss/diffusion": "diffusion_loss",
+    "avr_loss": "loss", "loss/current": "raw_loss", "lr": "learning_rate", "loss/diffusion": "diffusion_loss",
     "loss/depth_anchor": "depth_loss", "loss/dop": "dop_loss", "loss/dop_weighted": "dop_weighted",
     "loss/repa": "repa_loss", "loss/repa_weighted": "repa_weighted",
     "repa/cosine_similarity": "repa_similarity",
@@ -39,6 +39,8 @@ def parse_training_metrics(line: str) -> dict[str, float]:
         value = float(match.group("value"))
         if math.isfinite(value):
             result[_TRAINING_METRIC_KEYS[match.group("key")]] = value
+    if "loss" not in result and "raw_loss" in result:
+        result["loss"] = result["raw_loss"]
     return result
 
 

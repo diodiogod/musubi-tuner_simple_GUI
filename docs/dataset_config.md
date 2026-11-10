@@ -8,6 +8,13 @@ Image and video datasets are supported. The configuration file can include multi
 
 The cache directory must be different for each dataset.
 
+Mask sidecars named `photo-masklabel.png` (the Fizgig/OneTrainer convention,
+case-insensitive and also supported with other image extensions) are excluded
+from directory image discovery, dataset health/caption counts, and training
+samples. Old latent caches for those masks are also skipped. The files are
+left untouched. This exclusion does not enable mask-weighted training; ordinary
+photo names containing the word `mask` remain included.
+
 Each video is extracted frame by frame without additional processing and used for training. It is recommended to use videos with a frame rate of 24fps for HunyuanVideo, 16fps for Wan2.1 and 30fps for FramePack. You can check the videos that will be trained using `--debug_mode video` when caching latent (see [here](/README.md#latent-caching)).
 <details>
 <summary>日本語</summary>

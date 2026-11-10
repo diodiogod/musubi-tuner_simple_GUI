@@ -299,13 +299,13 @@ function fieldControl(field, {wide = false} = {}) {
       input = document.createElement("textarea"); input.value = state.settings[field.key] ?? "";
     } else {
       input = document.createElement("input");
-      input.type = field.key === "moss_sample_skip_layers" ? "text" : field.step != null || looksNumeric(state.settings[field.key]) ? "number" : "text";
+      input.type = field.key === "moss_sample_skip_layers" ? "text" : field.decimal || field.step != null || looksNumeric(state.settings[field.key]) ? "number" : "text";
       if (input.type === "number") {
         input.step = String(field.step ?? "any");
         if (field.min != null) input.min = String(field.min);
         if (field.max != null) input.max = String(field.max);
       }
-      input.value = state.settings[field.key] ?? "";
+      input.value = field.decimal ? canonicalDecimal(state.settings[field.key] ?? "") : state.settings[field.key] ?? "";
       if (field.type === "path") input.placeholder = "Paste or choose a local path";
     }
     if(field.type==="path"){
@@ -330,6 +330,12 @@ function fieldControl(field, {wide = false} = {}) {
   const commit = () => {
     if(customInput){customInput.hidden=input.value!=="__custom__";if(input.value==="__custom__")customInput.focus()}
     state.settings[field.key] = field.type === "boolean" ? input.checked : input.value==="__custom__" ? customInput.value : input.value;
+    if(field.decimal)state.settings[field.key]=canonicalDecimal(state.settings[field.key]);
+    const feature=state.schema.feature_switches?.[field.key];
+    if(feature){
+      if(input.checked&&!(Number(state.settings[feature.strength])>0))state.settings[feature.strength]=feature.initial;
+      sync();renderGuided();renderAllSettings();return;
+    }
     if (["max_train_epochs","max_train_steps"].includes(field.key) && input.value.trim()) {
       const other = field.key === "max_train_epochs" ? "max_train_steps" : "max_train_epochs";
       state.settings[other] = "";
@@ -386,7 +392,7 @@ function fieldControl(field, {wide = false} = {}) {
       const presetControl=document.querySelector('[data-key="minimax_h3_quality_protection_preset"] select');
       if(presetControl)presetControl.value="Custom";
     }
-    if(field.key==="optimizer_type"&&String(input.value).toLowerCase()==="automagic3"){
+    if(field.key==="optimizer_type"&&["automagic3","automagic4"].includes(String(input.value).toLowerCase())){
       state.settings.lr_scheduler="constant";state.settings.lr_warmup_steps="0";
       toast("Automagic3 controls its learning rate. Scheduler set to constant with zero warmup.");
     }
@@ -397,17 +403,61 @@ function fieldControl(field, {wide = false} = {}) {
     if (field.key === "training_mode") selectMode(input.value);
     if (field.key === "appearance_mode") applyTheme(input.value, {syncSetting:false});
     if (field.key === "dataset_config") $("#dataset-path").value = input.value;
+    if(["gradient_accumulation_steps","max_grad_norm"].includes(field.key)){
+      document.querySelectorAll(`.field[data-key="${field.key}"] input`).forEach(control=>{if(control!==input)control.value=state.settings[field.key]});
+    }
     sync();
   };
+  if(field.decimal)input.addEventListener("paste",event=>{
+    const text=event.clipboardData?.getData("text")?.trim();
+    if(text&&looksNumeric(text)){event.preventDefault();input.value=canonicalDecimal(text);commit();}
+  });
   input.addEventListener(field.type === "select" || field.type === "boolean" ? "change" : "input", commit);
   if(customInput){
     customInput.id = `${id}-custom`;
     customInput.setAttribute("aria-label", `Custom ${field.label}`);
     customInput.addEventListener("input",()=>{state.settings[field.key]=customInput.value;sync()});
   }
+  if(field.enabled_by&&state.settings[field.enabled_by]===false){
+    wrap.classList.add("feature-disabled");
+    wrap.querySelectorAll("input,select,textarea,button:not(.help)").forEach(control=>control.disabled=true);
+  }
   return wrap;
 }
-function looksNumeric(value) { return typeof value === "number" || (typeof value === "string" && value !== "" && /^-?\d+(\.\d+)?$/.test(value)); }
+function looksNumeric(value) { return typeof value === "number" || (typeof value === "string" && /^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())); }
+function canonicalDecimal(value){return typeof value==="string"&&looksNumeric(value)?value.trim().replace(",","."):value;}
+function performanceFieldKeys(mode){const keys=["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"];return mode==="MOSS-Image (Experimental)"?keys.concat(["moss_fast_lora","moss_unpadded_batches","moss_text_pad_multiple","moss_compile_checkpoint","moss_sdpa_backend"]):keys;}
+let recipeBatchCache=null;
+function renderRecipeBatchSummary(){
+  const title=$("#recipe-batch-summary"),detail=$("#recipe-batch-detail"),path=String(state.settings.dataset_config||"").trim();
+  if(!path){title.textContent="Choose a dataset to see its batch size";detail.textContent="Batch size belongs to the dataset; gradient accumulation is set below.";return}
+  const loaded=state.dataset&&sameLocalPath(state.dataset.path,path);
+  if(loaded&&(state.datasetFormDirty||state.datasetRawDirty)){
+    title.textContent="Dataset batch settings have pending edits";detail.textContent="Apply or parse the dataset draft to update this summary.";return;
+  }
+  const cache=recipeBatchCache&&sameLocalPath(recipeBatchCache.path,path)?recipeBatchCache:null;
+  const payload=loaded?state.dataset:cache?.payload;
+  if(payload){
+    const summary=TrainingBatch.summary(payload,state.settings.gradient_accumulation_steps??1);
+    title.textContent=summary.text;detail.textContent=summary.detail+(loaded&&state.datasetDirty?" Unsaved TOML draft.":"");return;
+  }
+  title.textContent=cache?.error?"Could not read dataset batch sizes":"Reading dataset batch sizes…";
+  detail.textContent=cache?.error?"Open the dataset to check its path and TOML settings.":"Batch size belongs to the dataset; source overrides are included.";
+  if(cache||state.activeView!=="setup"||state.step!=="method")return;
+  const request={path};recipeBatchCache=request;
+  api(`/api/dataset?path=${encodeURIComponent(path)}`).then(payload=>{
+    if(recipeBatchCache!==request)return;
+    request.payload=payload;renderRecipeBatchSummary();
+  }).catch(error=>{if(recipeBatchCache===request){request.error=error.message;renderRecipeBatchSummary()}});
+}
+async function editRecipeBatchSize(){
+  if(!state.settings.dataset_config){go("setup");setStep("data");toast("Choose a Dataset TOML first.");return}
+  // Use the existing draft workflow, including its protection against replacing unsaved edits.
+  if(!await loadDatasetForSettings({quiet:true}))return;
+  await flushDatasetDraft();
+  go("datasets");await selectDatasetDefaults();
+  const input=$("#dataset-editor [data-key=\"batch_size\"]");input?.focus();input?.scrollIntoView({block:"center"});
+}
 function applyGeneralizationPreset(preset){
   const values={
     "Off (Baseline)":{noise:"0",depth:"0"},
@@ -417,6 +467,8 @@ function applyGeneralizationPreset(preset){
   if(!values)return false;
   Object.assign(state.settings,{
     krea2_generalization_preset:preset,
+    krea2_weight_noise_enabled:Number(values.noise)>0,
+    krea2_depth_anchor_enabled:Number(values.depth)>0,
     krea2_weight_noise_sigma:values.noise,
     krea2_weight_noise_mode:"relative",
     krea2_depth_anchor_weight:values.depth,
@@ -492,6 +544,14 @@ function renderStartingPoint(host) {
 }
 
 function normalizeMossTimestepSchedule(settings){
+  for(const section of state.schema.sections||[]){
+    for(const field of section.fields||[]){
+      if(field.decimal&&Object.hasOwn(settings,field.key))settings[field.key]=canonicalDecimal(settings[field.key]);
+    }
+  }
+  for(const [key,feature] of Object.entries(state.schema.feature_switches||{})){
+    if(!Object.hasOwn(settings,key)&&Object.hasOwn(settings,feature.strength))settings[key]=Number(canonicalDecimal(settings[feature.strength]))>0;
+  }
   if(!settings.moss_timestep_schedule)settings.moss_timestep_schedule=settings.moss_pretraining_schedule===false?"General timestep controls":"MOSS pretraining (default)";
   settings.moss_pretraining_schedule=settings.moss_timestep_schedule==="MOSS pretraining (default)";
   return settings;
@@ -524,12 +584,13 @@ function renderGuided() {
   appendFields($("#data-fields"), ["dataset_config","output_dir","output_name"]);
   renderStartingPoint($("#data-fields"));
   const capacityKeys=mode==="Wan 2.2"?["network_dim_low","network_alpha_low","network_dim_high","network_alpha_high"]:["network_dim_low","network_alpha_low"];
-  const methodKeys=["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","max_train_epochs","max_train_steps"];
+  const methodKeys=["network_type",...capacityKeys,"learning_rate","optimizer_type","lr_scheduler","gradient_accumulation_steps","max_grad_norm","max_train_epochs","max_train_steps"];
   if(state.settings.network_type==="LoKr")methodKeys.splice(1,0,"lokr_factor");
   if(mode==="MOSS-Image (Experimental)"){
-    if(String(state.settings.optimizer_type).toLowerCase()==="automagic3")methodKeys.push("moss_automagic3_min_lr","moss_automagic3_max_lr","optimizer_args");
+    methodKeys.push("optimizer_args");
+    if(String(state.settings.optimizer_type).toLowerCase()==="automagic3")methodKeys.push("moss_automagic3_min_lr","moss_automagic3_max_lr");
     methodKeys.push("moss_timestep_schedule");
-    if(state.settings.moss_pretraining_schedule)methodKeys.push("moss_logit_mean","moss_logit_std","moss_timestep_cutoff","moss_timestep_uniform_ratio");
+    if(state.settings.moss_pretraining_schedule)methodKeys.push("moss_clean_end_share","moss_logit_mean","moss_logit_std","moss_timestep_cutoff","moss_timestep_uniform_ratio");
     else if(state.settings.moss_timestep_schedule==="General timestep controls")methodKeys.push("timestep_sampling","discrete_flow_shift");
   }else if(!h3Multimodal)methodKeys.push("timestep_sampling","discrete_flow_shift");
   if(!h3Multimodal&&(mode==="Krea 2"||mode==="MiniMax H3 (Experimental)"))methodKeys.push("krea2_generalization_preset");
@@ -559,7 +620,13 @@ function renderGuided() {
   $("#moss-repa-settings").hidden=mode!=="MOSS-Image (Experimental)";
   appendFields($("#moss-repa-fields"),repaKeys);
   const regularizationKeys=schemaFields(["regularization"]).map(field=>field.key).filter(key=>!emaKeys.includes(key)&&!repaKeys.includes(key)&&!depthComputeKeys.includes(key)&&!kreaDepthComputeKeys.includes(key)&&!dopKeys.includes(key)&&!h3GuidanceKeys.includes(key)&&!fluxRefKeys.includes(key));
-  appendFields($("#regularization-fields"),regularizationKeys);
+  const featureKeys=Object.keys(state.schema.feature_switches||{});
+  const groupedRegularization=regularizationKeys.filter(key=>!featureKeys.includes(key)&&!findField(key)?.enabled_by);
+  for(const key of featureKeys){
+    if(regularizationKeys.includes(key))groupedRegularization.push(key);
+    groupedRegularization.push(...regularizationKeys.filter(child=>findField(child)?.enabled_by===key));
+  }
+  appendFields($("#regularization-fields"),groupedRegularization);
   if(mode==="Flux.2 Klein"){
     appendFields($("#regularization-fields"),["flux2_reference_guided"]);
     if(state.settings.flux2_reference_guided)appendFields($("#regularization-fields"),fluxRefKeys.slice(1));
@@ -615,7 +682,8 @@ function renderGuided() {
   if(mode==="MiniMax H3 (Experimental)")renderMinimaxDepthHardwareNotice();
   const kreaDepthCompute=$("#krea-depth-compute");kreaDepthCompute.hidden=mode!=="Krea 2";
   appendFields($("#krea-depth-fields"),kreaDepthComputeKeys);
-  appendFields($("#performance-fields"), ["mixed_precision","attention_mechanism","gradient_checkpointing","blocks_to_swap","fp8_base","fp8_scaled","persistent_data_loader_workers","max_data_loader_n_workers","compile"]);
+  // appendFields replaces its host: render shared and model-specific fields together.
+  appendFields($("#performance-fields"),performanceFieldKeys(mode));
   if(mode==="MiniMax H3 (Experimental)"){
     LONG_HELP.add("minimax_h3_block_memory_mode");
     $("#performance-fields").append(fieldControl(findField("minimax_h3_block_memory_mode")));
@@ -675,6 +743,7 @@ function setStep(step) {
   const order = ["model","data","method","performance","review"], index = order.indexOf(step);
   $("#step-back").style.visibility = index ? "visible" : "hidden";
   $("#step-next").style.visibility = step === "review" ? "hidden" : "visible";
+  if(step==="method"){recipeBatchCache=null;renderRecipeBatchSummary()}
 }
 function moveStep(delta) {
   const order = ["model","data","method","performance","review"];
@@ -767,6 +836,7 @@ function sync(markChanged = true) {
     ? "Sets the LoRA output to models/ and training logs to log/ inside the selected folder. Review the updated output path below."
     : "Choose Project root above using Browse, then set up its output and log folders. This is optional; you can set paths individually.";
   renderHome(); renderReview(); renderTrainingSummary();
+  renderRecipeBatchSummary();
   if (markChanged) setDirty(true);
 }
 
@@ -1183,13 +1253,13 @@ function clientTrainingSettingsSummary(){
     if(String(settings.dop_class_word||"").trim())dop+=` (${settings.dop_class_word})`;parts.push(dop);
   }
   if(["Krea 2","MiniMax H3 (Experimental)"].includes(settings.training_mode)){
-    if(Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
-    if(Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
+    if(settings.krea2_depth_anchor_enabled!==false&&Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
+    if(settings.krea2_weight_noise_enabled!==false&&Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
     if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
   }
   if(settings.training_mode==="MOSS-Image (Experimental)"){
-    if(Number(settings.moss_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.moss_depth_anchor_weight)}@${settings.moss_depth_anchor_input_size||518}${settings.moss_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
-    if(Number(settings.moss_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.moss_weight_noise_sigma)} ${settings.moss_weight_noise_mode||"relative"}`);
+    if(settings.moss_depth_anchor_enabled!==false&&Number(settings.moss_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.moss_depth_anchor_weight)}@${settings.moss_depth_anchor_input_size||518}${settings.moss_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
+    if(settings.moss_weight_noise_enabled!==false&&Number(settings.moss_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.moss_weight_noise_sigma)} ${settings.moss_weight_noise_mode||"relative"}`);
   }
   const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
   const saveEpochs=String(settings.save_every_n_epochs||"").trim(),saveSteps=String(settings.save_every_n_steps||"").trim();
@@ -1582,6 +1652,7 @@ function renderDataset(payload, selected = state.selectedDataset) {
   renderIssues(payload.issues||[]);
   setDatasetTab(state.selectedDataset<0&&state.datasetTab==="media"?"settings":state.datasetTab,{load:false});
   setDatasetDirty(state.datasetDirty);
+  renderRecipeBatchSummary();
 }
 function renderDatasetRail(){
   const payload=state.dataset,host=$("#dataset-list"),defaults=$("#dataset-defaults");
@@ -1804,6 +1875,7 @@ async function persistDatasetFormDraft({announce=false,rerender=false}={}){
   const changed=beforeText!==(payload.text||"");setDatasetDirty(wasDirty||changed);renderDatasetRail();renderDatasetHead();renderDatasetOverview();renderIssues(payload.issues||[]);
   if(rerender)renderDataset(payload,selected);
   if(announce)toast(changed?"Settings applied to the TOML draft. Save when ready.":"No TOML changes were needed.");
+  renderRecipeBatchSummary();
   return payload;
 }
 async function parseDatasetRawDraft({announce=false}={}){
@@ -2252,14 +2324,12 @@ function renderMetrics(m,job) {
     if(total&&totalEpochs){const perEpoch=Math.max(1,Math.ceil(total/totalEpochs)),currentEpoch=Math.min(totalEpochs,Math.max(1,epoch||1)),boundary=Math.min(total,currentEpoch*perEpoch),remaining=Math.max(0,boundary-step),nextEpoch=Math.min(totalEpochs,currentEpoch+1);if(remaining){const nextEta=pace?formatDuration(remaining*pace):"time pending";nextMetric.textContent=`${remaining.toLocaleString()} steps · ~${nextEta}`;nextMetric.title=`About ${remaining.toLocaleString()} steps until epoch ${nextEpoch} (target step ${boundary.toLocaleString()}).`;}else{nextMetric.textContent=currentEpoch>=totalEpochs?"Final epoch · complete":"Epoch boundary reached";nextMetric.title="The next epoch boundary has been reached.";}}else{nextMetric.textContent="Waiting for epoch data";nextMetric.removeAttribute("title");}
     $("#metric-elapsed").textContent=formatDuration(elapsed);$("#metric-eta").textContent=progress?.eta||((step&&total&&pace)?formatDuration(pace*(total-step)):"—");$("#metric-rate").textContent=progress?.rate||(pace?pace.toFixed(2)+"s / step":"—");
   }
-  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5);renderOptionalMetrics(m);renderRepaMetrics(m,progress?.text);drawLoss(m.loss_history||[]);
+  $("#metric-loss").textContent=m.loss==null?"—":Number(m.loss).toFixed(5);renderOptionalMetrics(m);renderRepaMetrics(m,progress?.text);drawLoss(m.chart_history?{points:m.chart_history}:(m.loss_history||[]));
 }
+let liveLossChart=null;
 function drawLoss(history) {
-  const canvas=$("#loss-canvas"),ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height; ctx.clearRect(0,0,w,h); ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--line"); ctx.lineWidth=1;
-  for(let i=1;i<5;i++){ctx.beginPath();ctx.moveTo(0,i*h/5);ctx.lineTo(w,i*h/5);ctx.stroke()}
-  if(history.length<2){ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue("--muted");ctx.font="20px Segoe UI";ctx.fillText("Loss history will appear during training",35,h/2);return}
-  const values=history.map(p=>Number(p[1])).filter(Number.isFinite),min=Math.min(...values),range=Math.max(...values)-min||1; ctx.beginPath();
-  history.forEach((p,i)=>{const x=i/(history.length-1)*w,y=h-25-(Number(p[1])-min)/range*(h-50);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue("--accent2");ctx.lineWidth=3;ctx.stroke();
+  liveLossChart ||= new LossCharts.Chart($("#loss-chart"));
+  liveLossChart.update(history);
 }
 async function pollGpu() {
   try { const p=await api("/api/gpu"); if(!p.available||!p.devices.length)return $("#metric-vram").textContent="—"; const d=p.devices.reduce((a,b)=>b.memory_used>a.memory_used?b:a);$("#metric-vram").textContent=`${(d.memory_used/1073741824).toFixed(1)} / ${(d.memory_total/1073741824).toFixed(1)} GB`; } catch(_){}
@@ -2568,21 +2638,23 @@ function renderJobLineage(job){
 function jobRowMarkup(j,i){
   const key=`${j._source}:${j._history_index}`,selected=(state.jobComparison||[]).some(item=>item.key===key),perf=j.performance||{},speed=perf.median_seconds_per_iteration??perf.overall_seconds_per_iteration,lineage=jobLineageKind(j),lineageBadge=lineage?`<span class="job-lineage-badge ${lineage}">${esc(jobLineageLabel(lineage))}</span>`:"";
   const exactEligible=j.kind==="training"&&["failed","stopped","completed"].includes(j.status),exactLabel=j.status==="completed"?"Extend exact":"Resume exact",exactTitle=j.status==="completed"?"Extend this run from its final verified epoch state":"Resume the verified saved optimizer and step position";
-  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><div class="job-status-stack"><span class="job-status ${esc(j.status)}">${esc(j.status)}</span>${lineageBadge}</div><div><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
+  return `<article class="job-row ${selected?"comparison-selected":""}" data-list-index="${i}" data-source="${esc(j._source)}" data-index="${j._history_index}"><button class="job-name"><strong>${esc(j.name||j.output_name||j.title||"Unnamed job")}</strong><small>${esc(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode||"")} · ${esc(j.started_at?new Date(j.started_at).toLocaleString():"")}</small></button><div class="job-status-stack"><span class="job-status ${esc(j.status)}">${esc(j.status)}</span>${lineageBadge}</div><div class="job-performance"><div class="job-pace"><strong>${speed==null?esc((j.phase||j.kind||"").replaceAll("_"," ")):formatJobSpeed(speed)}</strong><small>${esc(j._source)} · ${esc(perf.quality||"no timing")}</small></div>${RunInsights.inlineCurve(j)}</div><div class="job-actions"><button class="quiet continue-job" title="Start additional training from this job in a new output">Continue as new</button>${exactEligible?`<button class="quiet recover-job" title="${exactTitle}">${exactLabel}</button>`:""}<button class="quiet more-job" aria-label="More actions for this job" aria-expanded="false">•••</button><div class="job-menu" role="menu" hidden><button role="menuitem" data-insight="chart">Open run review</button><button role="menuitem" data-action="details">View performance & log</button><button role="menuitem" data-action="compare">${selected?"Remove from comparison":"Add to comparison"}</button><button role="menuitem" data-action="repeat">Repeat / edit as new</button><button role="menuitem" data-action="apply">Apply recipe</button>${j.settings_snapshot?.sample_prompts_data?.length||j.settings?.sample_prompts_data?.length?'<button role="menuitem" data-action="prompts">Import sample prompts</button>':""}${["Krea 2","MiniMax H3 (Experimental)","MOSS-Image (Experimental)"].includes(j.mode||j.settings?.training_mode||j.settings_snapshot?.training_mode)?'<button role="menuitem" data-action="face">Refine face identity…</button>':""}<button role="menuitem" data-action="output">Open output</button><button role="menuitem" data-action="logs">Open TensorBoard / W&B folder</button><button role="menuitem" data-action="copy">Copy command</button></div></div></article>`;
 }
 function renderJobs(){
-  const query=($("#job-search")?.value||"").trim().toLowerCase(),status=$("#job-status-filter")?.value||"";
+  RunInsights.reset();
+  const query=($("#job-search")?.value||"").trim().toLowerCase(),status=$("#job-status-filter")?.value||"",kind=$("#job-kind-filter")?.value||"";
   const filtered=(state.jobs||[]).filter(job=>{
     const snapshot=job.settings_snapshot||job.settings||{};
     const haystack=JSON.stringify([job.name,job.output_name,job.title,job.mode,snapshot.training_mode,job.kind,job.status]).toLowerCase();
-    return (!query||haystack.includes(query))&&(!status||job.status===status);
+    const isTraining=!job.kind||job.kind==="training"||job.kind==="staged_training"||job.kind==="face_refinement";
+    return (!query||haystack.includes(query))&&(!status||job.status===status)&&(!kind||(kind==="training"?isTraining:!isTraining));
   });
   const pageSize=innerWidth<=680?10:25,pageCount=Math.max(1,Math.ceil(filtered.length/pageSize));
   state.jobPage=Math.min(state.jobPage,pageCount-1);
   const jobs=filtered.slice(state.jobPage*pageSize,(state.jobPage+1)*pageSize);
   const host=$("#jobs-list");host.classList.toggle("empty",!filtered.length);$("#job-result-count").textContent=`${filtered.length} of ${(state.jobs||[]).length}`;
   host.innerHTML=filtered.length?`<div class="job-header" aria-hidden="true"><span>Run</span><span>Status</span><span>Performance</span><span>Actions</span></div>`+jobs.map((j,i)=>jobRowMarkup(j,i)).join("")+`<nav class="history-pager" aria-label="History pages"><button class="quiet" data-job-page="-1" ${state.jobPage===0?"disabled":""}>Previous</button><span>Page ${state.jobPage+1} of ${pageCount}</span><button class="quiet" data-job-page="1" ${state.jobPage>=pageCount-1?"disabled":""}>Next</button></nav>`:"No jobs match the current filters.";
-  host.querySelectorAll(".job-row").forEach(row=>{const job=jobs[Number(row.dataset.listIndex)],menu=row.querySelector(".job-menu"),more=row.querySelector(".more-job");row.querySelector(".continue-job").addEventListener("click",()=>prepareJob(row,"continuation").catch(error=>toast(error.message,"error")));row.querySelector(".recover-job")?.addEventListener("click",()=>prepareJob(row,"recovery").catch(error=>toast(error.message,"error")));more.addEventListener("click",e=>{e.stopPropagation();$$(".job-menu").forEach(x=>{if(x!==menu)x.hidden=true});menu.hidden=!menu.hidden;more.setAttribute("aria-expanded",String(!menu.hidden));if(!menu.hidden)menu.querySelector("button")?.focus()});row.querySelector(".job-name").addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="details"]').addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="compare"]').addEventListener("click",()=>toggleJobComparison(job));menu.querySelector('[data-action="repeat"]').addEventListener("click",()=>repeatJob(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="apply"]').addEventListener("click",()=>applyJobSettings(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="prompts"]')?.addEventListener("click",()=>importJobPrompts(job));menu.querySelector('[data-action="face"]')?.addEventListener("click",()=>prepareFaceJob(row));menu.querySelector('[data-action="output"]').addEventListener("click",()=>openJobPath(row,"output"));menu.querySelector('[data-action="logs"]').addEventListener("click",()=>openJobPath(row,"logs"));menu.querySelector('[data-action="copy"]').addEventListener("click",()=>copyJobCommand(job))});
+  host.querySelectorAll(".job-row").forEach(row=>{const job=jobs[Number(row.dataset.listIndex)],menu=row.querySelector(".job-menu"),more=row.querySelector(".more-job");RunInsights.bind(row,job);row.querySelector(".continue-job").addEventListener("click",()=>prepareJob(row,"continuation").catch(error=>toast(error.message,"error")));row.querySelector(".recover-job")?.addEventListener("click",()=>prepareJob(row,"recovery").catch(error=>toast(error.message,"error")));more.addEventListener("click",e=>{e.stopPropagation();$$(".job-menu").forEach(x=>{if(x!==menu)x.hidden=true});menu.hidden=!menu.hidden;more.setAttribute("aria-expanded",String(!menu.hidden));if(!menu.hidden)menu.querySelector("button")?.focus()});row.querySelector(".job-name").addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="details"]').addEventListener("click",()=>showJobDetails(job,row));menu.querySelector('[data-action="compare"]').addEventListener("click",()=>toggleJobComparison(job));menu.querySelector('[data-action="repeat"]').addEventListener("click",()=>repeatJob(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="apply"]').addEventListener("click",()=>applyJobSettings(job).catch(error=>toast(error.message,"error")));menu.querySelector('[data-action="prompts"]')?.addEventListener("click",()=>importJobPrompts(job));menu.querySelector('[data-action="face"]')?.addEventListener("click",()=>prepareFaceJob(row));menu.querySelector('[data-action="output"]').addEventListener("click",()=>openJobPath(row,"output"));menu.querySelector('[data-action="logs"]').addEventListener("click",()=>openJobPath(row,"logs"));menu.querySelector('[data-action="copy"]').addEventListener("click",()=>copyJobCommand(job))});
   host.querySelectorAll("[data-job-page]").forEach(button=>button.addEventListener("click",()=>{state.jobPage+=Number(button.dataset.jobPage);renderJobs();$("#jobs-list").scrollIntoView({block:"start"})}));
 }
 let detailJob=null,detailRow=null;
@@ -2650,6 +2722,7 @@ $$(".nav[data-view]").forEach(n=>{
 });
 $$("[data-go]").forEach(n=>n.addEventListener("click",()=>go(n.dataset.go)));
 $$(".recipe-step").forEach(n=>n.addEventListener("click",()=>setStep(n.dataset.step)));
+$("#edit-recipe-batch").addEventListener("click",event=>withBusy(event.currentTarget,"Opening…",editRecipeBatchSize).catch(error=>toast(error.message,"error")));
 $$(".model-tile").forEach(n=>n.addEventListener("click",()=>{selectMode(n.dataset.mode);go("setup");setStep("model")}));
 function closeDialogSafely(dialog){
   if(dialog?.id==="dataset-media-dialog"&&state.datasetCaptionDirty&&!confirm("Discard the unsaved caption changes?"))return false;
@@ -2731,7 +2804,8 @@ $("#add-image-dataset").addEventListener("click",event=>addDatasetFromExplorer("
 $("#add-video-dataset").addEventListener("click",event=>addDatasetFromExplorer("video",event.currentTarget).catch(error=>toast(error.message,"error")));
 $("#save-dataset").addEventListener("click",()=>withBusy($("#save-dataset"),"Saving…",saveDatasetDocument).catch(error=>{if(error.status===409){$("#dataset-document-state").textContent="Disk changed";$("#dataset-document-state").classList.add("dirty")}toast(error.message,"error")}));
 $("#refresh-samples").addEventListener("click",()=>loadSamples().catch(e=>toast(e.message)));$("#manage-sample-sources").addEventListener("click",openSampleSources);$("#find-nearby-sources").addEventListener("click",()=>findAndAddNearbySources());$("#browse-sample-source").addEventListener("click",()=>withBusy($("#browse-sample-source"),"Choosing…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:"directory",initial:$("#sample-source-path").value})});if(result.path)$("#sample-source-path").value=result.path}).catch(e=>toast(e.message,"error")));$("#add-sample-source").addEventListener("click",()=>addSampleSourceFromDialog());$("#refresh-jobs").addEventListener("click",()=>loadJobs().catch(e=>toast(e.message)));
-$("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$("#job-status-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});
+$("#job-search").addEventListener("input",()=>{state.jobPage=0;renderJobs()});$("#job-kind-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});
+$("#job-status-filter").addEventListener("change",()=>{state.jobPage=0;renderJobs()});
 $("#import-jobs").addEventListener("click",()=>api("/api/jobs/import-found",{method:"POST",body:"{}"}).then(p=>{toast(`${p.added} job folder${p.added===1?"":"s"} imported.`);loadJobs()}).catch(e=>toast(e.message)));
 $("#clear-jobs").addEventListener("click",()=>{if(!confirm("Delete all locally recorded web and desktop job-history entries? Training outputs are not deleted."))return;api("/api/jobs/clear",{method:"POST",body:"{}"}).then(()=>{toast("Local job history cleared.");loadJobs()}).catch(e=>toast(e.message))});
 $$("[data-sample-mode]").forEach(button=>button.addEventListener("click",()=>{state.sampleMode=button.dataset.sampleMode;$$("[data-sample-mode]").forEach(x=>x.classList.toggle("active",x===button));if(state.samples){if(state.sampleMode==="gallery")renderSampleGallery();else if(state.samples.groups.length)renderComparison(Math.min(compareState.group,state.samples.groups.length-1))}}));

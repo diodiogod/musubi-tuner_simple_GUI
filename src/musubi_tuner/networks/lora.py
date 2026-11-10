@@ -159,11 +159,13 @@ class LoRAModule(torch.nn.Module):
         self.org_module.forward = self.forward
         del self.org_module
 
-    def forward(self, x):
+    def forward(self, x, base_output=None):
         if not self.enabled:
-            return self.org_forward(x)
+            return self.org_forward(x) if base_output is None else base_output
 
-        org_forwarded = self.org_forward(x)
+        # The optional MOSS compiler bridge supplies the frozen base result so
+        # Dynamo never has to trace an externally owned bound method.
+        org_forwarded = self.org_forward(x) if base_output is None else base_output
 
         # module dropout
         if self.module_dropout is not None and self.training:
@@ -352,26 +354,26 @@ class LoRAInfModule(LoRAModule):
 
         return weight
 
-    def default_forward(self, x):
+    def default_forward(self, x, base_output=None):
         # logger.info(f"default_forward {self.lora_name} {x.size()}")
         lora_input = self._lora_input(x)
         if self.split_dims is None:
             lx = self.lora_down(lora_input)
             lx = self.lora_up(lx)
-            org_forwarded = self.org_forward(x)
+            org_forwarded = self.org_forward(x) if base_output is None else base_output
             # Add in the (possibly higher-precision) delta dtype, then round the sum once.
             return self._match_org_dtype(org_forwarded + lx * self.multiplier * self.scale, org_forwarded)
         else:
             lxs = [lora_down(lora_input) for lora_down in self.lora_down]
             lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
-            org_forwarded = self.org_forward(x)
+            org_forwarded = self.org_forward(x) if base_output is None else base_output
             # Add in the (possibly higher-precision) delta dtype, then round the sum once.
             return self._match_org_dtype(org_forwarded + torch.cat(lxs, dim=-1) * self.multiplier * self.scale, org_forwarded)
 
-    def forward(self, x):
+    def forward(self, x, base_output=None):
         if not self.enabled:
-            return self.org_forward(x)
-        return self.default_forward(x)
+            return self.org_forward(x) if base_output is None else base_output
+        return self.default_forward(x, base_output=base_output)
 
 
 def create_arch_network(

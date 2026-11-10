@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import toml
+from musubi_tuner.dataset.mask_files import is_mask_image
 
 try:
     import tomlkit
@@ -603,13 +604,15 @@ def split_dataset_subfolders(text: str, index: int, source_path: str = "") -> di
         raise ValueError(f"The selected source folder does not exist: {root}")
 
     extensions = IMAGE_EXTENSIONS if kind == "image" else VIDEO_EXTENSIONS
-    direct_media = [item for item in root.iterdir() if item.is_file() and item.suffix.lower() in extensions]
+    direct_media = [item for item in root.iterdir() if item.is_file() and item.suffix.lower() in extensions
+                    and (kind != "image" or not is_mask_image(item))]
     candidates: list[tuple[Path, int]] = []
     for child in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
         if child.name.startswith("."):
             continue
         media_count = sum(
             1 for item in child.iterdir() if item.is_file() and item.suffix.lower() in extensions
+            and (kind != "image" or not is_mask_image(item))
         )
         if media_count:
             candidates.append((child, media_count))

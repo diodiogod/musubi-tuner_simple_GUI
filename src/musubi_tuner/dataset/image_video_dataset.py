@@ -17,6 +17,7 @@ import torch
 from PIL import Image
 
 from musubi_tuner.utils import safetensors_utils
+from musubi_tuner.dataset.mask_files import is_mask_stem
 from musubi_tuner.utils.model_utils import remove_dtype_suffix
 
 import logging
@@ -602,6 +603,10 @@ class ImageDataset(BaseDataset):
             image_size = (image_width, image_height)
 
             item_key = "_".join(tokens[:-2])
+            # Old cache preparations may already have encoded mask sidecars.
+            # Exclude them even when both latent and caption caches exist.
+            if is_mask_stem(item_key):
+                continue
             cache_item_keys.add(item_key)
             if valid_basenames is not None and item_key not in valid_basenames:
                 continue

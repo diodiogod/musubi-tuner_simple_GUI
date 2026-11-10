@@ -32,7 +32,19 @@ CUDA_MINIMUMS = {
     "cu128": ("torch>=2.7.1", "torchvision>=0.22.1"),
     "cu130": ("torch>=2.9.1", "torchvision>=0.24.1"),
     "cu132": ("torch>=2.12.0", "torchvision>=0.27.0"),
+    "cu134": ("torch==2.15.0", "torchvision==0.29.2"),
 }
+
+
+def performance_runtime_available(python: Path) -> bool:
+    """Metadata-only: never allocate GPU memory while checking the runtime."""
+    expression = ("import importlib.metadata as m; "
+                  "assert m.version('torch').split('+')[0] == '2.15.0'; "
+                  "assert m.version('torchvision').split('+')[0] == '0.29.2'; "
+                  "assert m.version('bitsandbytes') == '0.50.2'; "
+                  f"assert m.version({'triton-windows' if os.name == 'nt' else 'triton'!r}).split('.post')[0] == '3.7.0'")
+    return subprocess.run([str(python), "-c", expression], cwd=ROOT, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, check=False).returncode == 0
 
 
 def venv_python() -> Path:
@@ -125,7 +137,7 @@ def choose_torch_channel(driver_cuda: tuple[int, int] | None) -> str:
     override = os.environ.get("MUSUBI_CUDA", "").strip().lower()
     if override:
         if override not in {*CUDA_MINIMUMS, "cpu"}:
-            raise ValueError(f"Unsupported MUSUBI_CUDA={override!r}; choose cu124, cu128, cu130, cu132, or cpu.")
+            raise ValueError(f"Unsupported MUSUBI_CUDA={override!r}; choose cu124, cu128, cu130, cu132, cu134, or cpu.")
         return override
     if driver_cuda and driver_cuda >= (12, 8):
         return "cu128"
@@ -143,8 +155,8 @@ def install_torch(python: Path, channel: str) -> None:
     run_logged([str(python), "-m", "pip", "install", "--upgrade", *packages, "--index-url", index])
 
 
-def write_marker(state: str, channel: str | None = None) -> None:
-    payload = {"fingerprint": fingerprint(), "state": state, "torch_channel": channel}
+def write_marker(state: str, channel: str | None = None, runtime: str = "standard") -> None:
+    payload = {"fingerprint": fingerprint(), "state": state, "torch_channel": channel, "runtime": runtime}
     MARKER.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -159,6 +171,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare the shared Musubi GUI Python environment.")
     parser.add_argument("--force-repair", action="store_true", help="reinstall project dependencies")
     parser.add_argument("--refresh-torch", action="store_true", help="reinstall the selected PyTorch CUDA build")
+    runtime_options = parser.add_mutually_exclusive_group()
+    runtime_options.add_argument("--performance-runtime", action="store_true",
+                        help="opt into PyTorch 2.15/cu134 and Triton 3.7 for compiled MOSS training")
+    runtime_options.add_argument("--standard-runtime", action="store_true",
+                                 help="stop enforcing performance pins; use --refresh-torch to reinstall a standard CUDA build")
     args = parser.parse_args()
 
     if not PYPROJECT.is_file():
@@ -180,12 +197,17 @@ def main() -> int:
         python = venv_python()
 
     marker = read_marker()
+    performance = not args.standard_runtime and (args.performance_runtime or os.environ.get("MUSUBI_RUNTIME") == "performance" or marker.get("runtime") == "performance")
+    performance_ready = not performance or performance_runtime_available(python)
     current = marker.get("fingerprint") == fingerprint()
-    if current and environment_available(python) and not args.force_repair and not args.refresh_torch:
+    if current and performance_ready and environment_available(python) and not args.force_repair and not args.refresh_torch:
+        runtime = "performance" if performance else "standard"
+        if marker.get("runtime", "standard") != runtime:
+            write_marker("verified", "cu134" if performance else marker.get("torch_channel"), runtime)
         print("Musubi environment is ready.")
         return 0
     healthy = environment_healthy(python)
-    if healthy and not marker and not args.force_repair and not args.refresh_torch:
+    if healthy and not marker and not performance and not args.force_repair and not args.refresh_torch:
         # Preserve a manually prepared working environment on the first run of
         # the smart launcher instead of unexpectedly replacing its Torch stack.
         write_marker("adopted")
@@ -193,24 +215,30 @@ def main() -> int:
         return 0
 
     nvidia_available, driver_cuda = detected_driver_cuda()
-    channel = choose_torch_channel(driver_cuda) if nvidia_available else "cpu"
-    refresh_torch = args.refresh_torch or not installed_torch_usable(python, nvidia_available)
+    if performance and (not nvidia_available or not driver_cuda or driver_cuda < (13, 0)):
+        print("ERROR: The optional performance runtime needs an NVIDIA driver supporting CUDA 13.x.", file=sys.stderr)
+        return 1
+    channel = "cu134" if performance else choose_torch_channel(driver_cuda) if nvidia_available else "cpu"
+    refresh_torch = args.refresh_torch or (performance and not performance_ready) or not installed_torch_usable(python, nvidia_available)
 
     try:
         print(f"Preparing dependencies. Detailed output: {LOG}")
         run_logged([str(python), "-m", "pip", "install", "--upgrade", "pip"])
         if refresh_torch:
             install_torch(python, channel)
+        if performance:
+            compiler = "triton-windows==3.7.0.post26" if os.name == "nt" else "triton==3.7.0"
+            run_logged([str(python), "-m", "pip", "install", compiler, "bitsandbytes==0.50.2"])
         print("Installing or updating Musubi GUI dependencies...")
         run_logged([str(python), "-m", "pip", "install", "--upgrade", "-e", "."])
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    if not environment_healthy(python):
+    if not environment_healthy(python) or (performance and not performance_runtime_available(python)):
         print(f"ERROR: Dependency verification failed. See {LOG}", file=sys.stderr)
         return 1
-    write_marker("installed", channel)
+    write_marker("installed", channel, "performance" if performance else "standard")
     print("Musubi environment installed and verified.")
     return 0
 

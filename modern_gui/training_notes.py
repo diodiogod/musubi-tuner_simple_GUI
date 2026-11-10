@@ -55,6 +55,8 @@ def _dataset_note_label(value: Any) -> str:
 
 
 def training_settings_summary(settings: dict[str, Any]) -> str:
+    from backends.regularization_switches import effective_settings
+    settings = effective_settings(settings)
     parts = [str(settings.get("training_mode") or "Training")]
     output_name = str(settings.get("output_name") or "").strip()
     if output_name:

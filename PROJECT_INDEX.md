@@ -85,6 +85,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 **`dataset_config_builder.py`** - Visual/raw dataset TOML builder with validation and safe round-tripping
 **`prompt_library.py`** - Global prompt-library persistence, searchable gallery, job migration, and test thumbnails
 **`preview_profiles.py`** - Shared preview defaults, checkpoint identity, sampling-adapter metadata and portable library starter prompts
+**`modern_gui/run_insights.py`** - lazy historical loss recovery, run file inventory, and separate local notes; `static/loss-chart.js` shares chart controls between history and the active run, while `static/run-insights.js` owns the run-review window. See `docs/run_history.md`.
 **`modern_gui/path_dialogs.py`** - Lightweight Modern UI native file/folder pickers; normalizes existing file paths into starting folders without loading the Classic GUI
 **`UPSTREAM_BASELINE.json`** - Machine-readable upstream Musubi baseline and protected downstream paths
 **`README.md`** - Main project docs
@@ -198,6 +199,8 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `moss_image/repa.py` - optional MOSS image representation alignment with a frozen DINOv2 teacher, bounded CPU feature cache and resume-only projection head; both GUIs use `backends/moss_settings.py` for its defaults and help
 - `moss_image/repa_cache.py` - prepares signed, persistent REPA targets before DiT loading; training reuses disk/RAM features without repeated VAE decoding or teacher transfers
 - `optimizers/automagic3.py` - non-fused FP32 adapter integration of the pinned, MIT-licensed Ostris optimizer; its scheduler reports adapted rates without imposing an external schedule
+- `optimizers/muon.py` / `automagic4.py` - optional Fizgig-style batched Muon (mixed-shape fallback) and non-fused Ostris Automagic4, with optimizer-consistent resume validation
+- `moss_image/fast_lora.py` / `performance.py` - optional BF16 adapter compute, unpadded image passes, compiler adapter bridge and inside/outside checkpoint placement; `tools/bootstrap_environment.py --performance-runtime` installs the opt-in PyTorch 2.15/Triton stack
 - `moss_image/ema.py` - optional adapter-only EMA; averaged samples/exports and explicit averaged state-preview companion, with live weights retained for optimizer-consistent full resumes
 - `moss_image/timesteps.py` - optional AI Toolkit Sigmoid + High distribution; both GUIs preserve legacy MOSS pretraining/general recipes through a shared schedule resolver
 
@@ -250,6 +253,7 @@ These exist at repo root mainly as user-facing launch points that import the pac
 - `dataset/cache_identity.py` - opt-in source/settings provenance for GUI cache reuse; native H3 retains its existing metadata contract
 - `dataset/bucket.py` - bucket handling
 - `dataset/media_utils.py` - media helpers
+- `dataset/mask_files.py` - lightweight Fizgig/OneTrainer `-masklabel` sidecar naming shared by GUI inventories and runtime discovery; stale mask latent caches are excluded from image training
 - `dataset/datasources.py` - dataset source abstraction
 - `dataset/architectures.py` - architecture tagging/selection
 

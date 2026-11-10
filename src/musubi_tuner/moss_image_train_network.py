@@ -39,6 +39,19 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return ARCHITECTURE_MOSS_IMAGE_FULL
 
     def handle_model_specific_args(self, args):
+        from musubi_tuner.moss_image.performance import prepare_compile
+        prepare_compile(args, getattr(args, "blocks_to_swap", 0) or 0)
+        from musubi_tuner.moss_image.timesteps import clean_end_policy
+        share = getattr(args, "moss_clean_end_share", "")
+        clean_end_policy(share, 1)
+        if share and args.moss_timestep_uniform_ratio >= 1:
+            raise ValueError("Clean-end share requires Uniform ratio below 1.")
+        if getattr(args, "moss_unpadded_batches", False) and getattr(args, "moss_text_pad_multiple", 0):
+            raise ValueError("Unpadded MOSS image passes require Caption padding = 0.")
+        if share and not args.moss_pretraining_schedule:
+            raise ValueError("MOSS clean-end share requires the MOSS pretraining schedule.")
+        if share and len(share.split(":")) == 5 and args.optimizer_type.lower() in {"automagic3", "automagic4"}:
+            raise ValueError("Clean-end refresh epochs halve a fixed optimizer LR. Use Muon/AdamW, or omit the fifth value with Automagic.")
         from musubi_tuner.moss_image.repa import validate_config
         validate_config(args)
         from musubi_tuner.moss_image.ema import validate_ema_args
@@ -75,6 +88,9 @@ class MossImageNetworkTrainer(NetworkTrainer):
     def _build_dataset(self, args):
         from musubi_tuner.dataset.image_video_dataset import ImageDataset
         dataset, collator, epoch = super()._build_dataset(args)
+        self._moss_epoch = epoch
+        if not 0 <= getattr(args, "moss_text_pad_multiple", 0) <= 512:
+            raise ValueError("MOSS caption padding must be from 0 to 512.")
         if any(not isinstance(item, ImageDataset) for item in dataset.datasets):
             raise ValueError("MOSS-Image supports image datasets only. Remove video datasets from this run.")
         if getattr(args, "moss_repa_enabled", False):
@@ -102,12 +118,30 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return prompts, vae
 
     def load_transformer(self, accelerator, args, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype):
-        return load_model(dit_path, device=loading_device, dtype=torch.bfloat16,
+        model = load_model(dit_path, device=loading_device, dtype=torch.bfloat16,
                           attn_mode=attn_mode, split_attn=split_attn, convrot_int8=args.convrot_int8,
                           convrot_bwd_mode=args.convrot_bwd_mode, disable_mmap=args.disable_mmap)
+        model.stable_attention_shapes = bool(getattr(args, "moss_text_pad_multiple", 0) or
+                                             getattr(args, "moss_sdpa_backend", "default") != "default")
+        return model
 
     def compile_transformer(self, args, transformer):
-        return model_utils.compile_transformer(args, transformer, [transformer.layers], disable_linear=self.blocks_to_swap > 0)
+        from musubi_tuner.moss_image.performance import prepare_compile, attach_compile_adapters
+        prepare_compile(args, self.blocks_to_swap)
+        attach_compile_adapters(transformer)
+        # SDPA keeps the explicit mask rather than trimming via a GPU scalar
+        # read inside every block. That read would break a full compiled graph
+        # and defeat the small, fixed caption-padding shapes.
+        transformer.stable_attention_shapes = True
+        if getattr(args, "moss_compile_checkpoint", "inside") == "outside" and args.compile:
+            # Compile the raw block; keep checkpoint recomputation outside the
+            # graph. This retains eager checkpoint memory at larger resolutions.
+            blocks = [block._forward for block in transformer.layers]
+            model_utils.compile_transformer(args, transformer, [blocks], disable_linear=False)
+            for block, compiled in zip(transformer.layers, blocks):
+                block._forward = compiled
+            return transformer
+        return model_utils.compile_transformer(args, transformer, [transformer.layers], disable_linear=False)
 
     def scale_shift_latents(self, latents):
         return latents
@@ -131,11 +165,12 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return groups
 
     def extra_metadata(self, args):
-        keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device", "moss_pretraining_schedule", "moss_sigmoid_high"]
+        keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device", "moss_pretraining_schedule", "moss_sigmoid_high",
+                "moss_clean_end_share", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint", "moss_sdpa_backend"]
         if getattr(args, "moss_repa_enabled", False):
             keys += ["moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
                      "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir"]
-        return {"ss_" + key: str(getattr(args, key)) for key in keys}
+        return {"ss_" + key: str(getattr(args, key, "")) for key in keys}
 
     def _register_hooks_and_resume(self, args, accelerator, network):
         from musubi_tuner.moss_image.ema import AdapterEMA, validate_ema_resume
@@ -186,7 +221,13 @@ class MossImageNetworkTrainer(NetworkTrainer):
         # PR #2471: inverse-CDF truncated logit normal, rescaled and snapped to
         # the original 1000-step grid, with a small uniform mixture.
         count = noise.shape[0]
-        mean = torch.full((count,), args.moss_logit_mean, dtype=torch.float64, device=device)
+        logit_mean = args.moss_logit_mean
+        share_spec = getattr(args, "moss_clean_end_share", "")
+        if share_spec:
+            from musubi_tuner.moss_image.timesteps import clean_end_policy, clean_share_mean
+            share, _ = clean_end_policy(share_spec, getattr(getattr(self, "_moss_epoch", None), "value", 1))
+            logit_mean = clean_share_mean(share, args.moss_logit_std, args.moss_timestep_cutoff, args.moss_timestep_uniform_ratio)
+        mean = torch.full((count,), logit_mean, dtype=torch.float64, device=device)
         cutoff = args.moss_timestep_cutoff
         if cutoff < 1:
             lower = -math.log(cutoff / (1 - cutoff))
@@ -226,16 +267,36 @@ class MossImageNetworkTrainer(NetworkTrainer):
         if latents.ndim != 5 or latents.shape[1:3] != (128, 1):
             raise ValueError("MOSS training requires packed image latents [B,128,1,H,W]. Recache with the MOSS VAE tool.")
         context, mask = pad_text_embeds(batch["moss_embed"])
+        from musubi_tuner.moss_image.performance import pad_context
+        context, mask = pad_context(context, mask, getattr(args, "moss_text_pad_multiple", 0))
         context = context.to(accelerator.device, dtype=network_dtype)
         mask = mask.to(accelerator.device)
         inputs = noisy_model_input.squeeze(2).to(accelerator.device, dtype=network_dtype)
-        if args.gradient_checkpointing:
+        if args.gradient_checkpointing and not getattr(args, "moss_unpadded_batches", False):
+            # The optional Fizgig-style path uses non-reentrant checkpointing:
+            # adapter parameters suffice to create the graph. Requiring input
+            # gradients would also backpropagate through the frozen text refiner.
             inputs.requires_grad_(True)
             context.requires_grad_(True)
-        with accelerator.autocast():
+        from musubi_tuner.moss_image.performance import sdpa_context
+        with accelerator.autocast(), sdpa_context(args, inputs):
             capture = ({"feature_layer": args.moss_repa_block, "feature_buffer": self._repa_capture}
                        if self._repa_capture is not None else {})
-            prediction = transformer(inputs, self._model_timesteps(args, timesteps), context, mask, **capture).unsqueeze(2)
+            if getattr(args, "moss_unpadded_batches", False):
+                predictions, features = [], []
+                times = self._model_timesteps(args, timesteps).reshape(-1)
+                for i, embed in enumerate(batch["moss_embed"]):
+                    local = {} if capture else None
+                    options = {"feature_layer": args.moss_repa_block, "feature_buffer": local} if capture else {}
+                    prediction = transformer(inputs[i:i+1], times[i:i+1], context[i:i+1, :len(embed)], None, **options)
+                    predictions.append(prediction)
+                    if local is not None:
+                        features.append(local["image"])
+                prediction = torch.cat(predictions).unsqueeze(2)
+                if features:
+                    self._repa_capture["image"] = torch.cat(features)
+            else:
+                prediction = transformer(inputs, self._model_timesteps(args, timesteps), context, mask, **capture).unsqueeze(2)
         return DiTOutput(pred=prediction, target=noise - latents)
 
     def process_batch(self, args, accelerator, transformer, network, batch, latents, noise,
@@ -286,6 +347,25 @@ class MossImageNetworkTrainer(NetworkTrainer):
             self._weight_noise_logs = self._weight_noise.apply(accelerator.unwrap_model(network).get_trainable_params())
         if self._ema is not None:
             self._ema.update()
+
+    def on_train_start(self, args, accelerator, network, transformer, optimizer):
+        super().on_train_start(args, accelerator, network, transformer, optimizer)
+        spec = getattr(args, "moss_clean_end_share", "")
+        if not spec or len(spec.split(":")) != 5:
+            return
+        from musubi_tuner.moss_image.timesteps import clean_end_policy
+        raw_optimizer = getattr(optimizer, "optimizer", optimizer)
+        saved_rates = []
+        def before_step(opt, _args, _kwargs):
+            _, multiplier = clean_end_policy(spec, self._moss_epoch.value)
+            saved_rates[:] = [group["lr"] for group in opt.param_groups]
+            for group in opt.param_groups:
+                group["lr"] *= multiplier
+        def after_step(opt, _args, _kwargs):
+            for group, rate in zip(opt.param_groups, saved_rates):
+                group["lr"] = rate
+        raw_optimizer.register_step_pre_hook(before_step)
+        raw_optimizer.register_step_post_hook(after_step)
 
     def extra_step_logs(self, args, logs):
         return dict(self._weight_noise_logs)
@@ -360,6 +440,11 @@ class MossImageNetworkTrainer(NetworkTrainer):
 
 
 def moss_setup_parser(parser):
+    parser.add_argument("--moss_unpadded_batches", action="store_true")
+    parser.add_argument("--moss_clean_end_share", default="")
+    parser.add_argument("--moss_text_pad_multiple", type=int, default=0)
+    parser.add_argument("--moss_compile_checkpoint", choices=("inside", "outside"), default="inside")
+    parser.add_argument("--moss_sdpa_backend", choices=("default", "cudnn preferred"), default="default")
     from musubi_tuner.moss_image.regularization import add_arguments
     add_arguments(parser)
     from musubi_tuner.moss_image.repa import add_arguments as add_repa_arguments

@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import toml
+from musubi_tuner.dataset.mask_files import is_mask_image
 
 try:
     import tomlkit
@@ -1378,7 +1379,8 @@ class DatasetConfigBuilder:
         kind = self.datasets[self.selected_index]["kind"] if self.selected_index is not None else "image"
         extensions = VIDEO_EXTENSIONS if kind == "video" else IMAGE_EXTENSIONS
         try:
-            media = [path for path in source.iterdir() if path.is_file() and path.suffix.lower() in extensions]
+            media = [path for path in source.iterdir() if path.is_file() and path.suffix.lower() in extensions
+                     and (kind != "image" or not is_mask_image(path))]
             caption_extension = (
                 self.dataset_vars["caption_extension"].get().strip()
                 or self.general_vars["caption_extension"].get().strip()
@@ -1390,6 +1392,7 @@ class DatasetConfigBuilder:
                 1
                 for path in source.rglob("*")
                 if path.is_file() and path.parent != source and path.suffix.lower() in extensions
+                and (kind != "image" or not is_mask_image(path))
             )
             warning = (
                 f" · WARNING: {nested} nested media ignored by Musubi; use Add valid subfolders"

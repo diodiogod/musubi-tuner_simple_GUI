@@ -462,11 +462,12 @@ class MossImage(nn.Module):
             raise ValueError(f"x must be [B, {self.latent_channels}, H, W], got {tuple(x.shape)}")
         if context.ndim != 3 or context.shape[0] != batch:
             raise ValueError("context must be [B, L, text_dim] with the same batch size as x")
+        unmasked_context = context_mask is None
         if context_mask is None:
             context_mask = torch.ones(context.shape[:2], dtype=torch.int32, device=x.device)
         context_mask = context_mask.to(torch.int32)
         text_lens = context_mask.sum(1)  # [B]
-        if torch.any(text_lens < 1):
+        if (unmasked_context and context.shape[1] < 1) or (not unmasked_context and torch.any(text_lens < 1)):
             raise ValueError("Each sample needs at least one valid text token.")
         skip_layers = frozenset(skip_layers) if skip_layers else frozenset()
 
@@ -478,12 +479,17 @@ class MossImage(nn.Module):
         video = self.video_embedder(video)
         rope = self.rope(height, width, text_len, text_lens).to(video.dtype)  # [B, N + L, head_dim]
 
-        txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, context_mask)
+        attention_mask = None if unmasked_context else context_mask
+        txt_attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, 0, attention_mask)
+        if getattr(self, "stable_attention_shapes", False) and self.attn_mode == "torch" and not self.split_attn:
+            txt_attn_params.seqlens = None
         text = self.text_embedder(context, rope[:, img_len:], txt_attn_params)
         hidden = torch.cat((video, text), 1)
         del video, text
 
-        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, img_len, context_mask)
+        attn_params = AttentionParams.create_attention_params_from_mask(self.attn_mode, self.split_attn, img_len, attention_mask)
+        if getattr(self, "stable_attention_shapes", False) and self.attn_mode == "torch" and not self.split_attn:
+            attn_params.seqlens = None
 
         for layer_index, layer in enumerate(self.layers):
             if self.blocks_to_swap:

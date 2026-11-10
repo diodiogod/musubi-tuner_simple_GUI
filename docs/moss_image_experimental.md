@@ -296,3 +296,130 @@ Track `loss/diffusion`, `loss/repa`, `loss/repa_weighted` and
 identical gradients. Its numerical scale differs from plain diffusion loss.
 REPA can help learning, but does not guarantee protection against overtraining,
 forgetting or reduced generation quality. Long-run MOSS quality is unverified.
+
+## Optional Fizgig-style speed and optimizer settings
+
+In both GUIs, **Enable adapter weight noise** and **Enable structural depth
+guidance** are separate switches. Off disables the feature even when its saved
+strength is nonzero, and greys out its controls. The saved strength is retained
+for later. Turning a feature on for the first time fills a suggested strength;
+review it before training. Older recipes without switches infer their original
+on/off state from the strength, preserving their previous behavior.
+
+Each Performance **?** explains that one option. The Classic GUI's separate
+speed overview button remains available for the complete setup requirements.
+Numeric decimal fields accept a comma or a dot, including the main learning
+rate and Automagic bounds. Recipes and command arguments store the normalized
+dot form. Do not use thousands separators: enter rank `10000` directly.
+
+Both interfaces expose **Muon** and **Automagic4** in the optimizer menu.
+Muon batches same-shaped matrices, retaining the per-tensor fallback for biases
+and other shapes (including REPA's projection head). Its defaults follow Fizgig
+`fe1fb5d`: `adjust_lr_fn="match_rms_adamw" weight_decay=0.01 momentum=0.95
+nesterov=True ns_steps=5`. Start with LR `0.0001`. The ordinary LR scheduler
+continues to apply. Muon does not need the new runtime.
+
+Automagic4 is the MIT-licensed Ostris optimizer, integrated non-fused with FP32
+trainable parameters, constant scheduling and zero warmup. Try a starting LR of
+`0.000001`. Its optional `min_lr`, `max_lr`, `sensitivity_quantile=0.9`, and
+`step_target=0.1` go in Optimizer Args; the Automagic3-specific GUI bounds apply
+only to version 3. Full-state resumes require the same optimizer; change
+optimizer by continuing from LoRA weights with a fresh optimizer state.
+
+**Optional speed controls** are in the training performance area in Modern UI
+and **MOSS · Optional speed controls** in Classic:
+
+- **Fast BF16 LoRA compute:** keeps FP32 master weights/gradients while storing
+  BF16 activations for the adapter backward. Plain LoRA only; dropout retains
+  the ordinary implementation. Existing exported LoRA keys stay compatible.
+- **Unpadded image passes:** follows current Fizgig MOSS: each image runs with
+  its own caption and no padding mask. Batch losses still share one update.
+  Keep Caption padding at `0` for this path.
+- **Caption padding:** an alternative masked-batch experiment. `16` reduces the
+  number of caption shapes; `0` leaves lengths unchanged. Padding is masked and
+  never added to the text cache. This is not Fizgig's current MOSS default.
+- **Compile:** requires zero block swaps and ordinary GPU checkpointing.
+  **Inside** compiles checkpointing into the block (Fizgig's current MOSS
+  placement); **Outside** retains eager checkpoint recomputation, which may
+  reduce peak memory at large resolutions. First use of each shape takes time
+  to compile. Inductor requires the performance runtime below.
+- **cuDNN preferred:** optional SDPA backend priority, retaining the other
+  available kernels as fallbacks. Shape planning has an initial cost.
+
+No latent or text recaching is needed for these settings. They remain opt-in;
+old recipes retain their existing optimizer and eager behavior. DOP, depth,
+REPA and EMA remain independent and add their own costs.
+
+For a comparison with a fixed Fizgig MOSS recipe: choose the same dataset,
+resolution, repeats, rank/alpha, LR, clipping, accumulation and EMA; use Muon,
+Fast BF16 LoRA, Unpadded image passes, zero padding, and zero swaps. Enable
+Compile when the model fits. Choose **MOSS pretraining**, then copy Fizgig's
+**Clean-end share** (for example `40`) into our **Less-noisy training examples (%)** field. Blank retains
+our previous logit mean. The field also accepts Fizgig's split/slide syntax:
+`30:7:60`, `30:7:60:8`, or `30:7:60:8:3`. The last form uses the lower share
+every third epoch after the slide, at half the actual optimizer LR; it requires
+a fixed-rate optimizer such as Muon/AdamW. The share adjusts the distribution's
+centre and overrides Logit mean, retaining the configured width/cutoff/uniform
+ratio. It does not apply to Sigmoid + High or General timestep controls.
+
+These options match the relevant update rules and training distributions, not
+random-number draw order across trainers. Preview samplers, adapters and VAE
+choices also need to match before comparing image quality. No real-model GPU
+speed claim follows from the CPU integration tests alone.
+
+### RTX 4090 validation (2026-11-09)
+
+A short synthetic 1024×1024 real-model test used the existing ConvRot INT8
+Base, BF16 backward, rank/alpha 20, Muon LR `0.0001`, EMA `0.98`, 64 caption
+tokens and zero swaps. All timings below use the new PyTorch 2.15 runtime;
+the first step is excluded and each mean covers three subsequent steps.
+
+| Path | Warm mean per step |
+|---|---:|
+| Existing eager LoRA / masked input | 1.97 s |
+| Fast LoRA / unpadded input | 1.84 s |
+| Fast LoRA / unpadded input / compiled checkpoint inside | 1.17 s |
+
+The compiled path reduced step time by about 40% against the eager path in this
+test. Its first step took about 49 seconds including initial compilation.
+Peak PyTorch reserved memory was 8.47 GiB; this excludes CUDA/desktop allocations
+and is not a whole-card VRAM measurement. Different captions, buckets, ranks,
+resolutions and auxiliary losses change both memory and speed. This is not
+a full-run benchmark against Fizgig or a quality comparison.
+
+The actual trainer also completed a 512×512 real-VAE/text-encoder smoke run:
+training, an in-training preview, further training, EMA export and full state
+save. A numbered step checkpoint resumed at the correct position with Muon
+and EMA restored; a sampling-only Turbo LoRA at `0.6` rendered successfully.
+Export/state keys stayed standard, and saved adapter weights were finite.
+The upgraded runtime passed 84 focused regression tests; further compiler-chain
+and sampling-adapter checks cover the GPU-discovered fixes.
+
+### Optional performance runtime
+
+Close this trainer before changing its environment. Fizgig has its own venv
+and is unaffected. From the repository directory on Windows:
+
+```powershell
+.\venv\Scripts\python.exe tools/bootstrap_environment.py --performance-runtime
+```
+
+On Linux use `venv/bin/python tools/bootstrap_environment.py --performance-runtime`.
+This installs PyTorch `2.15.0` / CUDA `13.4`, torchvision `0.29.2`, and matching
+Triton `3.7.0` (Windows wheel `3.7.0.post26`), plus bitsandbytes `0.50.2`. A driver supporting CUDA 13.x is
+required. Windows compilation also needs Visual Studio C++ Build Tools; Triton's
+bundled TinyCC is selected for its C components unless you supplied `CC`.
+The existing launchers continue using `venv`; the upgrade is recorded so setup
+checks retain it. Standard installations are not upgraded automatically.
+To stop enforcing this optional profile, use `--standard-runtime`. Add
+`--refresh-torch` and set `MUSUBI_CUDA` to the desired channel to reinstall a
+standard PyTorch build; compiled third-party extensions must match that build.
+The optional extras `cu134` and `performance` describe the same dependency
+selection for package managers. Other model families need separate GPU checks
+after a runtime upgrade, particularly third-party compiled attention extensions.
+SageAttention/FlashAttention wheels built for an older PyTorch must be replaced
+with compatible builds before using those backends; MOSS can use ordinary SDPA.
+
+Sources and licenses: [performance notices](THIRD_PARTY_PERFORMANCE.md),
+[PyTorch Muon](https://docs.pytorch.org/docs/2.15/generated/torch.optim.Muon.html),
+[Triton Windows](https://github.com/triton-lang/triton-windows).

@@ -19,6 +19,8 @@ from collections import defaultdict
 
 from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_backend, minimax_h3 as minimax_h3_backend, krea2_face as krea2_face_backend, minimax_h3_face as minimax_h3_face_backend, krea2_face_eval as krea2_face_eval_backend, moss_image as moss_backend
 from backends import moss_settings, moss_image_face as moss_face_backend
+from backends.regularization_switches import FEATURES as REGULARIZATION_FEATURES, controlled_by, effective_settings as effective_regularization, normalize_switches
+from backends.numeric_settings import normalize_numbers, decimal_text
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -679,9 +681,19 @@ class MusubiTunerGUI:
                 kind=kind, options=moss_settings.CHOICES.get(key),
                 is_path=key in moss_settings.PATHS, is_dir=key in {'moss_tokenizer_cache_dir', 'moss_repa_cache_dir'},
                 default_val=default if isinstance(default, bool) else False,
+                command=(lambda key=key: self._on_regularization_toggle(key)) if key in REGULARIZATION_FEATURES else None,
             )
             if kind in ('entry', 'path_entry'):
                 widget.insert(0, default)
+            from backends.performance_help import DETAILS as PERFORMANCE_HELP
+            if key in PERFORMANCE_HELP:
+                ttk.Button(widget.master, text="?", width=3, command=lambda key=key: messagebox.showinfo(
+                    moss_settings.REPA_LABELS.get(key, key), PERFORMANCE_HELP[key], parent=self.root,
+                )).grid(row=0, column=2, padx=(6, 0))
+            if key == "moss_clean_end_share":
+                ttk.Button(parent, text="?  Less-noisy examples explained", command=lambda: messagebox.showinfo(
+                    "Less-noisy training examples", moss_settings.CLEAN_END_DETAILS, parent=self.root,
+                )).pack(anchor="w", padx=8, pady=(0, 4))
 
     def create_model_paths_tab(self):
         frame = self._create_scrollable_tab("Models", "models")
@@ -791,7 +803,7 @@ class MusubiTunerGUI:
         self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
         self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
             key for key in moss_settings.DEFAULTS
-            if not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
+            if key not in (*moss_settings.PERFORMANCE_KEYS, "moss_clean_end_share") and not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
         ])
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
@@ -1147,7 +1159,7 @@ class MusubiTunerGUI:
 
         optimizer_frame = ttk.LabelFrame(frame, text="Optimizer Settings"); optimizer_frame.pack(fill="x", padx=10, pady=10)
         # Optimizer Type: preset dropdown + optional custom path entry
-        _opt_presets = ["adamw", "adamw8bit", "Automagic3", "adafactor", "lion", "prodigy",
+        _opt_presets = ["adamw", "adamw8bit", "Muon", "Automagic3", "Automagic4", "adafactor", "lion", "prodigy",
                         "prodigyplus.prodigy_plus_schedulefree.ProdigyPlusScheduleFree", "Custom..."]
         _opt_frame = ttk.Frame(optimizer_frame); _opt_frame.pack(fill="x", padx=5, pady=(5, 0))
         ttk.Label(_opt_frame, text="Optimizer Type:").pack(anchor="w")
@@ -1157,7 +1169,10 @@ class MusubiTunerGUI:
         _opt_combo = ttk.Combobox(_opt_frame, textvariable=_opt_combo_var,
                                   values=_opt_presets, state="readonly")
         _opt_combo.pack(fill="x", pady=(2, 0)); _opt_combo.bind("<MouseWheel>", lambda e: "break")
-        ToolTip(_opt_combo, "AdamW8bit is the existing stable default. Automagic3 is an experimental adaptive-rate optimizer from Ostris; use constant scheduling and zero warmup. Choose Custom to type a full import path.")
+        ToolTip(_opt_combo, "Muon batches matrix updates as in Fizgig (try LR 0.0001). Automagic3/4 adapt their rate; use constant scheduling and zero warmup. Use ? for details. Custom accepts a full import path.")
+        ttk.Button(_opt_frame, text="?", width=3, command=lambda: messagebox.showinfo(
+            "Optimizer choices", moss_settings.OPTIMIZER_DETAILS, parent=self.root,
+        )).pack(anchor="e")
         _custom_frame = ttk.Frame(_opt_frame)
         _custom_entry = ttk.Entry(_custom_frame)
         _custom_entry.pack(fill="x")
@@ -1170,7 +1185,7 @@ class MusubiTunerGUI:
             else:
                 _custom_frame.forget()
                 _opt_var.set(sel)
-                if sel.lower() == "automagic3" and "lr_scheduler" in self.entries:
+                if sel.lower() in {"automagic3", "automagic4"} and "lr_scheduler" in self.entries:
                     self.entries["lr_scheduler"].set("constant")
                     self.entries["lr_warmup_steps"].delete(0, tk.END)
                     self.entries["lr_warmup_steps"].insert(0, "0")
@@ -1206,6 +1221,11 @@ class MusubiTunerGUI:
         ), kind='entry')
 
         self.hidden_frames["moss_automagic3"] = ttk.LabelFrame(frame, text="MOSS · Automagic3 learning-rate bounds")
+        self.hidden_frames["moss_performance"] = ttk.LabelFrame(frame, text="MOSS · Optional speed controls")
+        self._add_moss_fields(self.hidden_frames["moss_performance"], moss_settings.PERFORMANCE_KEYS)
+        ttk.Button(self.hidden_frames["moss_performance"], text="?  Speed settings and runtime requirements", command=lambda: messagebox.showinfo(
+            "MOSS performance", moss_settings.PERFORMANCE_DETAILS, parent=self.root,
+        )).pack(anchor="w", padx=8, pady=5)
         self._add_moss_fields(self.hidden_frames["moss_automagic3"], ["moss_automagic3_min_lr", "moss_automagic3_max_lr"])
         ttk.Button(self.hidden_frames["moss_automagic3"], text="?  How Automagic3 works", command=lambda: messagebox.showinfo(
             "Automagic3", moss_settings.AUTOMAGIC3_DETAILS, parent=self.root,
@@ -1504,7 +1524,7 @@ class MusubiTunerGUI:
             "MOSS training noise schedule", moss_settings.TIMESTEP_DETAILS, parent=self.root,
         )).pack(anchor="w", padx=8, pady=4)
         self._moss_pretraining_options = ttk.Frame(self._moss_timestep_frame)
-        self._add_moss_fields(self._moss_pretraining_options, ["moss_logit_mean", "moss_logit_std", "moss_timestep_cutoff", "moss_timestep_uniform_ratio"])
+        self._add_moss_fields(self._moss_pretraining_options, ["moss_clean_end_share", "moss_logit_mean", "moss_logit_std", "moss_timestep_cutoff", "moss_timestep_uniform_ratio"])
         self._add_widget(
             flow_frame, "timestep_sampling", "Timestep Sampling:",
             "Compact MiniMax H3 defaults to 'krea2_shift' because it is the tested recipe. 'h3_shifted_uniform' is an "
@@ -1834,6 +1854,9 @@ class MusubiTunerGUI:
         ttk.Button(preset_widget.master, text="Apply Preset", command=self._apply_krea2_generalization_preset).grid(
             row=0, column=2, padx=(6, 0)
         )
+        self._add_widget(self.hidden_frames['krea2_regularization'], "krea2_weight_noise_enabled",
+                         "Enable adapter weight noise", "Off disables noise and remembers the strength below. On uses that strength; first use fills 0.0125.",
+                         kind='checkbox', command=lambda: self._on_regularization_toggle("krea2_weight_noise_enabled"))
         self._add_widget(
             self.hidden_frames['krea2_regularization'],
             "krea2_weight_noise_sigma",
@@ -1897,6 +1920,9 @@ class MusubiTunerGUI:
         )
 
         ttk.Separator(self.hidden_frames['krea2_regularization']).pack(fill="x", padx=8, pady=6)
+        self._add_widget(self.hidden_frames['krea2_regularization'], "krea2_depth_anchor_enabled",
+                         "Enable structural depth guidance", "Off disables depth guidance and remembers the strength below. On uses that strength; first use fills 0.01. Depth adds training time and VRAM use.",
+                         kind='checkbox', command=lambda: self._on_regularization_toggle("krea2_depth_anchor_enabled"))
         self._add_widget(
             self.hidden_frames['krea2_regularization'],
             "krea2_depth_anchor_weight",
@@ -7269,8 +7295,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.canvas.draw()
 
     def validate_number(self, value):
-        if value in ("", ".", "-"): return True
-        try: float(value); return True
+        if value in ("", ".", ",", "-"): return True
+        try: float(decimal_text(value)); return True
         except ValueError: return False
 
     @staticmethod
@@ -7630,6 +7656,41 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 can_cache_text = all(self.entries[key].get() and os.path.exists(self.entries[key].get()) for key in ["dataset_config", "flux2_text_encoder"])
             self.entries["recache_text"].config(state="normal" if can_cache_text else "disabled")
         except (AttributeError, KeyError): pass
+        self._update_regularization_switch_states()
+
+    def _regularization_switch_values(self):
+        values = {}
+        for switch, (strength, _, _) in REGULARIZATION_FEATURES.items():
+            for key in (switch, strength):
+                widget = self.entries.get(key)
+                if widget is not None:
+                    values[key] = widget.var.get() if hasattr(widget, "var") else widget.get()
+        return normalize_numbers(values)
+
+    def _on_regularization_toggle(self, switch):
+        from backends.regularization_switches import toggle_settings
+        values = self._regularization_switch_values()
+        values = toggle_settings(values, switch, values.get(switch, False))
+        strength = REGULARIZATION_FEATURES[switch][0]
+        widget = self.entries[strength]
+        if isinstance(widget, ttk.Combobox):
+            widget.set(values[strength])
+        else:
+            widget.configure(state="normal")
+            widget.delete(0, tk.END)
+            widget.insert(0, values[strength])
+
+    def _update_regularization_switch_states(self):
+        from backends.regularization_switches import enabled
+        values = self._regularization_switch_values()
+        for key, widget in self.entries.items():
+            switch = controlled_by(key)
+            if switch and not isinstance(widget, (tk.StringVar, tk.BooleanVar)):
+                active = enabled(values, switch)
+                try:
+                    widget.configure(state=("readonly" if isinstance(widget, ttk.Combobox) else "normal") if active else "disabled")
+                except tk.TclError:
+                    pass
 
     def _update_dynamic_widgets(self):
         mode = self.training_mode_var.get()
@@ -7726,6 +7787,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 self.hidden_frames['moss_ema'].pack_forget()
                 self.hidden_frames['moss_repa'].pack_forget()
                 self.hidden_frames['moss_regularization'].pack_forget()
+            if mode == moss_settings.MODE:
+                self.hidden_frames["moss_performance"].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames["moss_performance"].pack_forget()
             if mode == moss_settings.MODE and self.entries["optimizer_type"].get().lower() == "automagic3":
                 self.hidden_frames["moss_automagic3"].pack(fill="x", padx=10, pady=10)
             else:
@@ -7933,6 +7998,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.entries["krea2_depth_anchor_input_size"].set("518")
         self.entries["krea2_depth_anchor_gradient_weight"].set("0.5")
         self.entries["krea2_depth_anchor_grad_checkpoint"].var.set(True)
+        self.entries["krea2_weight_noise_enabled"].var.set(float(values[0]) > 0)
+        self.entries["krea2_depth_anchor_enabled"].var.set(float(values[1]) > 0)
+        self.update_button_states()
 
     @staticmethod
     def _dataset_note_label(path):
@@ -7973,6 +8041,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     @classmethod
     def _training_settings_summary(cls, settings):
+        settings = effective_regularization(settings)
         def enabled_number(key):
             try:
                 value = float(settings.get(key) or 0)
@@ -8125,9 +8194,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         settings["staged_recache_latents"] = self._staged_recache_latents
         settings["staged_recache_text"] = self._staged_recache_text
         settings["face_refinement_config"] = self._face_refinement_config
-        return settings
+        return normalize_numbers(settings)
 
     def set_values(self, settings):
+        settings = normalize_switches(normalize_numbers(settings))
         if not settings.get("moss_timestep_schedule"):
             settings = {**settings, "moss_timestep_schedule": moss_settings.timestep_schedule(settings)}
         requested_appearance = settings.get("appearance_mode")
@@ -8165,6 +8235,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 elif isinstance(widget, ttk.Combobox):
                     widget.set(value if value is not None else "")
                 elif isinstance(widget, ttk.Entry):
+                    if controlled_by(key):
+                        widget.configure(state="normal")
                     widget.delete(0, tk.END)
                     widget.insert(0, str(value) if value is not None else "")
                 elif isinstance(widget, tk.Text):
@@ -8236,6 +8308,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "minimax_h3_depth_vae_device": "training", "minimax_h3_keep_depth_vae_on_device": False,
             "minimax_h3_depth_every_n_steps": "1",
             "krea2_generalization_preset": "Off (Baseline)",
+            "krea2_weight_noise_enabled": False, "krea2_depth_anchor_enabled": False,
             "krea2_weight_noise_sigma": "0", "krea2_weight_noise_mode": "relative", "krea2_weight_noise_bound_norm": False,
             "krea2_depth_anchor_weight": "0", "krea2_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
             "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
@@ -8683,7 +8756,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self.last_line_was_progress = False
         if output_widget == self.output_text:
             try:
-                depth_strength = float(self.entries["krea2_depth_anchor_weight"].get() or 0)
+                depth_strength = float(effective_regularization(self._regularization_switch_values()).get("krea2_depth_anchor_weight") or 0)
             except (KeyError, ValueError):
                 depth_strength = 0.0
             keep_depth_helpers = bool(
@@ -9542,9 +9615,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 messagebox.showerror("Validation Error", "Krea 2 Turbo DiT sampling is not compatible with Blocks to Swap. Clear one of them.")
                 return
             try:
-                noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
-                depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
-                depth_size = int(settings.get("krea2_depth_anchor_input_size") or 518)
+                regularization = effective_regularization(settings)
+                noise_strength = float(regularization.get("krea2_weight_noise_sigma") or 0)
+                depth_strength = float(regularization.get("krea2_depth_anchor_weight") or 0)
+                depth_size = int(regularization.get("krea2_depth_anchor_input_size") or 518)
                 if noise_strength < 0 or depth_strength < 0:
                     raise ValueError("strengths cannot be negative")
                 if depth_size <= 0 or depth_size % 14:
@@ -9664,9 +9738,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                     messagebox.showerror("Validation Error", "Base + assistant drift reference requires the Ostris assistant.")
                     return
             try:
-                noise_strength = float(settings.get("krea2_weight_noise_sigma") or 0)
-                depth_strength = float(settings.get("krea2_depth_anchor_weight") or 0)
-                depth_size = int(settings.get("krea2_depth_anchor_input_size") or 518)
+                regularization = effective_regularization(settings)
+                noise_strength = float(regularization.get("krea2_weight_noise_sigma") or 0)
+                depth_strength = float(regularization.get("krea2_depth_anchor_weight") or 0)
+                depth_size = int(regularization.get("krea2_depth_anchor_input_size") or 518)
                 depth_cadence = int(settings.get("minimax_h3_depth_every_n_steps") or 1)
                 if noise_strength < 0 or depth_strength < 0:
                     raise ValueError("strengths cannot be negative")

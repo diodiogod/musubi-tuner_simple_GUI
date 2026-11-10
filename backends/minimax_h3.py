@@ -121,6 +121,8 @@ from backends._common import (
 
 
 def build_commands(settings):
+    from backends.regularization_switches import effective_settings
+    settings = effective_settings(settings)
     if settings.get("network_type", "LoRA") != "LoRA":
         raise ValueError("Experimental MiniMax-H3 currently supports LoRA only")
     if is_multimodal(settings):

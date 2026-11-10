@@ -9,6 +9,7 @@ from typing import Optional, Union, TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
+from musubi_tuner.dataset.mask_files import is_mask_image
 from musubi_tuner.utils import cv2_compat  # noqa: F401 - must be imported before `import cv2`
 import cv2
 import av
@@ -65,7 +66,7 @@ def glob_images(directory, base="*", caption_extension=None):
             img_paths.extend(glob.glob(os.path.join(glob.escape(directory), base + ext)))
         else:
             img_paths.extend(glob.glob(glob.escape(os.path.join(directory, base + ext))))
-    img_paths = list(set(img_paths))  # remove duplicates
+    img_paths = [path for path in set(img_paths) if not is_mask_image(path)]
 
     # check for caption files and only keep images with captions
     if caption_extension is not None:

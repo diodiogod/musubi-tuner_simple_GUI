@@ -19,7 +19,8 @@ def test_schema_exposes_every_scalar_setting_and_keeps_structured_editors_separa
     schema = settings.settings_schema(payload)
     keys = {field["key"] for section in schema["sections"] for field in section["fields"]}
 
-    assert keys == set(payload) - settings.STRUCTURED_KEYS
+    from backends.regularization_switches import FEATURES
+    assert keys == (set(payload) | set(FEATURES)) - settings.STRUCTURED_KEYS
     assert schema["field_count"] == len(keys)
     assert set(schema["structured_keys"]) == settings.STRUCTURED_KEYS
 

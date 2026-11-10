@@ -80,7 +80,7 @@ def test_moss_validation_checks_face_encoder_depth_and_preview_parameters(tmp_pa
     settings.update(recache_text=False, sample_prompts_data=[], sample_prompts="", moss_text_encoder="",
                     use_staged_training=True,
                     staged_training_config=[{"enabled": True, "type": "face_refinement"}],
-                    moss_depth_anchor_weight="0.01", moss_depth_anchor_input_size="500",
+                    moss_depth_anchor_enabled=True, moss_depth_anchor_weight="0.01", moss_depth_anchor_input_size="500",
                     moss_sample_flow_shift="nan", moss_sample_skip_layers="42")
     errors = {item["key"] for item in validate_training_settings(settings)["errors"]}
     assert {"moss_text_encoder", "moss_depth_anchor_input_size", "moss_sample_flow_shift", "moss_sample_skip_layers"} <= errors

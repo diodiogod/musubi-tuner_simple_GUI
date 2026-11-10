@@ -30,6 +30,18 @@ not contain the GUI files.
 
 ## Maintained integrations
 
+### Run-review chart telemetry (2026-11-09)
+
+- `training/trainer_base.py` adds `loss/current` and scheduler `lr` to progress
+  output alongside `avr_loss`. It reuses the CPU loss already read for logging;
+  no training math or extra GPU synchronization is introduced.
+- Preserve the distinction in `job_performance.py`: reported running loss stays
+  `loss`, while individual captured updates are `raw_loss`. Historical averages
+  must not be presented as per-step raw loss or used to invent epoch means.
+- GUI charts, lazy log recovery and separate local run notes live in
+  `modern_gui/run_insights.py` and the shared frontend chart/review modules.
+  Coverage: `tests/test_run_insights.py`; user guide: `docs/run_history.md`.
+
 ### Optional MOSS Sigmoid + High schedule (2026-11-08)
 
 - `moss_image/timesteps.py` independently adapts AI Toolkit's per-batch sigmoid
@@ -41,6 +53,28 @@ not contain the GUI files.
   The existing pretraining distribution remains the default. No caches change.
 - Coverage: `tests/test_moss_image_timesteps.py`, MOSS workflow/parser checks
   and tiny CPU training. Do not replace the established schedule by default.
+
+### Optional MOSS performance and optimizer paths (2026-11-09)
+
+- Keep `moss_image/performance.py` and `fast_lora.py` opt-in. The compiler bridge
+  registers adapter aliases after base freezing/casting, supplies the base
+  output explicitly, and preserves the standalone network's export keys.
+  LoRA/LoKr/LoHa `base_output=None` retains their existing behavior by default.
+- Muon batches matrix updates and retains the per-tensor fallback for other
+  shapes. Automagic4 uses non-fused updates and the adaptive LR-reporting
+  scheduler; full states validate optimizer identity and sensitivity settings.
+- Unpadded MOSS passes retain one batch loss/update. REPA captures are joined
+  across images; DOP/depth/EMA hooks retain their existing ordering. Optional
+  clean-end refresh epochs halve the optimizer LR, never the gradients.
+- The PyTorch 2.15/Triton performance runtime is an explicit bootstrap profile,
+  not a mandatory upgrade. RTX 4090 real ConvRot tests validated compilation,
+  in-training preview (including sampling-only Turbo), Muon/EMA save and
+  numbered-state resume. See the bounded benchmark in the MOSS docs; CPU tests
+  alone do not establish speed or whole-card memory use.
+- Prime ConvRot Hadamard constants before tracing and preserve the complete
+  chain of training/sampling adapters in the compiler bridge. Lazy cache writes
+  inside checkpoint graphs fail; replacing only the outer adapter drops the
+  training adapter or fails its forward signature. Both have focused guards.
 
 ### Optional MOSS EMA and Automagic3 (2026-11-08)
 

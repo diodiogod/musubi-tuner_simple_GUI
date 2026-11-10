@@ -387,6 +387,8 @@ class JobSupervisor:
                     metrics["speed_history"] = compact_speed_history(history)
                     metrics["seconds_per_iteration"] = speed["seconds_per_iteration"]
                 if "loss" in update:
+                    from modern_gui.run_insights import record_chart_point
+                    record_chart_point(metrics, update)
                     history = metrics.setdefault("loss_history", [])
                     point = [int(update.get("step", metrics.get("step", 0))), update["loss"]]
                     if history and history[-1][0] == point[0]:

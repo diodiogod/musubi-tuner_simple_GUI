@@ -51,6 +51,7 @@ from modern_gui.h3_datasets import (
     save_ref2va_document,
 )
 from modern_gui.jobs import SUPERVISOR
+from modern_gui.run_insights import decorate_run, load_notes, run_chart, run_files, run_key, save_note
 from job_performance import enrich_job, read_job_log
 from modern_gui.recovery import (
     clear_desktop_history,
@@ -111,6 +112,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/jobs/stop-after-epoch",
         "/api/jobs/stop-after-next-epoch",
         "/api/jobs/open-path",
+        "/api/jobs/notes",
         "/api/jobs/import-found",
         "/api/jobs/clear",
         "/api/legacy/start",
@@ -120,6 +122,17 @@ LOCAL_ACTION_POST_PATHS = frozenset(
 
 
 class MusubiWebHandler(BaseHTTPRequestHandler):
+    def _insights_job(self, source, index, key):
+        if source not in {"web", "desktop"}:
+            raise ValueError("Unknown history source.")
+        jobs = SUPERVISOR.history() if source == "web" else load_desktop_history()
+        if index < 0 or index >= len(jobs):
+            raise IndexError("The selected history entry no longer exists.")
+        job = dict(jobs[index], _source=source)
+        if key != run_key(job):
+            raise ValueError("History changed. Refresh the run and try again.")
+        return job
+
     server_version = "MusubiModernGUI/0.1"
 
     def _json(self, payload, status=HTTPStatus.OK):
@@ -241,7 +254,15 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 modern = [enrich_job(dict(job, _source="web", _history_index=index)) for index, job in enumerate(SUPERVISOR.history())]
                 desktop = [enrich_job(job) for job in load_desktop_history()]
                 jobs = sorted(modern + desktop, key=lambda job: str(job.get("started_at") or ""), reverse=True)
-                return self._json({"jobs": jobs})
+                notes = load_notes()
+                return self._json({"jobs": [decorate_run(job, notes) for job in jobs]})
+            if parsed.path == "/api/jobs/insights":
+                query = parse_qs(parsed.query)
+                job = self._insights_job(query.get("source", [""])[0], int(query.get("index", ["-1"])[0]), query.get("key", [""])[0])
+                payload = {"chart": run_chart(job)}
+                if query.get("files", [""])[0] == "1":
+                    payload["files"] = run_files(job)
+                return self._json(payload)
             if parsed.path == "/api/jobs/active":
                 after = 0
                 if parsed.query.startswith("after="):
@@ -807,6 +828,9 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 else:
                     process = subprocess.Popen(["x-terminal-emulator", "-e", command])
                 return self._json({"started": True, "pid": process.pid})
+            if self.path == "/api/jobs/notes":
+                job = self._insights_job(body.get("source"), int(body.get("index", -1)), body.get("key"))
+                return self._json(save_note(job, body.get("key"), body.get("note", "")))
             if self.path == "/api/jobs/start":
                 settings = body.get("settings", {})
                 require_valid_training_settings(settings)

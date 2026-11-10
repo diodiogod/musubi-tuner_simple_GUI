@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Musubi Studio</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/run-insights.css">
 </head>
 <body>
   <div class="app-shell">
@@ -96,6 +97,7 @@
               <p class="kicker">STEP 3 OF 5</p><h2>Shape the training recipe</h2><p class="lead">Start from safe choices, then expand a section when you need more control.</p>
               <details class="raw-settings" id="minimax-guidance-protection" open hidden><summary>MiniMax H3 quality protection — recommended minimum sigma 0.15</summary><p class="settings-explainer">Important H3 controls. Dynamic Sigma is enabled by the Proven Quality preset; its Minimum Sigma field defaults to 0.15 and controls when the extra preservation pass is skipped.</p><div id="minimax-guidance-fields" class="guided-fields"></div></details>
               <details class="raw-settings" id="minimax-foundation-lora" hidden><summary>Optional · train a new LoRA on top of an existing LoRA</summary><p class="settings-explainer">Keep a proven H3 LoRA frozen while a separate refinement LoRA learns on top. The original file is never changed, and both LoRAs will normally be needed during generation.</p><div id="minimax-foundation-fields" class="guided-fields"></div></details>
+              <div class="estimate-row recipe-batch-row"><div aria-live="polite"><strong id="recipe-batch-summary">Choose a dataset to see its batch size</strong><small id="recipe-batch-detail">Batch size belongs to the dataset; gradient accumulation is set below.</small></div><button class="quiet" id="edit-recipe-batch">Edit dataset batch size</button></div>
               <div id="method-fields" class="guided-fields"></div>
               <section class="training-structure-card" id="training-structure-card"></section>
               <div class="estimate-row"><span id="lora-estimate">Estimate the final adapter size from model tensor shapes.</span><button class="quiet" id="estimate-lora">Estimate size</button></div>
@@ -258,7 +260,7 @@
         </div>
         <div class="run-timing-strip" aria-label="Training timing details"><div><small id="metric-next-label">NEXT EPOCH</small><strong id="metric-next-epoch" title="The next epoch estimate appears after training reports its step count and pace.">Waiting for epoch data</strong></div><div><small>ELAPSED</small><strong id="metric-elapsed">—</strong></div><div><small>REMAINING</small><strong id="metric-eta">—</strong></div><div><small>PACE</small><strong id="metric-rate">—</strong></div></div>
         <div class="run-tabs"><div class="run-tab-buttons"><button class="active" data-run-tab="chart">Loss</button><button data-run-tab="log">Live log</button></div><div class="run-tab-actions"><button class="quiet" id="toggle-run-split" type="button" aria-pressed="false" title="Keep Loss and Live log visible together with a draggable divider">Show split view</button></div></div>
-        <div id="run-panel-stack" class="run-panel-stack"><div class="run-panel active" data-run-pane="chart"><canvas id="loss-canvas" width="1400" height="360"></canvas></div><div id="run-split-divider" class="run-split-divider" role="separator" aria-orientation="vertical" aria-valuemin="25" aria-valuemax="75" aria-valuenow="50" aria-label="Resize loss and live log panels" tabindex="0"></div><div class="run-panel" data-run-pane="log"><div class="terminal-head"><span>Musubi output <small>Drag the lower-right edge to resize</small></span><div><button class="terminal-toggle active" id="follow-log" aria-pressed="true">Follow output</button><button class="terminal-toggle active" id="wrap-log" aria-pressed="true">Wrap lines</button><button class="text-action" id="copy-log">Copy</button><button class="text-action" id="clear-log">Clear</button></div></div><div class="live-progress" id="live-progress" hidden><span class="live-progress-dot"></span><code id="live-progress-text"></code></div><pre id="live-log" class="wrap-lines" role="log" aria-live="off">Waiting for a job…</pre></div></div>
+        <div id="run-panel-stack" class="run-panel-stack"><div class="run-panel active" data-run-pane="chart"><div id="loss-chart"></div></div><div id="run-split-divider" class="run-split-divider" role="separator" aria-orientation="vertical" aria-valuemin="25" aria-valuemax="75" aria-valuenow="50" aria-label="Resize loss and live log panels" tabindex="0"></div><div class="run-panel" data-run-pane="log"><div class="terminal-head"><span>Musubi output <small>Drag the lower-right edge to resize</small></span><div><button class="terminal-toggle active" id="follow-log" aria-pressed="true">Follow output</button><button class="terminal-toggle active" id="wrap-log" aria-pressed="true">Wrap lines</button><button class="text-action" id="copy-log">Copy</button><button class="text-action" id="clear-log">Clear</button></div></div><div class="live-progress" id="live-progress" hidden><span class="live-progress-dot"></span><code id="live-progress-text"></code></div><pre id="live-log" class="wrap-lines" role="log" aria-live="off">Waiting for a job…</pre></div></div>
       </section>
 
       <section class="view" id="samples">
@@ -274,7 +276,7 @@
 
       <section class="view" id="jobs">
         <header class="page-header compact"><div><p class="kicker">HISTORY</p><h1>Training jobs</h1><p>Classic and Modern jobs share this view. Inspect measured speed, saved console output, or compare two runs.</p></div><div class="header-actions"><button class="quiet" id="compare-jobs" disabled>Compare selected (0/2)</button><button class="danger" id="clear-jobs">Clear history</button><button class="quiet" id="import-jobs">Import found jobs</button><button class="quiet" id="refresh-jobs">Refresh</button></div></header>
-        <div class="history-toolbar"><div class="search"><span>⌕</span><label class="sr-only" for="job-search">Search training jobs</label><input id="job-search" placeholder="Search jobs by name or model…"></div><label for="job-status-filter">Status</label><select id="job-status-filter"><option value="">All statuses</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="stopped">Stopped</option><option value="discovered">Discovered</option></select><span id="job-result-count"></span></div>
+        <div class="history-toolbar"><div class="search"><span>⌕</span><label class="sr-only" for="job-search">Search training jobs</label><input id="job-search" placeholder="Search jobs by name or model…"></div><label for="job-status-filter">Status</label><select id="job-status-filter"><option value="">All statuses</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="stopped">Stopped</option><option value="discovered">Discovered</option></select><label class="sr-only" for="job-kind-filter">Job type</label><select id="job-kind-filter"><option value="training">Training runs</option><option value="">All jobs</option><option value="preview">Previews</option></select><span id="job-result-count"></span></div>
         <div id="jobs-list" class="jobs-table empty">No jobs recorded yet.</div>
       </section>
 
@@ -339,7 +341,15 @@
       </aside>
     </div>
   </dialog>
+  <dialog id="run-insights-dialog" class="run-insights-dialog" aria-labelledby="run-insights-title">
+    <header class="run-insights-head"><button class="dialog-close" aria-label="Close run review">×</button><p class="kicker">RUN REVIEW</p><h2 id="run-insights-title"></h2><p id="run-insights-subtitle"></p><nav class="run-insights-tabs" role="tablist" aria-label="Run review"><button role="tab" id="run-tab-chart" aria-controls="run-panel-chart" data-insight-tab="chart">Loss graph</button><button role="tab" id="run-tab-files" aria-controls="run-panel-files" data-insight-tab="files">Previews &amp; checkpoints</button><button role="tab" id="run-tab-notes" aria-controls="run-panel-notes" data-insight-tab="notes">Notes</button></nav></header>
+    <div class="run-insights-body"><section role="tabpanel" id="run-panel-chart" aria-labelledby="run-tab-chart" data-insight-panel="chart"><div id="run-insights-chart"></div></section><section role="tabpanel" id="run-panel-files" aria-labelledby="run-tab-files" data-insight-panel="files" hidden><div id="run-insights-files"></div></section><section role="tabpanel" id="run-panel-notes" aria-labelledby="run-tab-notes" data-insight-panel="notes" hidden><p class="run-note-help">Keep your observations with this run: which checkpoint looked best, what changed, and what to try next. These private local notes stay separate from the LoRA comment and saved training recipe.</p><label class="run-note-label" for="run-note-text">Your notes</label><textarea id="run-note-text" maxlength="20000" placeholder="Epoch 8 had the best resemblance. Next time…"></textarea><div class="run-note-actions"><span id="run-note-status" role="status"></span><button class="primary" id="run-note-save">Save note</button></div></section></div>
+  </dialog>
+  <dialog id="run-media-dialog" class="run-media-dialog" aria-label="Run preview"><button class="dialog-close" data-close="run-media-dialog" aria-label="Close preview">×</button><p id="run-media-name"></p><div id="run-media-content"></div></dialog>
   <div id="toast" role="status"></div>
+  <script src="/loss-chart.js"></script>
+  <script src="/run-insights.js"></script>
+  <script src="/training-batch.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

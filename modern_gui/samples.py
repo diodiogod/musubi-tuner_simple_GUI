@@ -128,6 +128,7 @@ def discover_samples(
     output_name: str = "",
     limit: int = 300,
     source_paths: list[dict[str, str] | str] | None = None,
+    filename_prefix: str = "",
 ) -> dict[str, Any]:
     from preview_profiles import standalone_preview_root
     root = _resolved_directory(output_dir) if str(output_dir or "").strip() else standalone_preview_root()
@@ -151,7 +152,8 @@ def discover_samples(
     for source_index, (source_root, source_label) in enumerate(roots):
         for path in source_root.rglob("*"):
             try:
-                if path.is_file() and path.suffix.lower() in SAMPLE_SUFFIXES:
+                matches_run = not filename_prefix or path.name.startswith(tuple(filename_prefix + delimiter for delimiter in (".", "-", "_")))
+                if matches_run and path.is_file() and path.suffix.lower() in SAMPLE_SUFFIXES:
                     candidates.append((path.stat().st_mtime, source_index, source_label, path))
             except OSError:
                 continue

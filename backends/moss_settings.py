@@ -12,12 +12,12 @@ DEFAULTS = {
     # Empty means inherit the legacy pretraining checkbox when loading old recipes.
     "moss_timestep_schedule": "",
     "moss_timestep_cutoff": "0.95", "moss_timestep_uniform_ratio": "0.01",
-    "moss_depth_anchor_weight": "0.0",
+    "moss_depth_anchor_enabled": False, "moss_depth_anchor_weight": "0.0",
     "moss_depth_anchor_model": "depth-anything/Depth-Anything-V2-Small-hf",
     "moss_depth_anchor_input_size": "518", "moss_depth_anchor_gradient_weight": "0.5",
     "moss_depth_anchor_grad_checkpoint": True, "moss_depth_anchor_vae_device": "training",
     "moss_keep_depth_helpers_on_gpu": False,
-    "moss_weight_noise_sigma": "0.0", "moss_weight_noise_mode": "relative",
+    "moss_weight_noise_enabled": False, "moss_weight_noise_sigma": "0.0", "moss_weight_noise_mode": "relative",
     "moss_weight_noise_bound_norm": False,
     "moss_repa_enabled": False, "moss_repa_weight": "0.5",
     "moss_repa_encoder": "facebook/dinov2-small", "moss_repa_block": "8",
@@ -25,8 +25,71 @@ DEFAULTS = {
     "moss_repa_cache_dir": "",
     "moss_ema_enabled": False, "moss_ema_decay": "0.98", "moss_ema_device": "training",
     "moss_automagic3_min_lr": "0.00005", "moss_automagic3_max_lr": "0.001",
+    "moss_fast_lora": False, "moss_text_pad_multiple": "0",
+    "moss_compile_checkpoint": "inside", "moss_sdpa_backend": "default",
+    "moss_clean_end_share": "",
+    "moss_unpadded_batches": False,
 }
+PERFORMANCE_KEYS = ("moss_fast_lora", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint", "moss_sdpa_backend")
+MUON_ARGS = 'adjust_lr_fn="match_rms_adamw" weight_decay=0.01 momentum=0.95 nesterov=True ns_steps=5'
+CLEAN_END_DETAILS = (
+    "Every training step takes one of your pictures and adds noise to it. MOSS practices removing that noise. "
+    "This setting chooses how often it gets a clearer picture versus a much noisier one. It uses the same MOSS "
+    "model throughout; there are no separate high-noise and low-noise models.\n\n"
+    "Fixed 40 means roughly 40 out of every 100 examples have less than half noise, and the remaining 60 have "
+    "more noise. This balance stays the same for the entire run. Clearer examples practice smaller corrections "
+    "to an already-visible picture; noisier examples require reconstructing more of it. More of either is not "
+    "automatically better. Blank keeps the model's original distribution, about 11% less-noisy examples.\n\n"
+    "Fizgig also offers a changing balance. Its current Muon preset starts with 30% less-noisy examples, moves "
+    "to 60% after epoch 7, and occasionally revisits the noisier balance at a lower learning rate. This is an "
+    "experimental recipe based on its author's dataset/optimizer results, not a requirement of either app or "
+    "a universal recommendation. A fixed 40 is a valid comparison setting.\n\n"
+    "Advanced: paste 30:7:60 for 30% through epoch 7 and 60% afterward. 30:7:60:8 slides to 60% by epoch 8. "
+    "30:7:60:8:3 then uses 30% every third epoch after epoch 8, at half the optimizer learning rate, and 60% "
+    "on the other epochs. That five-part refresh needs a fixed-rate optimizer such as Muon/AdamW. "
+    "This only applies to MOSS pretraining. It needs no recaching and adds no extra model pass."
+)
+PERFORMANCE_DETAILS = (
+    "Want to try the speed techniques used by Fizgig for MOSS? Choose Muon to batch updates to same-shaped "
+    "adapter matrices. Its defaults match Fizgig: learning rate 0.0001, weight decay 0.01, momentum 0.95, "
+    "Nesterov on, 5 orthogonalization iterations, and match_rms_adamw scaling. You may override them in "
+    "Optimizer Args. Muon works on our existing PyTorch runtime. Switch optimizers by continuing from LoRA "
+    "weights with a fresh optimizer, rather than resuming an AdamW saved state.\n\n"
+    "Fast LoRA compute keeps trainable weights and optimizer state in FP32, but calculates the LoRA in BF16 "
+    "and saves smaller activations for backward. It follows Fizgig's low-precision LoRA path. It changes rounding; "
+    "it is an optional alternative, not an identical numerical result. Plain LoRA is supported; leave it off for "
+    "LoKr/LoHa. Dropout falls back to the ordinary path. No recaching is required.\n\n"
+    "Unpadded image passes follows Fizgig's current MOSS approach: each image runs with its own true caption "
+    "length and no padding mask. A larger batch still averages the image losses before the same optimizer "
+    "update. This can avoid a slower masked-attention kernel and wasted caption work. Leave caption padding "
+    "at 0 for this path. Alternatively, caption padding rounds a masked batch to a token multiple (try 16), "
+    "reducing compiler shapes at the cost of extra tokens. It is a separate experiment, not Fizgig's MOSS default.\n\n"
+    "Compile is the existing shared toggle. MOSS's fast Inductor path requires the optional performance runtime: "
+    "PyTorch 2.15, matching torchvision and Triton. Install with python tools/bootstrap_environment.py "
+    "--performance-runtime. Existing launchers keep using the same environment. Compile needs zero swapped "
+    "blocks and ordinary GPU gradient checkpointing. Inside compiles the checkpoint too (Fizgig's MOSS choice); "
+    "Outside leaves checkpointing eager and may fit higher resolutions more easily. New shapes take time to compile.\n\n"
+    "cuDNN preferred is an optional SDPA backend preference, with other PyTorch kernels available as fallbacks. "
+    "Its initial shape planning can be slow. It applies only to MOSS SDPA, not Sage/Flash attention. These options "
+    "do not turn off DOP, depth, REPA or EMA; those still add their own training cost. Actual speed requires a GPU "
+    "measurement. Matching these options alone does not reproduce another trainer's entire recipe or RNG sequence."
+)
+OPTIMIZER_DETAILS = (
+    "Muon is orthogonalized momentum, with same-shaped matrix updates batched as in Fizgig. Use the dedicated "
+    "Muon choice to get its defaults (match_rms_adamw scaling, weight_decay=0.01, momentum=0.95, nesterov=True, "
+    "ns_steps=5). Start with learning rate 0.0001; the ordinary LR scheduler still applies. It is available without "
+    "upgrading PyTorch.\n\n"
+    "Automagic4 is Ostris's experimental extension of Automagic3. It adapts its rate and reduces updates to "
+    "sensitive weights. Start at 0.000001, constant scheduler, zero warmup. Optional Optimizer Args include "
+    "min_lr, max_lr, sensitivity_quantile=0.9 and step_target=0.1. The MOSS Automagic3 bound fields apply only to "
+    "Automagic3. Version 4 does not inherit those limits. Neither version guarantees better quality.\n\n"
+    "AdamW can also use fused=True in Optimizer Args on CUDA. This fuses AdamW's optimizer step; it does not "
+    "update weights during backward. Changing optimizer requires a fresh optimizer state. All existing "
+    "optimizer choices remain available. No latent or caption recaching is needed."
+)
 CHOICES = {
+    "moss_compile_checkpoint": ["inside", "outside"],
+    "moss_sdpa_backend": ["default", "cudnn preferred"],
     "moss_timestep_schedule": ["MOSS pretraining (default)", "Sigmoid + High (AI Toolkit)", "General timestep controls"],
     "moss_ema_device": ["training", "cpu"],
     "moss_sample_sampler": ["euler", "ddim"],
@@ -39,6 +102,14 @@ CHOICES = {
 }
 PATHS = {"moss_dit_model", "moss_text_encoder", "moss_tokenizer_cache_dir", "moss_repa_cache_dir", "moss_sample_lora"}
 REPA_LABELS = {
+    "moss_depth_anchor_enabled": "Enable structural depth guidance",
+    "moss_weight_noise_enabled": "Enable adapter weight noise",
+    "moss_unpadded_batches": "Unpadded image passes (Fizgig-style)",
+    "moss_clean_end_share": "Less-noisy training examples (%)",
+    "moss_fast_lora": "Fast BF16 LoRA compute (Fizgig-style)",
+    "moss_text_pad_multiple": "Caption padding multiple (0 = off)",
+    "moss_compile_checkpoint": "Checkpoint placement when compiling",
+    "moss_sdpa_backend": "MOSS SDPA backend preference",
     "moss_timestep_schedule": "Training noise schedule",
     "moss_ema_enabled": "Use EMA smoothed checkpoints (optional)",
     "moss_ema_decay": "EMA smoothing", "moss_ema_device": "Store averaged adapter on",
@@ -55,6 +126,12 @@ REPA_LABELS = {
     "moss_repa_cache_dir": "REPA feature cache folder",
 }
 TIMESTEP_DETAILS = (
+    "Optional Clean-end share matches Fizgig's noise-distribution adjustment. Blank keeps our default. "
+    "40 means about 40% of training examples below half noise. 30:7:60 uses 30% for epochs 1-7, then 60%. "
+    "30:7:60:8 slides from 30% at epoch 7 to 60% at epoch 8. Adding :3 keeps the higher share afterward "
+    "and uses the lower share every third epoch after the slide, at half the optimizer learning rate. "
+    "The five-part refresh needs a fixed-rate optimizer such as Muon or AdamW. The share replaces Logit mean "
+    "while keeping standard deviation, cutoff and uniform ratio. It only applies to MOSS pretraining.\n\n"
     "This chooses how noisy the training examples are. At high noise, the model must recover the overall "
     "subject and composition; at low noise, more of the picture is visible and it practices finer corrections. "
     "A schedule changes how often each difficulty is practiced. It does not change the dataset resolution.\n\n"
@@ -172,6 +249,14 @@ SAMPLE_DETAILS = (
     "This uses the selected checkpoint throughout generation; it does not switch between SFT and Base models."
 )
 HELP = {
+    "moss_depth_anchor_enabled": "Turn structural depth guidance on or off. Off adds no depth loss, regardless of the saved strength below. Turning it on first fills a starting strength of 0.01. Depth can add substantial time and VRAM use.",
+    "moss_weight_noise_enabled": "Turn adapter weight noise on or off. Off adds no noise, regardless of the saved strength below. Turning it on first fills 0.0125 as an experimental starting value; this is not a proven MOSS optimum.",
+    "moss_unpadded_batches": "Process each image with its own caption length and no padding mask, as current Fizgig MOSS does. Batch losses still combine into the same update. Keep Caption padding at 0; click ? for details.",
+    "moss_clean_end_share": "How often MOSS practices with a clearer version of a training image. 40 means about 40% of examples have less than half noise; the other 60% are noisier. A single number stays fixed for the whole run. Blank keeps the original model schedule (about 11%). Click ? for Fizgig's optional changing schedule.",
+    "moss_fast_lora": "Keep FP32 trainable weights while calculating plain LoRA in BF16, using Fizgig's smaller-activation approach. Optional; click ? for requirements and tradeoffs.",
+    "moss_text_pad_multiple": "0 keeps exact caption lengths and is required for Unpadded image passes. Alternatively try 16 with masked batches to reduce compiler shape changes. Extra padding is masked; no recaching needed.",
+    "moss_compile_checkpoint": "Inside follows Fizgig's MOSS compilation placement. Outside may reduce activation memory at higher resolutions. Used only when Compile is on.",
+    "moss_sdpa_backend": "Default leaves PyTorch's choice unchanged. cuDNN preferred tries cuDNN with other SDPA backends available as fallbacks; new shapes take time to plan.",
     "moss_timestep_schedule": "Keep MOSS pretraining for the existing default, or try the community Sigmoid + High recipe. This changes which noise levels are practiced. No recaching is needed. Click ? for the differences.",
     "moss_ema_enabled": "Average recent adapter weights for smoother samples and LoRA exports. Optional and off by default. This is weight smoothing, not quality protection. Click ? for memory and resume details.",
     "moss_ema_decay": "Try 0.98. Each update mixes 2% of the latest adapter into the previous average. Higher smoothing reacts more slowly and may lag behind new details. No recaching is needed.",

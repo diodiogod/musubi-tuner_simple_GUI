@@ -9,6 +9,10 @@ def normalize_path(p):
 def add_arg(cmd, key, value, is_path=False):
     if value is None:
         return
+    if not is_path:
+        from .numeric_settings import decimal_setting, decimal_text
+        if decimal_setting(key.removeprefix("--")):
+            value = decimal_text(value)
     clean = str(value).strip()
     if clean in ("", "False"):
         return

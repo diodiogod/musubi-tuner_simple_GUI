@@ -112,11 +112,11 @@ class LoHaModule(torch.nn.Module):
         scale = torch.tensor(self.scale, dtype=self.hada_w1_a.dtype, device=self.hada_w1_a.device)
         return HadaWeight.apply(self.hada_w1_a, self.hada_w1_b, self.hada_w2_a, self.hada_w2_b, scale)
 
-    def forward(self, x):
+    def forward(self, x, base_output=None):
         if not self.enabled:
-            return self.org_forward(x)
+            return self.org_forward(x) if base_output is None else base_output
 
-        org_forwarded = self.org_forward(x)
+        org_forwarded = self.org_forward(x) if base_output is None else base_output
 
         # module dropout
         if self.module_dropout is not None and self.training:

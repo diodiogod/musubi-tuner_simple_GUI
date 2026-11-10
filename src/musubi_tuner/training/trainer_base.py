@@ -186,7 +186,7 @@ class NetworkTrainer:
         if args.optimizer_args is not None and len(args.optimizer_args) > 0:
             for arg in args.optimizer_args:
                 key, value = arg.split("=")
-                value = ast.literal_eval(value)
+                value = value if optimizer_type == "muon" and key == "adjust_lr_fn" and value in {"original", "match_rms_adamw", "spectral_unclamped"} else ast.literal_eval(value)
                 optimizer_kwargs[key] = value
 
         lr = args.learning_rate
@@ -239,11 +239,17 @@ class NetworkTrainer:
             optimizer_class = transformers.optimization.Adafactor
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
-        elif optimizer_type == "automagic3":
+        elif optimizer_type == "muon":
+            from musubi_tuner.optimizers.muon import Muon
+            optimizer_class = Muon
+            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+        elif optimizer_type in {"automagic3", "automagic4"}:
             from musubi_tuner.optimizers.automagic3 import Automagic3
+            from musubi_tuner.optimizers.automagic4 import Automagic4
             if getattr(args, "full_bf16", False) or getattr(args, "full_fp16", False):
-                raise ValueError("Automagic3 needs FP32 adapter weights. Disable full_bf16/full_fp16; mixed precision BF16 remains supported.")
-            optimizer_class = Automagic3
+                raise ValueError("Automagic needs FP32 adapter weights. Disable full_bf16/full_fp16; mixed precision BF16 remains supported.")
+            optimizer_class = Automagic4 if optimizer_type == "automagic4" else Automagic3
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
         elif optimizer_type == "AdamW".lower():
@@ -304,9 +310,10 @@ class NetworkTrainer:
         Unified API to get any scheduler from its name.
         """
         from musubi_tuner.optimizers.automagic3 import Automagic3, Automagic3Scheduler
-        if isinstance(optimizer, Automagic3):
+        from musubi_tuner.optimizers.automagic4 import Automagic4
+        if isinstance(optimizer, (Automagic3, Automagic4)):
             if args.lr_scheduler != "constant" or args.lr_warmup_steps:
-                raise ValueError("Automagic3 controls its own learning rate. Choose the constant scheduler with zero warmup.")
+                raise ValueError("Automagic controls its own learning rate. Choose the constant scheduler with zero warmup.")
             return Automagic3Scheduler(optimizer)
 
         # if schedulefree optimizer, return dummy scheduler
@@ -2286,6 +2293,10 @@ class NetworkTrainer:
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_logs = dict(logs)
+                # DOWNSTREAM: GUI charts. Reuse the already-read CPU loss; no
+                # additional tensor synchronization or optimizer changes.
+                progress_logs["loss/current"] = current_loss
+                progress_logs["lr"] = lr_scheduler.get_last_lr()[0]
                 for key, value in loss_metrics.items():
                     try:
                         progress_logs[key] = float(value.detach().item() if torch.is_tensor(value) else value)
