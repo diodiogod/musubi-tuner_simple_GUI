@@ -1295,7 +1295,7 @@ class MusubiTunerGUI:
             automatic_frame,
             "auto_training_settings_summary",
             "Include Live Settings Summary in Training Metadata",
-            "When enabled, the GUI generates a fresh concise hyperparameter summary for every normal run and every standard staged-training step. It replaces the previous generated summary instead of accumulating copies. Your personal note above remains unchanged.",
+            "On by default for new recipes. Includes batch/accumulation, optimizer, noise schedule, precision and active experimental features for every run and standard stage. It replaces the previous generated summary instead of accumulating copies. Your personal note above remains unchanged.",
             kind="checkbox",
             command=self._refresh_training_notes_preview,
         )
@@ -8004,151 +8004,23 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     @staticmethod
     def _dataset_note_label(path):
-        path = str(path or "").strip()
-        if not path:
-            return ""
-        source = Path(path)
-        label = source.stem
-        if not source.is_file():
-            return label
-        try:
-            import tomllib
-
-            payload = tomllib.loads(source.read_text(encoding="utf-8"))
-            resolutions = []
-
-            def collect(value):
-                if isinstance(value, dict):
-                    for key, child in value.items():
-                        if key == "resolution":
-                            if isinstance(child, (list, tuple)):
-                                text = "×".join(str(part) for part in child)
-                            else:
-                                text = str(child)
-                            if text and text not in resolutions:
-                                resolutions.append(text)
-                        collect(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        collect(child)
-
-            collect(payload)
-            if resolutions:
-                label += f" ({'/'.join(resolutions)})"
-        except (OSError, UnicodeError, ValueError):
-            pass
-        return label
+        from modern_gui.training_notes import _dataset_note_label
+        return _dataset_note_label(path)
 
     @classmethod
     def _training_settings_summary(cls, settings):
-        settings = effective_regularization(settings)
-        def enabled_number(key):
-            try:
-                value = float(settings.get(key) or 0)
-            except (TypeError, ValueError):
-                return None
-            return f"{value:g}" if value > 0 else None
-
-        parts = [str(settings.get("training_mode") or "Training")]
-        output_name = str(settings.get("output_name") or "").strip()
-        if output_name:
-            parts.append(f"run={output_name}")
-
-        network = str(settings.get("network_type") or "LoRA")
-        rank = str(settings.get("network_dim_low") or "").strip()
-        alpha = str(settings.get("network_alpha_low") or "").strip()
-        network_text = network
-        if rank:
-            network_text += f" rank {rank}"
-        if alpha:
-            network_text += f" α{alpha}"
-        parts.append(network_text)
-
-        stages = [item for item in settings.get("staged_training_config", []) if item.get("enabled")]
-        if settings.get("use_staged_training") and stages and not settings.get("stage_type"):
-            stage_notes = []
-            for stage in stages:
-                label = cls._stage_label_text(stage)
-                stage_type = stage.get("type", "standard")
-                limit = cls._staged_limit_text(stage)
-                stage_notes.append(f"{label} {limit}" + (" face" if stage_type == "face_refinement" else ""))
-            parts.append("staged " + " → ".join(stage_notes))
-        else:
-            steps = str(settings.get("max_train_steps") or "").strip()
-            epochs = str(settings.get("max_train_epochs") or "").strip()
-            if epochs:
-                parts.append(f"{epochs} epochs")
-            elif steps:
-                parts.append(f"{steps} steps")
-            dataset = cls._dataset_note_label(settings.get("dataset_config"))
-            if dataset:
-                parts.append(f"data={dataset}")
-
-        learning_rate = str(settings.get("learning_rate") or "").strip()
-        if learning_rate:
-            parts.append(f"lr={learning_rate}")
-        optimizer = str(settings.get("optimizer_type") or "").strip()
-        if optimizer:
-            parts.append(f"opt={optimizer}")
-        if settings.get("minimax_h3_foundation_lora_enabled"):
-            foundation = str(settings.get("minimax_h3_foundation_lora") or "").strip()
-            strength = str(settings.get("minimax_h3_foundation_lora_multiplier") or "1.0").strip()
-            if foundation:
-                parts.append(f"foundation={Path(foundation).name}@{strength}")
-
-        if settings.get("dop_enabled"):
-            strength = enabled_number("dop_loss_weight")
-            class_word = str(settings.get("dop_class_word") or "").strip()
-            dop_text = f"DOP {strength or '?'}"
-            if class_word:
-                dop_text += f" ({class_word})"
-            parts.append(dop_text)
-
-        if str(settings.get("training_mode")) in ("Krea 2", "MiniMax H3 (Experimental)"):
-            depth = enabled_number("krea2_depth_anchor_weight")
-            if depth:
-                depth_text = f"depth {depth}@{settings.get('krea2_depth_anchor_input_size') or 518}"
-                depth_text += " GPU" if settings.get("krea2_keep_depth_helpers_on_gpu") else " offload"
-                parts.append(depth_text)
-            noise = enabled_number("krea2_weight_noise_sigma")
-            if noise:
-                parts.append(f"weight-noise {noise} {settings.get('krea2_weight_noise_mode') or 'relative'}")
-            projector = str(settings.get("krea2_projector_diff") or "").strip()
-            if projector and str(settings.get("training_mode")) == "Krea 2":
-                strength = str(settings.get("krea2_projector_diff_strength") or "1").strip()
-                parts.append(f"projector={Path(projector).name}@{strength}")
-
-        if str(settings.get("training_mode")) == moss_settings.MODE:
-            if settings.get("moss_repa_enabled"):
-                parts.append(f"REPA {settings.get('moss_repa_weight', '0.5')}@layer{settings.get('moss_repa_block', '8')}")
-            if settings.get("moss_ema_enabled"):
-                parts.append(f"EMA {settings.get('moss_ema_decay', '0.98')}")
-            depth = enabled_number("moss_depth_anchor_weight")
-            if depth:
-                depth_text = f"depth {depth}@{settings.get('moss_depth_anchor_input_size') or 518}"
-                depth_text += " GPU" if settings.get("moss_keep_depth_helpers_on_gpu") else " offload"
-                parts.append(depth_text)
-            noise = enabled_number("moss_weight_noise_sigma")
-            if noise:
-                parts.append(f"weight-noise {noise} {settings.get('moss_weight_noise_mode') or 'relative'}")
-
-        blocks = str(settings.get("blocks_to_swap") or "").strip()
-        if blocks and blocks != "0":
-            parts.append(f"swap={blocks}")
-        return "Settings: " + "; ".join(parts)
+        from modern_gui.training_notes import training_settings_summary
+        return training_settings_summary(settings)
 
     @classmethod
     def _effective_training_comment(cls, settings):
-        custom = str(settings.get("training_comment") or "").strip()
-        if not settings.get("auto_training_settings_summary"):
-            return custom
-        generated = cls._training_settings_summary(settings)
-        return "\n\n".join(part for part in (custom, generated) if part)
+        from modern_gui.training_notes import effective_training_comment
+        return effective_training_comment(settings)
 
     def _refresh_training_notes_preview(self, _event=None):
         try:
             settings = self.get_settings()
-            enabled = bool(settings.get("auto_training_settings_summary"))
+            enabled = bool(settings.get("auto_training_settings_summary", True))
             preview = (
                 self._training_settings_summary(settings)
                 if enabled
@@ -8314,7 +8186,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             "krea2_depth_anchor_input_size": "518", "krea2_depth_anchor_gradient_weight": "0.5", "krea2_depth_anchor_grad_checkpoint": True,
             "krea2_keep_depth_helpers_on_gpu": False, "krea2_depth_vae_device": "training",
             "output_dir": "", "output_name": "my-lora",
-            "training_comment": "", "auto_training_settings_summary": False,
+            "training_comment": "", "auto_training_settings_summary": True,
             "learning_rate": "2e-4", "max_train_epochs": "10", "save_every_n_epochs": "1", "save_every_n_steps": "", "seed": "42",
             "network_type": "LoRA", "lokr_factor": "", "network_dim_low": "32", "network_alpha_low": "16", "network_dim_high": "", "network_alpha_high": "",
             "optimizer_type": "adamw8bit", "max_grad_norm": "1.0", "optimizer_args": "", "lr_scheduler": "cosine",

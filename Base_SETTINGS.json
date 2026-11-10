@@ -18,6 +18,7 @@
     "minimax_h3_convrot_bwd_mode": "bf16",
     "output_dir": "C:/ComfyUI_windows_portable/ComfyUI/models/loras/WAN2.2",
     "output_name": "my-lora",
+    "auto_training_settings_summary": true,
     "learning_rate": "1e-4",
     "max_train_epochs": "20",
     "save_every_n_epochs": "1",

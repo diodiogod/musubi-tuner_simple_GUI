@@ -337,6 +337,7 @@ def load_settings() -> dict[str, Any]:
     # interface offers. Supply them without overwriting saved user choices.
     guided_defaults = {
         "project_root": "",
+        "auto_training_settings_summary": True,
         "gradient_accumulation_steps": "1", "max_grad_norm": "1.0",
         "network_type": "LoRA", "lokr_factor": "", "max_train_steps": "",
         "dop_enabled": False, "dop_trigger_word": "", "dop_class_word": "a person", "dop_loss_weight": "1.0",
@@ -539,6 +540,20 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
             "a nominal effective batch of 4 on one GPU. Partial buckets can contain fewer examples. "
             "Change the dataset batch size using the shortcut above. No recaching is needed."
         )
+    if key == "auto_training_settings_summary":
+        field.update(type="boolean", label="Add automatic training summary to LoRA comment")
+        field["help"] = "On by default for new recipes. Adds a concise record of batch size, accumulation, optimizer, noise schedule and active experimental features to the saved LoRA. Your personal note stays separate."
+        field["help_detail"] = (
+            "The GUI rebuilds this summary from the settings used for each run or standard training stage, "
+            "then includes it in the LoRA metadata beside your personal note. It records source batch sizes, "
+            "nominal effective batch per GPU, training settings and enabled features such as depth, DoP, "
+            "REPA, EMA or H3 quality protection. Disabled features and preview-only Turbo settings are omitted. "
+            "It does not change learning. Turn it off to save only your personal note. Existing recipes "
+            "explicitly saved with this option Off stay Off."
+        )
+    if key == "training_comment":
+        field["label"] = "Your LoRA comment"
+        field["help"] = "Your personal note, saved in the LoRA metadata. Use it for dataset decisions, intended strengths or reminders. The automatic settings summary is added separately and never replaces this text."
     if key == "max_grad_norm":
         field["label"] = "Gradient clipping (Max Grad Norm)"
         field["help"] = "Caps unusually large gradient spikes before an update. Keep 1.0 as a starting value; 0 disables clipping. This does not change batch size."

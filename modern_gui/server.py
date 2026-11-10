@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 from urllib.parse import parse_qs
 
 from modern_gui.commands import build_command_plan
+from modern_gui.training_notes import training_settings_summary
 from modern_gui.dataset_documents import (
     DocumentConflictError,
     add_dataset,
@@ -83,6 +84,7 @@ STATIC_ROOT = Path(__file__).resolve().parent / "static"
 LOCAL_ACTION_POST_PATHS = frozenset(
     {
         "/api/settings",
+        "/api/training-summary",
         "/api/dataset/save",
         "/api/dataset/toggle-disabled",
         "/api/dataset/media",
@@ -410,6 +412,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 )
             if self.path == "/api/settings/validate":
                 return self._json(validate_training_settings(body.get("settings", {})))
+            if self.path == "/api/training-summary":
+                return self._json({"summary": training_settings_summary(body.get("settings", {}), dataset_text=body.get("dataset_text"))})
             if self.path == "/api/dataset/parse":
                 return self._json(summarize_document(body.get("text", ""), body.get("path", "")))
             if self.path == "/api/dataset/save":

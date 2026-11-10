@@ -544,6 +544,7 @@ function renderStartingPoint(host) {
 }
 
 function normalizeMossTimestepSchedule(settings){
+  settings.auto_training_settings_summary ??= true;
   for(const section of state.schema.sections||[]){
     for(const field of section.fields||[]){
       if(field.decimal&&Object.hasOwn(settings,field.key))settings[field.key]=canonicalDecimal(settings[field.key]);
@@ -1232,41 +1233,6 @@ async function saveTrainingPlan(){
   if(saved)renderPlanOverview();
   return saved;
 }
-function clientTrainingSettingsSummary(){
-  const settings=state.settings,parts=[settings.training_mode||"Training"],output=String(settings.output_name||"").trim();
-  if(output)parts.push(`run=${output}`);
-  let network=String(settings.network_type||"LoRA"),rank=String(settings.network_dim_low||"").trim(),alpha=String(settings.network_alpha_low||"").trim();
-  if(rank)network+=` rank ${rank}`;if(alpha)network+=` α${alpha}`;parts.push(network);
-  const stages=(settings.staged_training_config||[]).filter(stage=>stage.enabled!==false);
-  if(settings.use_staged_training&&stages.length&&!settings.stage_type){
-    parts.push(`staged ${stages.map((stage,index)=>`${planStageArtifactLabel(stage,index)} ${String(stage.steps||"").trim()?`${stage.steps} steps`:`${stage.epochs||"?"} epochs`}${stage.type==="face_refinement"?" face":""}`).join(" → ")}`);
-  }else{
-    const steps=String(settings.max_train_steps||"").trim(),epochs=String(settings.max_train_epochs||"").trim(),dataset=String(settings.dataset_config||"").split(/[\\/]/).pop()?.replace(/\.[^.]+$/,"");
-    if(epochs)parts.push(`${epochs} epochs`);else if(steps)parts.push(`${steps} steps`);
-    if(dataset)parts.push(`data=${dataset}`);
-  }
-  if(String(settings.learning_rate||"").trim())parts.push(`lr=${settings.learning_rate}`);
-  if(String(settings.optimizer_type||"").trim())parts.push(`opt=${settings.optimizer_type}`);
-  if(settings.minimax_h3_foundation_lora_enabled&&String(settings.minimax_h3_foundation_lora||"").trim())parts.push(`foundation=${String(settings.minimax_h3_foundation_lora).split(/[\\/]/).pop()}@${settings.minimax_h3_foundation_lora_multiplier||1}`);
-  if(settings.dop_enabled){
-    let dop=`DOP ${Number(settings.dop_loss_weight)>0?Number(settings.dop_loss_weight):"?"}`;
-    if(String(settings.dop_class_word||"").trim())dop+=` (${settings.dop_class_word})`;parts.push(dop);
-  }
-  if(["Krea 2","MiniMax H3 (Experimental)"].includes(settings.training_mode)){
-    if(settings.krea2_depth_anchor_enabled!==false&&Number(settings.krea2_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.krea2_depth_anchor_weight)}@${settings.krea2_depth_anchor_input_size||518}${settings.krea2_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
-    if(settings.krea2_weight_noise_enabled!==false&&Number(settings.krea2_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.krea2_weight_noise_sigma)} ${settings.krea2_weight_noise_mode||"relative"}`);
-    if(settings.training_mode==="Krea 2"&&String(settings.krea2_projector_diff||"").trim())parts.push(`projector=${String(settings.krea2_projector_diff).split(/[\\/]/).pop()}@${settings.krea2_projector_diff_strength||1}`);
-  }
-  if(settings.training_mode==="MOSS-Image (Experimental)"){
-    if(settings.moss_depth_anchor_enabled!==false&&Number(settings.moss_depth_anchor_weight)>0)parts.push(`depth ${Number(settings.moss_depth_anchor_weight)}@${settings.moss_depth_anchor_input_size||518}${settings.moss_keep_depth_helpers_on_gpu?" GPU":" offload"}`);
-    if(settings.moss_weight_noise_enabled!==false&&Number(settings.moss_weight_noise_sigma)>0)parts.push(`weight-noise ${Number(settings.moss_weight_noise_sigma)} ${settings.moss_weight_noise_mode||"relative"}`);
-  }
-  const blocks=String(settings.blocks_to_swap||"").trim();if(blocks&&blocks!=="0")parts.push(`swap=${blocks}`);
-  const saveEpochs=String(settings.save_every_n_epochs||"").trim(),saveSteps=String(settings.save_every_n_steps||"").trim();
-  if(saveEpochs&&saveEpochs!=="0")parts.push(`save every ${saveEpochs} epoch${Number(saveEpochs)===1?"":"s"}`);
-  if(saveSteps&&saveSteps!=="0")parts.push(`save every ${saveSteps} steps`);
-  return `Settings: ${parts.join("; ")}`;
-}
 function renderSamplingEstimate(){
   const host=$("#sampling-epoch-estimate");if(!host)return;
   const estimate=state.samplingEstimate;
@@ -1287,9 +1253,28 @@ async function estimateSamplingSteps(){
     state.samplingEstimate=payload;renderSamplingEstimate();
   }catch(error){state.samplingEstimate=null;renderSamplingEstimate();toast(error.message,"error")}
 }
+let trainingSummaryTimer, trainingSummarySignature="", trainingSummaryRequest=0;
 function renderTrainingSummary(){
-  const summary=clientTrainingSettingsSummary();
-  $("#training-summary").textContent=state.settings.auto_training_settings_summary===false?`Automatic summary is off.\n\nPreview: ${summary}`:summary;
+  const settings=state.settings,host=$("#training-summary");
+  const sameDataset=state.dataset&&sameLocalPath(state.dataset.path,settings.dataset_config);
+  const body={settings};
+  if(sameDataset&&!state.datasetRawDirty)body.dataset_text=state.dataset.text;
+  const signature=JSON.stringify(body);
+  if(signature===trainingSummarySignature)return;
+  trainingSummarySignature=signature;
+  const request=++trainingSummaryRequest;
+  clearTimeout(trainingSummaryTimer);
+  host.textContent="Updating settings summary…";
+  trainingSummaryTimer=setTimeout(async()=>{
+    try{
+      const payload=await api("/api/training-summary",{method:"POST",body:signature});
+      if(request!==trainingSummaryRequest)return;
+      host.textContent=settings.auto_training_settings_summary===false?`Automatic summary is off.\n\nPreview: ${payload.summary}`:payload.summary;
+    }catch(error){
+      if(request!==trainingSummaryRequest)return;
+      trainingSummarySignature="";host.textContent=`Could not update summary: ${error.message}`;
+    }
+  },200);
 }
 let libraryEntries=[];
 async function openPromptLibrary(){
@@ -1652,7 +1637,7 @@ function renderDataset(payload, selected = state.selectedDataset) {
   renderIssues(payload.issues||[]);
   setDatasetTab(state.selectedDataset<0&&state.datasetTab==="media"?"settings":state.datasetTab,{load:false});
   setDatasetDirty(state.datasetDirty);
-  renderRecipeBatchSummary();
+  renderRecipeBatchSummary();renderTrainingSummary();
 }
 function renderDatasetRail(){
   const payload=state.dataset,host=$("#dataset-list"),defaults=$("#dataset-defaults");
@@ -1875,7 +1860,7 @@ async function persistDatasetFormDraft({announce=false,rerender=false}={}){
   const changed=beforeText!==(payload.text||"");setDatasetDirty(wasDirty||changed);renderDatasetRail();renderDatasetHead();renderDatasetOverview();renderIssues(payload.issues||[]);
   if(rerender)renderDataset(payload,selected);
   if(announce)toast(changed?"Settings applied to the TOML draft. Save when ready.":"No TOML changes were needed.");
-  renderRecipeBatchSummary();
+  renderRecipeBatchSummary();renderTrainingSummary();
   return payload;
 }
 async function parseDatasetRawDraft({announce=false}={}){
