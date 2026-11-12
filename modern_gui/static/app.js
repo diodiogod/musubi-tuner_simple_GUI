@@ -2324,8 +2324,13 @@ function renderSampleSources(){
   const current=state.settings.output_name||"Current run",sources=state.sampleSources||[],summary=$("#sample-source-summary"),chips=$("#sample-source-chips");
   if(summary){summary.textContent=current;summary.title=current}
   if($("#sample-source-scope"))$("#sample-source-scope").value=state.sampleIncludeSources?"added":"current";
-  if($("#sample-source-count"))$("#sample-source-count").textContent=state.sampleIncludeSources?`${(state.sampleActiveSources||[]).length} added folder${state.sampleActiveSources?.length===1?"":"s"} included`:`${sources.length} saved folder${sources.length===1?"":"s"} available`;
-  if(chips)chips.innerHTML=[`<span class="sample-source-chip current">${esc(current)}</span>`,...sources.map(source=>`<span class="sample-source-chip">${esc(source.label||source.path)}</span>`)].join("");
+  const selected=state.sampleIncludeSources?sources.filter(source=>(state.sampleActiveSources||[]).includes(source.path)):[];
+  const count=$("#sample-source-count");if(count){count.hidden=selected.length>0;count.textContent=`${sources.length} saved folder${sources.length===1?"":"s"} available`}
+  if(chips){
+    chips.hidden=!selected.length;
+    chips.innerHTML=selected.length?`<button type="button" class="sb-source-summary" title="${esc(["Current run",...selected.map(source=>`${source.label||source.path} · ${source.path}`)].join("\n"))}" aria-label="Preview sources: current run and ${esc(selected.map(source=>source.label||source.path).join(", "))}. Click to choose folders."><span>Comparing: Current run +</span><span class="sb-source-name">${esc(selected[0].label||selected[0].path)}</span>${selected.length>1?`<span class="sb-source-more">+${selected.length-1} more</span>`:""}</button>`:"";
+    chips.querySelector("button")?.addEventListener("click",openSampleSources);
+  }
   const list=$("#sample-source-list");if(!list)return;const focusedSource=document.activeElement?.dataset.useSampleSource;
   list.innerHTML=sources.length?sources.map(source=>`<div class="sample-source-row ${source.exists===false?"missing":""}"><label class="sb-source-choice"><input type="checkbox" data-use-sample-source="${esc(source.path)}" ${state.sampleIncludeSources&&(state.sampleActiveSources||[]).includes(source.path)?"checked":""} aria-label="Include ${esc(source.label||source.path)}"><span><strong>${esc(source.label||source.path)}</strong><small>${esc(source.path)} · ${source.exists===false?"Folder not found":`${source.count||0} sample files`}</small></span></label><button class="text-action" data-remove-sample-source="${esc(source.path)}">Remove</button></div>`).join(""):"<p class=\"sample-source-empty\">No earlier folders added yet. The current run is always included.</p>";
   list.querySelectorAll("[data-use-sample-source]").forEach(input=>input.onchange=()=>{state.sampleActiveSources=(state.sampleActiveSources||[]).filter(path=>path!==input.dataset.useSampleSource);if(input.checked)state.sampleActiveSources.push(input.dataset.useSampleSource);state.sampleIncludeSources=state.sampleActiveSources.length>0;resetSampleComparison();loadSamples().catch(error=>toast(error.message))});
@@ -2343,7 +2348,7 @@ async function loadSamples() {
   p.groups=SampleBrowser.orderedGroups(p);
   const changed=JSON.stringify(state.samples)!==JSON.stringify(p);
   const playing=[...document.querySelectorAll('#compare-stage video,#sample-preview-video')].some(video=>!video.paused);
-  if(changed&&(playing||["sb-grouping","sb-size"].includes(document.activeElement?.id))){samplesRefreshPending=true;return}
+  if(changed&&(playing||$("#wipe-stage")?.classList.contains("is-wipe-dragging")||["sb-grouping","sb-size"].includes(document.activeElement?.id))){samplesRefreshPending=true;return}
   state.samples=p;state.sampleSources=sourcePayload.sources||[];renderSampleSources();
   if(!changed)return;
   SampleBrowser.renderRail();
@@ -2429,7 +2434,7 @@ function resetSampleComparison(){
   compareState.manualSelection=null;compareState.leftPath=null;compareState.rightPath=null;compareState.leftSequence=null;compareState.rightSequence=null;compareState.groupKey=null;compareState.videoPlaying=false;
   $$("#compare-stage video").forEach(video=>video.pause());
 }
-function flushSampleUpdates(){if(samplesRefreshPending&&!["sb-grouping","sb-size"].includes(document.activeElement?.id)&&!$$("#compare-stage video,#sample-preview-video").some(video=>!video.paused)){samplesRefreshPending=false;loadSamples().catch(()=>{})}}
+function flushSampleUpdates(){if(samplesRefreshPending&&!$("#wipe-stage")?.classList.contains("is-wipe-dragging")&&!["sb-grouping","sb-size"].includes(document.activeElement?.id)&&!$$("#compare-stage video,#sample-preview-video").some(video=>!video.paused)){samplesRefreshPending=false;loadSamples().catch(()=>{})}}
 function openSampleComparison(a,b){
   const index=state.samples.groups.findIndex(g=>g.items.some(i=>i.path===a.path)&&g.items.some(i=>i.path===b.path));
   compareState.manualSelection=index<0?[a.path,b.path]:null;compareState.leftPath=a.path;compareState.rightPath=b.path;compareState.leftSequence=null;compareState.rightSequence=null;compareState.pinA=true;SampleBrowser.setEditTarget("b");renderComparison(Math.max(0,index));
@@ -2460,6 +2465,8 @@ function renderComparison(index) {
     compareState.leftSequence=[a.source_label||"Current run",a.sequence_kind,a.sequence];compareState.rightSequence=[b.source_label||"Current run",b.sequence_kind,b.sequence];compareState.leftPath=a.path;compareState.rightPath=b.path;
     $$("#compare-stage .compare-tools button").forEach(x=>x.classList.toggle("active",x.dataset.mode===compareState.mode));
     $("#wipe-lock").style.display=compareState.mode==="wipe"?"":"none";
+    $("#wipe-lock").setAttribute("aria-pressed",String(compareState.locked));
+    $("#wipe-lock").title="Double-click the image to lock or unlock the divider. When locked, drag anywhere in the image to reposition it; it stays locked after release.";
     const media=(item,role)=>isVideo?`<video class="sync-video compare-media" data-video-role="${role}" src="${item.url}" preload="metadata" muted playsinline></video>`:`<img class="compare-media" data-video-role="${role}" src="${item.url}" alt="Version ${role.toUpperCase()}">`;
     host.style.setProperty("--compare-zoom",String(compareState.zoom));host.style.setProperty("--compare-origin-x",`${compareState.zoomOriginX}%`);host.style.setProperty("--compare-origin-y",`${compareState.zoomOriginY}%`);host.onwheel=event=>{event.preventDefault();zoomAt(event)};
     if(compareState.mode==="side"){
@@ -2471,6 +2478,7 @@ function renderComparison(index) {
     host.querySelectorAll("[data-open-comparison]").forEach(button=>button.onclick=event=>{event.stopPropagation();if(isVideo&&compareState.videoPlaying)$("#video-play").click();const target=button.dataset.openComparison==="a"?compareState.leftIndex:compareState.rightIndex;openSamplePreview(items[target],items,target)});
     const comparisonMedia=[...host.querySelectorAll(".compare-media")];comparisonMedia.forEach(item=>{
       item.addEventListener(isVideo?"loadedmetadata":"load",()=>requestAnimationFrame(fitComparisonHeight),{once:true});
+      if(compareState.mode==="wipe"){item.title="Drag to move the divider · double-click to lock or unlock · use the A/B labels to open full preview";return}
       item.classList.add("can-open-preview");item.title="Open full preview";
       item.addEventListener("click",event=>{
         event.stopPropagation();
@@ -2490,7 +2498,43 @@ function renderComparison(index) {
   const fitComparisonHeight=()=>{const host=$("#compare-viewport");if(!host)return;const media=[...host.querySelectorAll(".compare-media")],dimensions=media.map(item=>{const width=item.naturalWidth||item.videoWidth,height=item.naturalHeight||item.videoHeight;return width>0&&height>0?{width,height,ratio:width/height}:null}).filter(Boolean),fitTarget=compareState.mode==="side"?host.querySelector(".compare-image"):host.querySelector(".wipe-stage");if(!dimensions.length||!host.clientWidth||!fitTarget)return;const availableWidth=compareState.mode==="side"?Math.max(1,(host.clientWidth-12)/2):host.clientWidth,target=fitTarget.clientHeight;if(!target)return;dimensions.forEach((item,index)=>{const fitWidth=Math.min(availableWidth,target*item.ratio),fitHeight=fitWidth/item.ratio,element=media[index];element.style.setProperty("width",`${fitWidth}px`,`important`);element.style.setProperty("height",`${fitHeight}px`,`important`);element.style.setProperty("max-width",`${availableWidth}px`,`important`);element.style.setProperty("max-height",`${target}px`,`important`)})};
   const movePrompt=delta=>moveSamplePrompt(delta);
   const setWipe=value=>{compareState.wipe=Math.max(0,Math.min(100,value));const layer=$("#wipe-a"),line=$("#wipe-divider"),stage=$("#wipe-stage");if(layer)layer.style.clipPath=`inset(0 ${100-compareState.wipe}% 0 0)`;if(line)line.style.left=`${compareState.wipe}%`;stage?.setAttribute("aria-valuenow",String(Math.round(compareState.wipe)))};
-  function bindWipe(){const stage=$("#wipe-stage");if(!stage)return;let start=null;const move=e=>{if(compareState.locked)return;const point=e.touches?.[0]||e;const box=stage.getBoundingClientRect();setWipe((point.clientX-box.left)/box.width*100)};stage.addEventListener("pointermove",move);stage.addEventListener("pointerdown",e=>{e.preventDefault();move(e)});stage.addEventListener("dragstart",e=>e.preventDefault());stage.addEventListener("keydown",e=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});stage.addEventListener("dblclick",()=>{$("#wipe-lock").click()});stage.addEventListener("touchstart",e=>{start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true})}
+  function bindWipe(){
+    const stage=$("#wipe-stage");if(!stage)return;
+    let pointer=null,start=null;
+    const openLabel=e=>e.target.closest?.("[data-open-comparison]");
+    const showHandle=e=>{
+      const box=stage.getBoundingClientRect(),x=box.left+box.width*compareState.wipe/100,y=box.top+box.height/2;
+      stage.classList.toggle("wipe-handle-near",Math.hypot(e.clientX-x,e.clientY-y)<28);
+    };
+    const move=e=>{
+      if(openLabel(e)&&pointer===null){stage.classList.remove("wipe-handle-near");return}
+      if(!compareState.locked||pointer===e.pointerId){const box=stage.getBoundingClientRect();setWipe((e.clientX-box.left)/box.width*100)}
+      showHandle(e);
+    };
+    stage.addEventListener("pointermove",move);
+    stage.addEventListener("pointerleave",()=>stage.classList.remove("wipe-handle-near"));
+    stage.addEventListener("pointerdown",e=>{
+      if(e.button!==0||openLabel(e))return;
+      // Touch swipes retain their existing checkpoint/prompt navigation.
+      if(e.pointerType==="touch"){move(e);return}
+      e.preventDefault();pointer=e.pointerId;stage.setPointerCapture(pointer);
+      stage.classList.add("is-wipe-dragging");stage.focus({preventScroll:true});move(e);
+    });
+    const endDrag=e=>{
+      if(pointer!==e.pointerId)return;
+      if(e.type==="pointerup")move(e);
+      const captured=pointer;pointer=null;
+      stage.classList.remove("is-wipe-dragging","wipe-handle-near");
+      if(stage.hasPointerCapture(captured))stage.releasePointerCapture(captured);
+      flushSampleUpdates();
+    };
+    ["pointerup","pointercancel","lostpointercapture"].forEach(name=>stage.addEventListener(name,endDrag));
+    stage.addEventListener("dragstart",e=>e.preventDefault());
+    stage.addEventListener("keydown",e=>{if(e.target===stage&&["ArrowLeft","ArrowRight","Home","End"].includes(e.key)){e.preventDefault();setWipe(e.key==="Home"?0:e.key==="End"?100:compareState.wipe+(e.key==="ArrowLeft"?-2:2))}});
+    stage.addEventListener("dblclick",e=>{if(!openLabel(e)){e.preventDefault();$("#wipe-lock").click()}});
+    stage.addEventListener("touchstart",e=>{if(!openLabel(e))start={x:e.touches[0].clientX,y:e.touches[0].clientY}},{passive:true});
+    stage.addEventListener("touchend",e=>{if(!start)return;const dx=e.changedTouches[0].clientX-start.x,dy=e.changedTouches[0].clientY-start.y;start=null;if(Math.max(Math.abs(dx),Math.abs(dy))<40)return;if(Math.abs(dx)>Math.abs(dy))setVersion(compareState.rightIndex+(dx<0?1:-1));else movePrompt(dy<0?1:-1)},{passive:true});
+  }
   function bindVideoSync(host){
     const master=host.querySelector('video[data-video-role="b"]'),slave=host.querySelector('video[data-video-role="a"]'),play=$("#video-play"),progress=$("#video-progress"),time=$("#video-time"),mute=$("#video-mute"),loop=$("#video-loop"),note=$("#video-compare-note");
     if(!master||!slave)return;

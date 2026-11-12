@@ -23,6 +23,11 @@ Click **Reference A** or **Compare B** before choosing a thumbnail to change tha
 side. Turn off **A pinned** to compare neighboring checkpoints as B advances.
 The existing wipe, side-by-side, zoom, full-preview and synchronized-video tools
 remain available. The Refresh button preserves selections by file identity.
+Drag the bottom-right corner to resize either comparison view. The chosen height
+stays when changing views or checkpoints. In Wipe, double-click the image to lock
+or unlock the divider. Drag anywhere to reposition a locked divider; releasing
+the mouse leaves it locked. The circle appears only near its central handle or
+while dragging. Use the A/B labels to open a full preview from Wipe.
 
 **This run only** is the default scope. Previously added folders stay saved but
 are not mixed into the current run automatically. Choose **This run + selected
@@ -30,6 +35,8 @@ folders**, then check the folders to include in **Folders…**. This selection i
 separate from the saved folder list; removing a check does not delete its files
 or remove the saved folder. Switching the training output resets to the current
 run. Comparison remains possible across explicitly selected folders.
+A compact **Comparing: Current run + …** summary shows the selected folders;
+click it to review or change the selection. Longer lists show **+N more**.
 
 Where image metadata is unavailable, prompt descriptions come from saved
 training-job settings matching the output and generation time. The details panel

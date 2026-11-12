@@ -4,6 +4,7 @@
 .sb-run-summary{display:flex;align-items:center;gap:9px;min-width:0}.sb-scope-label{color:var(--muted);font-size:11px}.sb-run-summary strong{max-width:290px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
 #sample-source-scope,#sb-grouping{height:34px;padding:0 27px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px;max-width:100%}
 #sample-source-count{flex:1;color:var(--muted);font-size:10px;text-align:right}#sample-source-chips[hidden]{display:none}#samples .sample-source-bar .quiet{padding:7px 11px;font-size:11px}
+#sample-source-count[hidden]{display:none}#sample-source-chips{display:flex;flex:1;min-width:0;justify-content:flex-end}.sb-source-summary{display:flex;align-items:center;gap:4px;max-width:100%;min-width:0;padding:0;border:0;background:transparent;color:var(--muted);font-size:10px;cursor:pointer}.sb-source-summary>span{white-space:nowrap}.sb-source-name{max-width:190px;overflow:hidden;text-overflow:ellipsis;color:var(--soft)}.sb-source-more{color:var(--accent)}.sb-source-summary:hover{color:var(--text)}
 .sample-workspace[data-layout=gallery]{display:block}.sample-workspace[data-layout=gallery]>.sample-rail{display:none}
 .sample-workspace[data-layout=compare]{grid-template-columns:190px minmax(0,1fr)}#samples #compare-stage{min-width:0;padding:18px 20px}
 .sb-rail-snippet{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:10px;line-height:1.45;color:var(--muted);margin:5px 0}.sample-series strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sample-series small{font-size:10px}
@@ -39,3 +40,10 @@
 #samples .compare-image .sb-open-label{position:absolute;bottom:10px;left:10px;right:10px;padding:5px 8px;border-radius:5px;background:#000a;color:#fff;font-size:11px;text-align:left;z-index:3}
 
 .sb-rail-group-title{padding:9px 10px 3px;margin:6px 0 0;color:var(--muted);font-size:9px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}@media(max-width:800px){.sb-rail-group-title{display:none}}
+
+/* Leave the image clear until the pointer approaches the handle itself. */
+#samples .wipe-divider:after{opacity:0;pointer-events:none;transition:opacity .12s}
+#samples .wipe-handle-near .wipe-divider:after,#samples .is-wipe-dragging .wipe-divider:after,#samples .wipe-stage:focus-visible .wipe-divider:after{opacity:1}
+#samples .wipe-stage{cursor:ew-resize}#samples .is-wipe-dragging{cursor:grabbing}
+@media(max-width:1100px){.sb-source-name{max-width:120px}}
+@media(max-width:800px){#sample-source-chips{order:3;flex-basis:100%;justify-content:flex-start}.sb-source-name{max-width:200px}}
