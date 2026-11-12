@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from sample_gallery import parse_training_sample_path
+from modern_gui.sample_metadata import describe_sample
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -111,24 +112,13 @@ def find_nearby_sample_sources(output_dir: str, output_name: str = "") -> list[d
     return result
 
 
-def _image_dimensions(path: Path) -> tuple[int, int] | None:
-    if path.suffix.lower() not in IMAGE_SUFFIXES:
-        return None
-    try:
-        from PIL import Image
-
-        with Image.open(path) as image:
-            return int(image.width), int(image.height)
-    except (ImportError, OSError, ValueError):
-        return None
-
-
 def discover_samples(
     output_dir: str,
     output_name: str = "",
     limit: int = 300,
     source_paths: list[dict[str, str] | str] | None = None,
     filename_prefix: str = "",
+    current_run_only: bool = False,
 ) -> dict[str, Any]:
     from preview_profiles import standalone_preview_root
     root = _resolved_directory(output_dir) if str(output_dir or "").strip() else standalone_preview_root()
@@ -152,7 +142,8 @@ def discover_samples(
     for source_index, (source_root, source_label) in enumerate(roots):
         for path in source_root.rglob("*"):
             try:
-                matches_run = not filename_prefix or path.name.startswith(tuple(filename_prefix + delimiter for delimiter in (".", "-", "_")))
+                prefix = filename_prefix or (output_name if current_run_only and source_root == search_root and search_root == root else "")
+                matches_run = not prefix or path.name.startswith(tuple(prefix + delimiter for delimiter in (".", "-", "_")))
                 if matches_run and path.is_file() and path.suffix.lower() in SAMPLE_SUFFIXES:
                     candidates.append((path.stat().st_mtime, source_index, source_label, path))
             except OSError:
@@ -172,11 +163,13 @@ def discover_samples(
             "media_kind": "video" if path.suffix.lower() in VIDEO_SUFFIXES else "image",
             "source_index": source_index,
             "source_label": source_label,
+            "source_path": str(roots[source_index][0]),
         }
+        item.update(describe_sample(path, parsed))
         if parsed is None:
             ungrouped.append(item)
             continue
-        dimensions = _image_dimensions(path)
+        dimensions = (item["width"], item["height"]) if item.get("width") and item.get("height") else None
         item.update(
             {
                 "prefix": parsed["prefix"],
@@ -193,7 +186,7 @@ def discover_samples(
             dimension_key = f"{dimensions[0]}x{dimensions[1]}" if dimensions else "unknown"
             key = "|".join(
                 (
-                    f"prompt:{parsed.get('prompt_index')}",
+                    f"prompt:{item.get('prompt_identity') or parsed.get('prompt_index')}",
                     f"seed:{parsed.get('seed') or ''}",
                     f"tail:{parsed.get('tail') or ''}",
                     f"kind:{parsed['sequence_kind']}",
@@ -202,7 +195,7 @@ def discover_samples(
                 )
             )
         else:
-            key = parsed["group_key"]
+            key = parsed["group_key"] + (item.get("prompt_identity", ""), str(dimensions), parsed["sequence_kind"])
         groups.setdefault(key, []).append(item)
     grouped = []
     for key, items in groups.items():
@@ -227,6 +220,8 @@ def discover_samples(
                 "source_labels": list(dict.fromkeys(item["source_label"] for item in items)),
                 "prompt_index": items[0].get("prompt_index"),
                 "seed": items[0].get("seed"),
+                "prompt_text": items[0].get("prompt_text", ""),
+                "prompt_name": items[0].get("prompt_name", ""),
             }
         )
     grouped.sort(key=lambda group: group["modified"], reverse=True)

@@ -123,6 +123,7 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 - `sample_prompts.py` / `training_notes.py` - validated Musubi prompt snapshots and reproducible generated run summaries
 - `recovery.py` - additive continuation versus verified exact failed-run recovery
 - `monitor.py` / `samples.py` - training metrics, GPU snapshots, and protected sample discovery/serving
+- `sample_metadata.py` / `static/sample-browser.js` - cached sample headers and saved-run prompt labels, grouped preview galleries, explicit source selection, and thumbnail-driven A/B comparison. See `docs/sampling_ui.md`.
 - `static/` - dependency-free responsive browser application
 - Preview rendering and opening share one resolved media item for fresh results and persisted covers. Verify media interactions after a page reload as well as immediately after generation; image/video sources must retain the same full-preview and keyboard behavior.
 - Keep the Active Run summary compact with metrics aligned to the right; hide unused auxiliary metrics and show their secondary statistics in click-open details. Compare its height and alignment with the existing layout when adding metrics.

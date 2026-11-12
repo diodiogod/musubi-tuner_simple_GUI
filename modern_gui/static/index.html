@@ -6,6 +6,7 @@
   <title>Musubi Studio</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/run-insights.css">
+  <link rel="stylesheet" href="/sample-browser.css">
 </head>
 <body>
   <div class="app-shell">
@@ -264,12 +265,12 @@
       </section>
 
       <section class="view" id="samples">
-        <header class="page-header compact"><div><p class="kicker">TRAINING SAMPLES</p><h1>Compare progress</h1><p>Choose a prompt, then move through epochs or steps without losing your place.</p></div><div class="header-actions"><div class="compare-tools"><button class="active" data-sample-mode="compare">Compare</button><button data-sample-mode="gallery">Gallery</button></div><button class="quiet" id="refresh-samples">Refresh</button></div></header>
-        <div class="sample-source-bar" id="sample-source-bar"><div><p class="kicker">COMPARISON SOURCES</p><strong id="sample-source-summary">Current run only</strong><small>Match the same prompt across this run and earlier LoRA versions.</small></div><div id="sample-source-chips" class="sample-source-chips"></div><button class="quiet" id="manage-sample-sources">Manage folders</button></div>
-        <div class="sample-workspace">
+        <header class="page-header compact"><div><p class="kicker">TRAINING SAMPLES</p><h1>Training previews</h1><p>Browse progress, choose two previews, and compare the details.</p></div><div class="header-actions"><div class="compare-tools"><button class="active" data-sample-mode="gallery" aria-pressed="true">Gallery</button><button data-sample-mode="compare" aria-pressed="false">Compare</button></div><button class="quiet" id="refresh-samples">Refresh</button></div></header>
+        <div class="sample-source-bar" id="sample-source-bar"><div class="sb-run-summary"><span class="sb-scope-label">Run</span><strong id="sample-source-summary">Current run</strong></div><label class="sr-only" for="sample-source-scope">Preview sources</label><select id="sample-source-scope"><option value="current">This run only</option><option value="added">This run + selected folders</option></select><span id="sample-source-count"></span><div id="sample-source-chips" hidden></div><button class="quiet" id="manage-sample-sources">Folders…</button></div>
+        <div class="sample-workspace" data-layout="gallery">
           <aside class="sample-rail"><div class="rail-heading"><strong>Prompts</strong><span id="sample-count">0</span></div><div id="sample-groups" class="sample-list empty">No samples found.</div></aside>
           <div class="compare-stage" id="compare-stage">
-            <div class="compare-empty"><span>◫</span><h2>Select a sample series</h2><p>Samples from the same prompt are grouped across training time.</p></div>
+            <div class="compare-empty"><span>◫</span><h2>Loading previews…</h2><p>Your saved images and videos will appear here.</p></div>
           </div>
         </div>
       </section>
@@ -316,7 +317,7 @@
     <div id="stage-editor-body" class="plan-editor-body"></div>
     <div class="plan-editor-actions"><span id="stage-editor-state">Included in staged training</span><button class="primary" data-close="stage-editor-dialog">Done</button></div>
   </dialog>
-  <dialog id="sample-preview-dialog" aria-label="Image and sample preview"><button class="dialog-close" data-close="sample-preview-dialog" aria-label="Close sample preview"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button><img id="sample-preview-image" draggable="false" alt="Sample preview"><video id="sample-preview-video" controls playsinline tabindex="0" hidden></video><div id="sample-preview-footer"><button id="sample-preview-prev" class="preview-nav preview-prev" type="button" aria-label="Previous image"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14.5 5-7 7 7 7"/></svg></button><p id="sample-preview-name"></p><button id="sample-preview-next" class="preview-nav preview-next" type="button" aria-label="Next image"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 5 7 7-7 7"/></svg></button></div></dialog>
+  <dialog id="sample-preview-dialog" aria-label="Image and sample preview"><button class="dialog-close" data-close="sample-preview-dialog" aria-label="Close sample preview"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg></button><details id="sample-preview-details" class="sb-preview-details"><summary>Details</summary><div id="sample-preview-details-content"></div></details><img id="sample-preview-image" draggable="false" alt="Sample preview"><video id="sample-preview-video" controls playsinline tabindex="0" hidden></video><div id="sample-preview-footer"><button id="sample-preview-prev" class="preview-nav preview-prev" type="button" aria-label="Previous image"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m14.5 5-7 7 7 7"/></svg></button><p id="sample-preview-name"></p><button id="sample-preview-next" class="preview-nav preview-next" type="button" aria-label="Next image"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.5 5 7 7-7 7"/></svg></button></div></dialog>
   <dialog id="sample-sources-dialog" class="sample-sources-dialog" aria-labelledby="sample-sources-title">
     <button class="dialog-close" data-close="sample-sources-dialog" aria-label="Close comparison folder manager">×</button>
     <p class="kicker">SAMPLE COMPARISON</p><h2 id="sample-sources-title">Add earlier sample folders</h2>
@@ -350,6 +351,7 @@
   <script src="/loss-chart.js"></script>
   <script src="/run-insights.js"></script>
   <script src="/training-batch.js"></script>
+  <script src="/sample-browser.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -290,7 +290,14 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 output_dir = unquote(query.get("output_dir", [""])[0])
                 output_name = unquote(query.get("output_name", [""])[0])
-                return self._json(discover_samples(output_dir, output_name, source_paths=load_sample_sources()))
+                include_sources = query.get("include_sources", ["1"])[0] != "0"
+                sources = load_sample_sources() if include_sources else []
+                if query.get("source_filter", ["0"])[0] == "1":
+                    chosen = set(query.get("source", []))
+                    sources = [source for source in sources if source["path"] in chosen]
+                return self._json(discover_samples(output_dir, output_name,
+                    source_paths=sources,
+                    current_run_only=query.get("run_only", ["0"])[0] == "1"))
             if parsed.path == "/api/samples/sources":
                 return self._json({"sources": sample_source_status()})
             if parsed.path == "/api/samples/sources/nearby":
