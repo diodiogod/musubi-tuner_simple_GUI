@@ -67,7 +67,7 @@ function go(view, {historyMode = "push", focusHeading = true} = {}) {
   if (view === "samples") loadSamples().catch(e => toast(e.message));
   if (view === "datasets") ensureDatasetLoaded();
   const heading = $(`#${view} h1`);
-  if (heading) { heading.tabIndex = -1; if(focusHeading)heading.focus({preventScroll:true}); document.title = `${heading.textContent} · Musubi Studio`; }
+  if (heading) { heading.tabIndex = -1; if(focusHeading)heading.focus({preventScroll:true}); document.title = `${heading.textContent} · Musubi Studio${state.app?.version?` · GUI v${state.app.version}`:""}`; }
   const target=view==="home"?`${location.pathname}${location.search}`:`${location.pathname}${location.search}#${view}`;
   if(historyMode!=="none"&&`${location.pathname}${location.search}${location.hash}`!==target)history[historyMode==="replace"?"replaceState":"pushState"](null,"",target);
   window.scrollTo(0, 0);
@@ -2731,7 +2731,12 @@ async function prepareFaceJob(row){if(!confirmWorkspaceReplacement("Load this fa
 
 async function initialize() {
   try {
-    const payload=await api("/api/settings");state.settings=payload.settings;state.schema=payload.schema;
+    const payload=await api("/api/settings");state.settings=payload.settings;state.schema=payload.schema;state.app=payload.app||null;
+    if(state.app?.version){
+      $("#gui-version-label").textContent=`GUI v${state.app.version} · Studio`;
+      $("#gui-version-label").title=`${state.app.name} v${state.app.version} · Based on Musubi Tuner`;
+      document.title=`${state.app.name} v${state.app.version} · Musubi Studio`;
+    }
     if(!state.settings.face_refinement_config?.pose_plan){const defaults=await api("/api/face/defaults");state.settings.face_refinement_config=state.settings.face_refinement_config||{};state.settings.face_refinement_config.pose_plan=defaults.pose_plan;state.settings.face_refinement_config.face_model_dir ||= defaults.face_model_dir}
     const savedTheme=readLocalPreference("musubi-theme",state.settings.appearance_mode||"Dark");
     applyTheme(savedTheme,{syncSetting:true});

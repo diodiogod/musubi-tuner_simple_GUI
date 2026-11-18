@@ -1,4 +1,23 @@
-# Musubi Tuner Simple GUI
+<a id="readme-top"></a>
+
+[![Discord](https://dcbadge.limes.pink/api/server/EwKE8KBDqD)](https://discord.gg/EwKE8KBDqD)
+[![Stars](https://img.shields.io/github/stars/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/stargazers)
+[![Issues](https://img.shields.io/github/issues/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/issues)
+[![Forks](https://img.shields.io/github/forks/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/network/members)
+[![GUI version](https://img.shields.io/badge/GUI_version-0.1.0-1f6feb?style=for-the-badge)](CHANGELOG.md)
+[![Ko-Fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/diogogo)
+
+# Musubi Tuner Simple GUI v0.1.0
+
+*An independently versioned GUI and experimental training fork based on
+[kohya-ss/Musubi Tuner](https://github.com/kohya-ss/musubi-tuner).* Includes the
+Classic GUI and the local web interface **Musubi Studio**. The GUI version
+identifies this project's releases; upstream provenance is tracked separately in
+[`UPSTREAM_BASELINE.json`](UPSTREAM_BASELINE.json).
+
+[Release notes](CHANGELOG.md) · [GUI versioning](docs/BUMP_SCRIPT_INSTRUCTIONS.md) ·
+[TagGUI Video](https://github.com/diodiogod/taggui-video) ·
+[TTS Audio Suite](https://github.com/diodiogod/ComfyUI_TTS_Audio_Suite)
 
 > **Experimental modern interface:** this fork also includes the parallel
 > local web workspace **Musubi Studio**. Run `LAUNCH_MODERN_GUI.bat` to try its

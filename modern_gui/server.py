@@ -77,6 +77,7 @@ from modern_gui.samples import (
 from modern_gui.sampling import estimate_steps_per_epoch
 from modern_gui.validation import require_valid_training_settings, validate_training_settings
 from modern_gui.settings import load_settings, save_settings, settings_schema
+from gui_version import __version__ as GUI_VERSION, GUI_TITLE, application_info
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,7 +136,7 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
             raise ValueError("History changed. Refresh the run and try again.")
         return job
 
-    server_version = "MusubiModernGUI/0.1"
+    server_version = f"MusubiSimpleGUI/{GUI_VERSION}"
 
     def _json(self, payload, status=HTTPStatus.OK):
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -230,10 +231,10 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/health":
-                return self._json({"ok": True, "root": str(ROOT)})
+                return self._json({"ok": True, "root": str(ROOT), "app": application_info()})
             if parsed.path == "/api/settings":
                 settings = load_settings()
-                return self._json({"settings": settings, "schema": settings_schema(settings)})
+                return self._json({"settings": settings, "schema": settings_schema(settings), "app": application_info()})
             if parsed.path == "/api/settings/defaults":
                 defaults_path = ROOT / "Base_SETTINGS.json"
                 defaults = json.loads(defaults_path.read_text(encoding="utf-8")) if defaults_path.is_file() else {}
@@ -963,7 +964,7 @@ def main():
                     webbrowser.open(url, new=0)
                 return
         raise
-    print(f"Musubi modern GUI is available at {url}")
+    print(f"{GUI_TITLE} · Modern UI is available at {url}")
     if not args.no_browser:
         webbrowser.open(url)
     try:

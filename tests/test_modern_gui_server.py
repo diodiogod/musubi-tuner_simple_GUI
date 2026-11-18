@@ -10,6 +10,7 @@ from PIL import Image
 
 from modern_gui import server as server_module
 from modern_gui.server import MusubiWebHandler
+from gui_version import __version__ as GUI_VERSION
 
 
 def request_json(url, payload=None):
@@ -61,6 +62,9 @@ def test_server_hosts_app_and_core_read_only_apis():
         server.server_close()
 
     assert health["ok"] is True
+    assert health["app"]["version"] == GUI_VERSION
+    assert health["app"]["release_tag"] == f"gui-v{GUI_VERSION}"
+    assert settings["app"] == health["app"]
     assert "schema" in settings
     assert parsed["datasets"][0]["resolution"] == [512, 512]
     assert "Musubi Studio" in html

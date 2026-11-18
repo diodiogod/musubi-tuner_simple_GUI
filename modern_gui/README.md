@@ -6,6 +6,12 @@ AI Toolkit, but it does not run AI Toolkit's trainer, configuration schema, or
 queue worker. Existing modules in `backends/` remain the authority for Musubi
 cache and training commands.
 
+Classic GUI and Musubi Studio share the independent GUI release version in
+[`gui_version.py`](../gui_version.py), shown in the window title or sidebar.
+See the [GUI changelog](../CHANGELOG.md) and
+[release instructions](../docs/BUMP_SCRIPT_INSTRUCTIONS.md). This numbering is
+separate from the bundled Musubi package and upstream baseline.
+
 The original Tkinter application is unchanged and remains available through
 `LAUNCH_GUI.bat`. The web interface can also open it from the sidebar for
 specialized inspection or comparison during the experimental period.

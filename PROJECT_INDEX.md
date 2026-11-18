@@ -88,6 +88,8 @@ The repo also carries upstream musubi-tuner docs for additional architectures an
 **`modern_gui/run_insights.py`** - lazy historical loss recovery, run file inventory, and separate local notes; `static/loss-chart.js` shares chart controls between history and the active run, while `static/run-insights.js` owns the run-review window. See `docs/run_history.md`.
 **`modern_gui/path_dialogs.py`** - Lightweight Modern UI native file/folder pickers; normalizes existing file paths into starting folders without loading the Classic GUI
 **`UPSTREAM_BASELINE.json`** - Machine-readable upstream Musubi baseline and protected downstream paths
+**`gui_version.py`** - Independent GUI release identity, shared by Classic and Modern UI; package metadata and upstream baseline remain separate
+**`scripts/bump_version_enhanced.py`** - Automated GUI-only version, README badge/title, and changelog updates; see `docs/BUMP_SCRIPT_INSTRUCTIONS.md` before release bumps
 **`README.md`** - Main project docs
 **`LAUNCH_GUI.bat`** - Windows launcher
 **`pyproject.toml`** - Package metadata and Python dependencies

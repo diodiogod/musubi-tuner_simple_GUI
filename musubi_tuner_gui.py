@@ -38,6 +38,7 @@ from job_performance import (
 )
 from modern_gui.recovery import effective_history_settings
 from process_lifecycle import ProcessTreeScope
+from gui_version import GUI_TITLE
 
 # --- Dependency Check ---
 try:
@@ -132,7 +133,7 @@ class ScrollableTab(ttk.Frame):
 class MusubiTunerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Musubi Tuner · LoRA Training Studio")
+        self.root.title(f"{GUI_TITLE} · Classic")
         self.root.minsize(980, 680)
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
@@ -7170,7 +7171,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_wan = (mode == "Wan 2.2")
         self.title_label.config(text="Musubi Tuner")
         self.subtitle_label.config(text=f"{mode} · LoRA training studio")
-        self.root.title(f"Musubi Tuner · {mode}")
+        self.root.title(f"{GUI_TITLE} · {mode}")
         if hasattr(self, "_minimax_training_preview_frame"):
             if mode == "MiniMax H3 (Experimental)":
                 self._minimax_training_preview_frame.pack(fill="x", padx=8, pady=(0, 8))
