@@ -5,6 +5,13 @@ Studio, and the fork's training extensions. GUI releases follow Semantic
 Versioning independently of upstream Musubi Tuner. Earlier development remains
 documented in Git history; inherited Musubi package numbers are not GUI releases.
 
+## [0.1.1] - 2026-11-20
+
+### Added
+
+- Rescale a standard LoRA for a new ComfyUI strength in Musubi Studio or Classic. For example, save a copy of a MOSS-Image LoRA tuned at 1.8 for use at 1.0 while preserving its learned weight tensors.
+- Find MOSS-Image Heal BF16 and ConvRot INT8 checkpoint downloads next to the model field in both GUIs.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added
