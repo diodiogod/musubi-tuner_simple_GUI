@@ -4,7 +4,10 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from backends.moss_settings import MODE as MOSS_MODE, DEFAULTS as MOSS_DEFAULTS, CHOICES as MOSS_CHOICES, PATHS as MOSS_PATHS, HELP as MOSS_HELP
+from backends.moss_settings import (
+    MODE as MOSS_MODE, DEFAULTS as MOSS_DEFAULTS, CHOICES as MOSS_CHOICES, PATHS as MOSS_PATHS, HELP as MOSS_HELP,
+    DIT_LABEL as MOSS_DIT_LABEL, HEAL_DOWNLOAD_HINT, HEAL_DOWNLOAD_LINKS,
+)
 from backends.regularization_switches import FEATURES, LABELS as SWITCH_LABELS, HELP as SWITCH_HELP, controlled_by, normalize_switches
 from backends.numeric_settings import normalize_numbers, decimal_setting
 
@@ -468,6 +471,8 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
             field["decimal"] = True
         from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS, TIMESTEP_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
+        if key == "moss_dit_model":
+            field.update(label=MOSS_DIT_LABEL, download_hint=HEAL_DOWNLOAD_HINT, download_links=HEAL_DOWNLOAD_LINKS)
         if controlled_by(key):
             field["enabled_by"] = controlled_by(key)
         from backends.moss_settings import PERFORMANCE_KEYS

@@ -13,6 +13,7 @@ import struct
 import time
 import sys
 import uuid
+import webbrowser
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -679,8 +680,11 @@ class MusubiTunerGUI:
             default = moss_settings.DEFAULTS[key]
             kind = ('checkbox' if isinstance(default, bool) else 'combobox' if key in moss_settings.CHOICES
                     else 'path_entry' if key in moss_settings.PATHS else 'entry')
+            label = moss_settings.DIT_LABEL if key == "moss_dit_model" else moss_settings.REPA_LABELS.get(
+                key, key.removeprefix("moss_").replace("_", " ").capitalize(),
+            )
             widget = self._add_widget(
-                parent, key, moss_settings.REPA_LABELS.get(key, key.removeprefix('moss_').replace('_', ' ').capitalize()), moss_settings.HELP[key],
+                parent, key, label, moss_settings.HELP[key],
                 kind=kind, options=moss_settings.CHOICES.get(key),
                 is_path=key in moss_settings.PATHS, is_dir=key in {'moss_tokenizer_cache_dir', 'moss_repa_cache_dir'},
                 default_val=default if isinstance(default, bool) else False,
@@ -802,12 +806,23 @@ class MusubiTunerGUI:
             validate_num=True,
         )
 
-        # ---- Krea 2 model paths section ----
-        self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
-        self._add_moss_fields(self.hidden_frames['moss_model_paths'], [
+        # ---- MOSS model paths section ----
+        moss_models = self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
+        self._add_moss_fields(moss_models, ["moss_dit_model"])
+        heal_downloads = ttk.Frame(moss_models)
+        heal_downloads.pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Label(heal_downloads, text=moss_settings.HEAL_DOWNLOAD_HINT, wraplength=660, justify="left").pack(anchor="w")
+        links = ttk.Frame(heal_downloads)
+        links.pack(anchor="w", pady=(4, 0))
+        for link in moss_settings.HEAL_DOWNLOAD_LINKS:
+            ttk.Button(links, text=link["label"], command=lambda url=link["url"]: webbrowser.open_new_tab(url)).pack(
+                side="left", padx=(0, 5),
+            )
+        self._add_moss_fields(moss_models, [
             key for key in moss_settings.DEFAULTS
-            if key not in (*moss_settings.PERFORMANCE_KEYS, "moss_clean_end_share") and not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
+            if key not in (*moss_settings.PERFORMANCE_KEYS, "moss_dit_model", "moss_clean_end_share") and not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
         ])
+        # ---- Krea 2 model paths section ----
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
         self.krea2_note_label = ttk.Label(

@@ -44,7 +44,7 @@ This fork is no longer just a Wan 2.2 front-end. The GUI now supports multiple m
 - `Flux.2 Dev`
 - `Krea 2`
 - `MiniMax H3 (Experimental)` — still-image LoRA directly from the pruned ConvRot INT8 base
-- `MOSS-Image (Experimental)` — image LoRA using the MOSS-Image Base model, including ComfyUI ConvRot checkpoints
+- `MOSS-Image (Experimental)` — image LoRA using MOSS-Image Base or the optional Heal checkpoint, including ComfyUI ConvRot weights
 
 It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling, monitoring, continuation training, and conversion easier to manage from a single interface.
 
@@ -82,16 +82,16 @@ The GUI adjusts required fields and available options based on the selected trai
 
 ### MOSS-Image (Experimental)
 
-Train image LoRAs from a MOSS-Image Base checkpoint, Qwen3.5-9B text encoder,
-and Flux.2 VAE. Both interfaces expose caption/latent caching, image previews,
+Train image LoRAs with MOSS-Image Base or the optional MOSS-Image-heal checkpoint,
+the Qwen3.5-9B text encoder, and a Flux.2 VAE. Both interfaces expose caption/latent caching, image previews,
 block swapping, optional DOP, REPA visual guidance and depth anchoring, Automagic3,
 optional EMA smoothed checkpoints, and experimental staged face
 refinement. The DiT accepts ComfyUI ConvRot INT8 or BF16 weights; the text
 encoder also accepts ComfyUI W4A8 with an experimental portable decoder.
-Short real-model GPU smoke tests have passed, including a 1024px LoRA update.
+Short GPU smoke tests on MOSS-Image Base have passed, including a 1024px LoRA update.
 Long-run quality and memory requirements across configurations are not yet established.
 
-Docs: [MOSS-Image experimental guide](./docs/moss_image_experimental.md)
+Docs: [MOSS-Image experimental guide](./docs/moss_image_experimental.md) · [Choose and download MOSS-Image-heal](./docs/moss_image_experimental.md#optional-training-base-moss-image-heal)
 
 ### Wan 2.2
 

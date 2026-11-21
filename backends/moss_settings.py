@@ -1,5 +1,22 @@
 """MOSS settings shared by both interfaces."""
 MODE = "MOSS-Image (Experimental)"
+DIT_LABEL = "MOSS diffusion model (DiT)"
+HEAL_MODEL_URL = "https://huggingface.co/KBlueLeaf/MOSS-Image-heal"
+HEAL_DOWNLOAD_LINKS = (
+    {
+        "label": "Download Heal INT8 (5.4 GB)",
+        "url": f"{HEAL_MODEL_URL}/resolve/main/comfyui/moss_image_heal_int8_convrot.safetensors?download=true",
+    },
+    {
+        "label": "Download Heal BF16 (10.2 GB)",
+        "url": f"{HEAL_MODEL_URL}/resolve/main/comfyui/moss_image_heal_bf16.safetensors?download=true",
+    },
+    {"label": "Heal model card", "url": HEAL_MODEL_URL},
+)
+HEAL_DOWNLOAD_HINT = (
+    "MOSS-Image-heal is an optional training base by KBlueLeaf. Download one file, then select it above. "
+    "INT8 uses less memory. Keep your MOSS text encoder and Flux.2 VAE."
+)
 DEFAULTS = {
     "moss_dit_model": "", "moss_text_encoder": "", "moss_tokenizer_cache_dir": "",
     "moss_max_token_length": "4096", "moss_text_encoder_cpu_streaming": True,
@@ -275,7 +292,11 @@ HELP = {
     "moss_repa_device": "Where REPA prepares its saved features before the training model loads. Training uses the main GPU; CPU avoids helper GPU memory but can be very slow. Once features are ready, REPA reads them without loading the teacher or decoding images during training.",
     "moss_repa_cache_size": "How many prepared image features to keep in system RAM for quicker access. 64 is the default. Features evicted from RAM are still read from disk, never recalculated during training. Larger values use more RAM; 0 reads from disk each time.",
     "moss_repa_cache_dir": "Leave blank to save REPA features in a moss_repa_features subfolder beside each dataset's latent cache. Or choose one shared cache folder with Browse. Preparation reuses valid files across epochs, restarts and runs, and rebuilds missing or outdated features automatically. This is separate from latent and caption caches.",
-    "moss_dit_model": "Select the MOSS-Image diffusion model. Official BF16 and ComfyUI ConvRot INT8 checkpoints are supported. Base is the recommended starting point for training.",
+    "moss_dit_model": (
+        "Select the MOSS-Image diffusion checkpoint for training and previews. Official Base is the standard "
+        "starting point. Heal is an experimental alternative available in BF16 and prequantized ConvRot INT8. "
+        "Choose the same checkpoint as the original run for exact recovery."
+    ),
     "moss_text_encoder": "Select the Qwen3.5-9B text encoder. BF16, ComfyUI ConvRot INT8 and W4A8 checkpoints are supported. W4A8 uses an experimental portable decoder and may be slow. The encoder turns captions into cached embeddings and is unloaded before training; it is different from Krea's Qwen3-VL encoder.",
     "moss_tokenizer_cache_dir": "Optional local tokenizer folder or download cache. Leave empty to download the small official MOSS tokenizer automatically.",
     "moss_text_encoder_cpu_streaming": "Use less graphics memory while reading captions by keeping encoder weights in system RAM and transferring them when needed. Slower, but useful on smaller GPUs. Does not change the training model.",

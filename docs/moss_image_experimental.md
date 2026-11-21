@@ -39,6 +39,7 @@ not a full-dataset throughput or trained-quality benchmark.
 ## Files
 
 - **DiT:** MOSS-Image Base BF16 or the ComfyUI `moss_image_base_int8_convrot.safetensors`.
+  MOSS-Image-heal is an optional training base with its own download links below.
   The prequantized ConvRot file is detected automatically; do not turn on
   load-time quantization again for it. The SFT checkpoint can be selected too,
   but Base is the preferred starting point for training.
@@ -51,6 +52,34 @@ not a full-dataset throughput or trained-quality benchmark.
 - **Tokenizer:** leave the optional tokenizer location blank to fetch the small
   tokenizer from the official MOSS repository, or point it to a local tokenizer
   directory. Model weights are not automatically downloaded by this step.
+
+### Optional training base: MOSS-Image-heal
+
+MOSS-Image-heal is an Apache-2.0 checkpoint by KBlueLeaf that reduces unusually
+large internal values in MOSS-Image Base. Early training reports are encouraging
+for illustrated styles. Photographic character and anatomy training still need
+more comparisons. See the [model card](https://huggingface.co/KBlueLeaf/MOSS-Image-heal).
+
+Choose one file and save it in your existing model folder:
+
+- [Heal INT8 ConvRot (5.4 GB)](https://huggingface.co/KBlueLeaf/MOSS-Image-heal/resolve/main/comfyui/moss_image_heal_int8_convrot.safetensors?download=true) uses less memory. Leave on-load DiT quantization off when using this file.
+- [Heal BF16 (10.2 GB)](https://huggingface.co/KBlueLeaf/MOSS-Image-heal/resolve/main/comfyui/moss_image_heal_bf16.safetensors?download=true) is the unquantized checkpoint.
+
+Browse for the file under **MOSS diffusion model (DiT)**. You'll find this
+field in **New training → Model** in Modern and **Models** in Classic. Both
+interfaces provide browser download links next to the field. You can also
+browse to a copy you already have.
+
+The selected checkpoint is used for training and previews. Keep the same MOSS
+text encoder, tokenizer, and Flux.2 VAE. Switching only the diffusion
+checkpoint does not require rebuilding either dataset cache. Use a new run to
+compare Heal with Base. Exact saved-state recovery should keep the original
+diffusion checkpoint. Evaluate a Heal-trained LoRA on Heal first, then check
+Base or SFT separately if you intend to use it there.
+
+A CPU smoke test completed one LoRA update and export with the publisher's INT8
+ConvRot file. The BF16 file passed a tensor name and shape check. Long-run quality
+and GPU performance on Heal still need measurement.
 
 ## Starting a run
 

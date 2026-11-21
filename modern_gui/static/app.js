@@ -315,6 +315,21 @@ function fieldControl(field, {wide = false} = {}) {
       browse.addEventListener("click",()=>withBusy(browse,"Opening…",async()=>{const result=await api("/api/path/select",{method:"POST",body:JSON.stringify({kind:directoryKeys.has(field.key)?"directory":"file",initial:input.value})});if(result.path){input.value=result.path;commit()}}).catch(e=>toast(e.message,"error")));pathRow.append(browse);wrap.append(pathRow);
     }else wrap.append(input);
     if(customInput)wrap.append(customInput);
+    if (field.download_links?.length) {
+      const hint = document.createElement("small");
+      hint.textContent = field.download_hint;
+      const links = document.createElement("div");
+      links.className = "field-downloads";
+      for (const {label, url} of field.download_links) {
+        const link = document.createElement("a");
+        link.textContent = label;
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        links.append(link);
+      }
+      wrap.append(hint, links);
+    }
   }
   input.id = id;
   input.disabled = (field.disabled_modes || []).includes(state.settings.training_mode);
