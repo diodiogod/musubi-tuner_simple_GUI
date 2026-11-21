@@ -37,6 +37,7 @@ semantics, and has regression coverage. Merely retaining a value in raw JSON is 
 | Evaluation-driven weak-pose plan and baseline deltas | Face Refinement → Evaluate | Complete |
 | Fixed Turbo face evaluation and result galleries | Face Refinement | Complete |
 | LoRA format conversion | Tools | Complete |
+| LoRA strength rescaling | Tools → Rescale LoRA strength | Complete |
 | Accelerate configuration | Tools | Complete |
 | Load/save/reset settings files | All settings | Complete |
 | Theme switching | Sidebar | Complete |

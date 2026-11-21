@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.parse import parse_qs
 
+from backends.lora_rescale import plan_rescale
 from modern_gui.commands import build_command_plan
 from modern_gui.training_notes import training_settings_summary
 from modern_gui.dataset_documents import (
@@ -109,6 +110,7 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/face/evaluate",
         "/api/face/open-results",
         "/api/tools/convert",
+        "/api/tools/rescale-lora",
         "/api/tools/accelerate-config",
         "/api/jobs/start",
         "/api/jobs/stop",
@@ -830,6 +832,15 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     settings={"output_dir": str(output_dir), "output_name": output.name},
                 )
                 return self._json({"job": job, "output": str(output)})
+            if self.path == "/api/tools/rescale-lora":
+                plan = plan_rescale(
+                    body.get("input"), body.get("output"), body.get("current_strength"), body.get("target_strength", 1.0),
+                )
+                job = SUPERVISOR.start_commands(
+                    [plan.command()], name=plan.output.name, mode="Utility", kind="lora_rescale",
+                    settings={"output_dir": str(plan.output.parent), "output_name": plan.output.name},
+                )
+                return self._json({"job": job, "output": str(plan.output)})
             if self.path == "/api/tools/accelerate-config":
                 accelerate = Path(sys.executable).parent / ("accelerate.exe" if sys.platform == "win32" else "accelerate")
                 command = f'"{accelerate if accelerate.exists() else "accelerate"}" config'

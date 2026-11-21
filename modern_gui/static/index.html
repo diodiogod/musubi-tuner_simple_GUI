@@ -289,9 +289,15 @@
       </section>
 
       <section class="view" id="tools">
-        <header class="page-header compact"><div><p class="kicker">UTILITIES</p><h1>Tools and setup</h1><p>Conversion and one-time environment setup use the same local Python environment.</p></div></header>
+        <header class="page-header compact"><div><p class="kicker">UTILITIES</p><h1>Tools and setup</h1></div></header>
         <div class="tool-grid">
           <article class="tool-panel"><p class="kicker">LORA FORMAT</p><h2>Convert LoRA</h2><p>Convert between Diffusers A/B keys and Musubi/ComfyUI down/up keys without changing the source file.</p><div id="convert-fields" class="guided-fields"></div><button class="primary" id="start-conversion">Start conversion</button></article>
+          <article class="tool-panel">
+            <h2>Rescale LoRA strength</h2>
+            <p>Save a copy of a standard LoRA, including MOSS-Image, that gives the same effect at a new ComfyUI strength.</p>
+            <div id="lora-rescale-fields" class="guided-fields"></div>
+            <button class="primary" id="start-lora-rescale">Save rescaled LoRA</button>
+          </article>
           <article class="tool-panel"><p class="kicker">ONE-TIME SETUP</p><h2>Configure Accelerate</h2><p>Opens an interactive terminal for the Accelerate configuration used by Musubi.</p><ul><li>This machine</li><li>No distributed training</li><li>GPU training</li><li>No DeepSpeed</li><li>BF16 or FP16 precision</li></ul><button class="primary" id="run-accelerate-config">Open Accelerate config</button></article>
         </div>
       </section>

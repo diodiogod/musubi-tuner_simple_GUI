@@ -21,6 +21,7 @@ from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_
 from backends import moss_settings, moss_image_face as moss_face_backend
 from backends.regularization_switches import FEATURES as REGULARIZATION_FEATURES, controlled_by, effective_settings as effective_regularization, normalize_switches
 from backends.numeric_settings import normalize_numbers, decimal_text
+from backends.lora_rescale import plan_rescale
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -575,7 +576,7 @@ class MusubiTunerGUI:
             pass
         return None
 
-    def _add_widget(self, parent, key, label, tooltip, kind='entry', options=None, is_required=False, validate_num=False, is_path=False, is_dir=False, default_val=False, command=None):
+    def _add_widget(self, parent, key, label, tooltip, kind='entry', options=None, is_required=False, validate_num=False, is_path=False, is_dir=False, default_val=False, command=None, track_setting=True):
         frame = ttk.Frame(parent)
         frame.pack(fill="x", padx=10, pady=5)
         frame.grid_columnconfigure(1, weight=1)
@@ -620,13 +621,14 @@ class MusubiTunerGUI:
             ToolTip(widget, tooltip)
             if label_widget is not None:
                 ToolTip(label_widget, tooltip)
-        self.entries[key] = widget
-        if label_widget is not None:
-            self.field_labels[key] = label_widget
-            self.field_label_text[key] = label.rstrip(":")
-        widget.is_required = is_required; widget.is_path = is_path
-        if isinstance(widget, ttk.Entry):
-            widget.bind("<FocusOut>", self.update_button_states); widget.bind("<KeyRelease>", self.update_button_states)
+        if track_setting:
+            self.entries[key] = widget
+            if label_widget is not None:
+                self.field_labels[key] = label_widget
+                self.field_label_text[key] = label.rstrip(":")
+            widget.is_required = is_required; widget.is_path = is_path
+            if isinstance(widget, ttk.Entry):
+                widget.bind("<FocusOut>", self.update_button_states); widget.bind("<KeyRelease>", self.update_button_states)
         return widget
 
     def _themed_text(self, parent, **kwargs):
@@ -7133,7 +7135,30 @@ class MusubiTunerGUI:
 
         button = ttk.Button(settings_frame, text="Start Conversion", command=self.start_conversion); button.pack(pady=10)
 
-        console_frame = ttk.LabelFrame(main_frame, text="Conversion Output"); console_frame.pack(fill='both', expand=True)
+        rescale_frame = ttk.LabelFrame(main_frame, text="Rescale LoRA Strength")
+        rescale_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(rescale_frame, text="Save a copy of a standard LoRA, including MOSS-Image, for a new ComfyUI strength.").pack(anchor="w", padx=10, pady=(6, 0))
+        self._rescale_source = self._add_widget(
+            rescale_frame, None, "Source LoRA", "Choose the original .safetensors LoRA.",
+            kind="path_entry", options=[("Safetensors", "*.safetensors")], track_setting=False,
+        )
+        self._rescale_current = self._add_widget(
+            rescale_frame, None, "Current Strength", "The strength you already like in ComfyUI, for example 1.8.",
+            track_setting=False,
+        )
+        self._rescale_target = self._add_widget(
+            rescale_frame, None, "Target Strength", "The strength to use with the new file. The default is 1.0.",
+            track_setting=False,
+        )
+        self._rescale_target.insert(0, "1.0")
+        self._rescale_output = self._add_widget(
+            rescale_frame, None, "Output Filename (Optional)",
+            "Enter a .safetensors filename or path. Leave blank to save <source>_rescaled.safetensors beside the source.",
+            track_setting=False,
+        )
+        ttk.Button(rescale_frame, text="Save Rescaled LoRA", command=self.start_lora_rescale).pack(pady=10)
+
+        console_frame = ttk.LabelFrame(main_frame, text="Tool Output"); console_frame.pack(fill='both', expand=True)
         self.convert_output_text = tk.Text(console_frame, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], font=('Consolas', 9), relief=tk.FLAT, bd=0)
         scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.convert_output_text.yview)
         self.convert_output_text.configure(yscrollcommand=scrollbar.set); self.convert_output_text.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
@@ -9840,7 +9865,6 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         output_name = f"{base_name}_converted.safetensors"
         final_output_path = Path(output_dir) / output_name
 
-        self.convert_output_text.delete("1.0", tk.END)
         python_executable = sys.executable or "python"
         target = getattr(self, '_convert_target_var', None)
         target = target.get() if target else "default"
@@ -9850,15 +9874,35 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         conversion_settings = dict(self.get_settings())
         conversion_settings["output_dir"] = output_dir
         conversion_settings["output_name"] = output_name
-        self._begin_job("conversion", "Convert LoRA", settings=conversion_settings, note=base_name)
-        self.run_process(command, on_complete=self.on_conversion_complete, output_widget=self.convert_output_text, job_context={"attach_to_active": True})
+        self._start_lora_tool(command, "conversion", "Convert LoRA", conversion_settings, base_name)
 
-    def on_conversion_complete(self, return_code):
+    def start_lora_rescale(self):
+        try:
+            plan = plan_rescale(
+                self._rescale_source.get(), self._rescale_output.get(), self._rescale_current.get(), self._rescale_target.get(),
+            )
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Rescale LoRA Strength", str(exc), parent=self.root)
+            return
+        settings = {"training_mode": "Utility", "output_dir": str(plan.output.parent), "output_name": plan.output.name}
+        self._start_lora_tool(plan.command(), "lora_rescale", "Rescale LoRA Strength", settings, plan.source.stem)
+
+    def _start_lora_tool(self, command, kind, title, settings, note):
+        if self.current_process or self._active_job:
+            messagebox.showerror(title, "Wait for the active job to finish before starting a LoRA tool.", parent=self.root)
+            return
+        self.convert_output_text.delete("1.0", tk.END)
+        self._begin_job(kind, title, settings=settings, note=note)
+        self.run_process(command, on_complete=lambda code: self._on_lora_tool_complete(code, title),
+                         output_widget=self.convert_output_text, job_context={"attach_to_active": True})
+
+    def _on_lora_tool_complete(self, return_code, title):
         self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)
         if return_code == 0:
-            self.convert_output_text.insert(tk.END, "\n--- Conversion completed successfully. ---")
+            self.convert_output_text.insert(tk.END, f"\n--- {title} completed successfully. ---")
         else:
-            self.convert_output_text.insert(tk.END, f"\n--- Conversion failed with code {return_code}. ---")
+            self.convert_output_text.insert(tk.END, f"\n--- {title} exited with code {return_code}. ---")
+        self.convert_output_text.see(tk.END)
         self.stop_all_activity()
 
     def run_accelerate_config(self):

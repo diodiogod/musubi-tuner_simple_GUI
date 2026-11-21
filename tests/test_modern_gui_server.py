@@ -257,6 +257,7 @@ target_frames = [1]
         "/api/dataset/toggle-disabled",
         "/api/prompt-library/delete",
         "/api/prompts/preview",
+        "/api/tools/rescale-lora",
         "/api/jobs/start",
     ],
 )

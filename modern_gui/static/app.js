@@ -841,7 +841,7 @@ function sync(markChanged = true) {
   if (markChanged) setDirty(true);
 }
 
-function objectField(label,key,value,onChange,{type="text",options=null,wide=false,help="",browseKind=""}={}) {
+function objectField(label,key,value,onChange,{type="text",options=null,wide=false,help="",browseKind="",syncSettings=true}={}) {
   const wrap=document.createElement("div");wrap.className=`field${wide?" wide":""}`;
   const id=`object-${String(key).replace(/[^a-z0-9_-]/gi,"-")}-${++controlSequence}`,descriptionId=`${id}-description`;
   const labelNode=document.createElement("label");labelNode.className="field-label";labelNode.htmlFor=id;labelNode.dataset.tip=help||`${label} is saved with this workflow.`;labelNode.tabIndex=0;labelNode.textContent=label;wrap.append(labelNode);
@@ -852,7 +852,7 @@ function objectField(label,key,value,onChange,{type="text",options=null,wide=fal
   else{input=document.createElement("input");input.type=type;input.value=value??"";wrap.append(input)}
   input.id=id;input.dataset.objectKey=key;
   const description=document.createElement("span");description.id=descriptionId;description.className="sr-only";description.textContent=labelNode.dataset.tip;input.setAttribute("aria-describedby",descriptionId);wrap.append(description);
-  const commit=()=>{let next=type==="boolean"?input.checked:input.value;if(type==="number"&&next!=="")next=Number(next);onChange(next);sync()};
+  const commit=()=>{let next=type==="boolean"?input.checked:input.value;if(type==="number"&&next!=="")next=Number(next);onChange(next);if(syncSettings)sync()};
   input.addEventListener(type==="select"||type==="boolean"?"change":"input",commit);
   if(browseKind){
     const row=document.createElement("div");row.className="path-control";input.replaceWith(row);row.append(input);
@@ -1471,12 +1471,26 @@ function reviewFaceStage(){
   go("plan");
   $$("[data-plan-tab]").find(button=>button.dataset.planTab==="stages")?.click();
 }
+const loraRescale = {input: "", current_strength: "", target_strength: "1.0", output: ""};
 function renderTools(){
   const host=$("#convert-fields");host.innerHTML="";
   host.append(
     objectField("LoRA to convert","convert_lora_path",state.settings.convert_lora_path||"",v=>state.settings.convert_lora_path=v,{wide:true,browseKind:"file",help:"The source .safetensors file is read only and is never overwritten."}),
     objectField("Output directory","convert_output_dir",state.settings.convert_output_dir||"",v=>state.settings.convert_output_dir=v,{wide:true,browseKind:"directory"}),
     objectField("Direction","convert_target",state.settings.convert_target||"default",v=>state.settings.convert_target=v,{type:"select",options:[{label:"Diffusers → Musubi / ComfyUI",value:"default"},{label:"Musubi / ComfyUI → Diffusers",value:"other"}]})
+  );
+  const rescaleHost = $("#lora-rescale-fields");
+  const rescaleField = (label, key, options) => objectField(label, `rescale_${key}`, loraRescale[key],
+    value => { loraRescale[key] = value; }, {...options, syncSettings: false});
+  rescaleHost.replaceChildren(
+    rescaleField("Source LoRA", "input",
+      {wide: true, browseKind: "file", help: "Choose the original .safetensors LoRA."}),
+    rescaleField("Current strength", "current_strength",
+      {help: "The strength you already like in ComfyUI, for example 1.8."}),
+    rescaleField("Target strength", "target_strength",
+      {help: "The strength to use with the new file. The default is 1.0."}),
+    rescaleField("Output filename (optional)", "output",
+      {wide: true, help: "Enter a .safetensors filename or path. Leave blank to save <source>_rescaled.safetensors beside the source."}),
   );
 }
 
@@ -2911,6 +2925,17 @@ $("#face-baseline").addEventListener("click",()=>startFaceEvaluation(false));$("
 $("#load-face-result").addEventListener("click",loadFaceResult);
 $("#open-face-results").addEventListener("click",async()=>{const config=faceConfig(),path=config.evaluation_last_result||config.evaluation_baseline_result;if(!path)return toast("No saved evaluation result is available.");try{const payload=await api("/api/face/open-results",{method:"POST",body:JSON.stringify({path})});toast(`Opened ${payload.opened}`)}catch(e){toast(e.message)}});
 $("#start-conversion").addEventListener("click",async()=>{try{const payload=await api("/api/tools/convert",{method:"POST",body:JSON.stringify({input:state.settings.convert_lora_path,output_dir:state.settings.convert_output_dir,target:state.settings.convert_target||"default"})});lastLogId=0;renderActive(payload.job);go("run");toast(`Converting to ${payload.output}`)}catch(e){toast(e.message)}});
+$("#start-lora-rescale").addEventListener("click", event => withBusy(event.currentTarget, "Starting…", async () => {
+  const payload = await api("/api/tools/rescale-lora", {method: "POST", body: JSON.stringify({
+    ...loraRescale,
+    current_strength: canonicalDecimal(loraRescale.current_strength),
+    target_strength: canonicalDecimal(loraRescale.target_strength),
+  })});
+  lastLogId = 0;
+  renderActive(payload.job);
+  go("run");
+  toast(`Rescaling to ${payload.output}`);
+}).catch(e => toast(e.message, "error")));
 $("#run-accelerate-config").addEventListener("click",()=>api("/api/tools/accelerate-config",{method:"POST",body:"{}"}).then(()=>toast("Accelerate terminal opened.")).catch(e=>toast(e.message)));
 $("#theme-toggle").addEventListener("click",()=>applyTheme(document.documentElement.dataset.theme==="light"?"Dark":"Light",{markChanged:true}));
 $("#open-desktop").addEventListener("click",()=>api("/api/legacy/start",{method:"POST",body:"{}"}).then(()=>toast("Classic GUI opened.")).catch(e=>toast(e.message)));
