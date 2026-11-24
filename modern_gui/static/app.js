@@ -1505,7 +1505,7 @@ function renderTools(){
     rescaleField("Target strength", "target_strength",
       {help: "The strength to use with the new file. The default is 1.0."}),
     rescaleField("Output filename (optional)", "output",
-      {wide: true, help: "Enter a .safetensors filename or path. Leave blank to save <source>_rescaled.safetensors beside the source."}),
+      {wide: true, help: "Leave blank for <source>_rescaled.safetensors beside the source. Taken .safetensors names get a numeric suffix."}),
   );
 }
 
@@ -2761,6 +2761,7 @@ async function prepareFaceJob(row){if(!confirmWorkspaceReplacement("Load this fa
 async function initialize() {
   try {
     const payload=await api("/api/settings");state.settings=payload.settings;state.schema=payload.schema;state.app=payload.app||null;
+    Object.assign(loraRescale, payload.lora_rescale);
     if(state.app?.version){
       $("#gui-version-label").textContent=`GUI v${state.app.version} · Studio`;
       $("#gui-version-label").title=`${state.app.name} v${state.app.version} · Based on Musubi Tuner`;
@@ -2949,7 +2950,7 @@ $("#start-lora-rescale").addEventListener("click", event => withBusy(event.curre
   lastLogId = 0;
   renderActive(payload.job);
   go("run");
-  toast(`Rescaling to ${payload.output}`);
+  toast("Rescaling LoRA. The saved filename will appear in the run log.");
 }).catch(e => toast(e.message, "error")));
 $("#run-accelerate-config").addEventListener("click",()=>api("/api/tools/accelerate-config",{method:"POST",body:"{}"}).then(()=>toast("Accelerate terminal opened.")).catch(e=>toast(e.message)));
 $("#theme-toggle").addEventListener("click",()=>applyTheme(document.documentElement.dataset.theme==="light"?"Dark":"Light",{markChanged:true}));

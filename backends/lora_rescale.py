@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from backends.numeric_settings import decimal_text
+
+
+PREFERENCES_PATH = Path(__file__).resolve().parents[1] / "lora_rescale_preferences.json"
+_PREFERENCE_DEFAULTS = {"input": "", "current_strength": "", "target_strength": "1.0"}
+_SAVED_PREFIX = "Saved to "
 
 
 @dataclass(frozen=True)
@@ -25,7 +32,40 @@ class RescalePlan:
             sys.executable, "-m", "backends.lora_rescale",
             "--input", str(self.source), "--output", str(self.output),
             f"--current-strength={self.current}", f"--target-strength={self.target}",
+            "--remember", str(PREFERENCES_PATH),
         ]
+
+
+def load_rescale_preferences() -> dict[str, str]:
+    try:
+        saved = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return dict(_PREFERENCE_DEFAULTS)
+    if not isinstance(saved, dict):
+        return dict(_PREFERENCE_DEFAULTS)
+    return {
+        key: saved[key] if isinstance(saved.get(key), str) else default
+        for key, default in _PREFERENCE_DEFAULTS.items()
+    }
+
+
+def _remember_rescale(plan: RescalePlan, path: Path) -> None:
+    values = {"input": str(plan.source), "current_strength": str(plan.current), "target_strength": str(plan.target)}
+    with NamedTemporaryFile(dir=path.parent, prefix=".lora-rescale-prefs-", suffix=".tmp", delete=False) as temp:
+        staging = Path(temp.name)
+    try:
+        staging.write_text(json.dumps(values, ensure_ascii=False), encoding="utf-8")
+        staging.replace(path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def rescale_saved_path(line: str) -> Path | None:
+    if line.startswith(_SAVED_PREFIX):
+        path = Path(line.removeprefix(_SAVED_PREFIX).rstrip("\r\n"))
+        if path.is_absolute() and path.suffix.lower() == ".safetensors":
+            return path
+    return None
 
 
 def _strength(value, label: str) -> float:
@@ -56,10 +96,6 @@ def plan_rescale(source_path, output_path, current_strength, target_strength=1.0
     if not output.parent.is_dir():
         raise ValueError("Choose an existing folder for the rescaled LoRA.")
     output = output.parent.resolve() / output.name
-    if output == source.resolve():
-        raise ValueError("Choose a different filename for the rescaled LoRA.")
-    if output.exists() or output.is_symlink():
-        raise FileExistsError(f"The output already exists. Choose a new filename.\n{output}")
     return RescalePlan(source, output, current, target)
 
 
@@ -111,7 +147,22 @@ def _rescaled_alphas(tensors, plan: RescalePlan):
     return alphas
 
 
-def rescale_lora(plan: RescalePlan) -> int:
+def _publish_output(staging: Path, requested: Path) -> Path:
+    for number in count(1):
+        output = requested if number == 1 else requested.with_name(f"{requested.stem}_{number}{requested.suffix}")
+        if os.path.lexists(output):
+            continue
+        try:
+            if os.name == "nt":
+                staging.rename(output)  # Windows rename fails if the destination exists.
+            else:
+                os.link(staging, output)
+        except FileExistsError:
+            continue  # Another export claimed this name while we were saving.
+        return output
+
+
+def rescale_lora(plan: RescalePlan) -> tuple[Path, int]:
     from safetensors import safe_open
     from safetensors.torch import save_file
 
@@ -130,19 +181,15 @@ def rescale_lora(plan: RescalePlan) -> int:
 
         metadata["modelspec.hash_sha256"] = precalculate_safetensors_hashes(tensors)
 
-    # Publish only a complete file and refuse to replace a destination created
-    # after validation, even if another GUI or process is writing concurrently.
+    # Serialize once, then publish the complete file under an unclaimed name.
     with NamedTemporaryFile(dir=plan.output.parent, prefix=".lora-rescale-", suffix=".tmp", delete=False) as temp:
         staging = Path(temp.name)
     try:
         save_file(tensors, staging, metadata=metadata or None)
-        if os.name == "nt":
-            staging.rename(plan.output)  # Windows rename fails if the destination exists.
-        else:
-            os.link(staging, plan.output)
+        output = _publish_output(staging, plan.output)
     finally:
         staging.unlink(missing_ok=True)
-    return len(alphas)
+    return output, len(alphas)
 
 
 def main() -> None:
@@ -150,17 +197,23 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Save a standard LoRA with a new equivalent ComfyUI strength.")
     parser.add_argument("--input", required=True)
-    parser.add_argument("--output", default="", help="Defaults to <input>_rescaled.safetensors beside the input.")
+    parser.add_argument("--output", default="", help="Defaults to <input>_rescaled.safetensors. Taken names get a numeric suffix.")
     parser.add_argument("--current-strength", required=True)
     parser.add_argument("--target-strength", default="1.0")
+    parser.add_argument("--remember", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         plan = plan_rescale(args.input, args.output, args.current_strength, args.target_strength)
-        layers = rescale_lora(plan)
+        output, layers = rescale_lora(plan)
     except (OSError, ValueError, SafetensorError) as exc:
         parser.exit(1, f"LoRA rescaling failed. {exc}\n")
     print(f"Rescaled {layers} LoRA layers from strength {plan.current:g} to {plan.target:g}.")
-    print(f"Saved to {plan.output}")
+    print(f"{_SAVED_PREFIX}{output}")
+    if args.remember is not None:
+        try:
+            _remember_rescale(plan, args.remember)
+        except OSError as exc:
+            print(f"Could not remember the LoRA settings. {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

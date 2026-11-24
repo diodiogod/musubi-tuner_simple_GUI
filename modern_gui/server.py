@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.parse import parse_qs
 
-from backends.lora_rescale import plan_rescale
+from backends.lora_rescale import load_rescale_preferences, plan_rescale
 from modern_gui.commands import build_command_plan
 from modern_gui.training_notes import training_settings_summary
 from modern_gui.dataset_documents import (
@@ -236,7 +236,10 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "root": str(ROOT), "app": application_info()})
             if parsed.path == "/api/settings":
                 settings = load_settings()
-                return self._json({"settings": settings, "schema": settings_schema(settings), "app": application_info()})
+                return self._json({
+                    "settings": settings, "schema": settings_schema(settings), "app": application_info(),
+                    "lora_rescale": load_rescale_preferences(),
+                })
             if parsed.path == "/api/settings/defaults":
                 defaults_path = ROOT / "Base_SETTINGS.json"
                 defaults = json.loads(defaults_path.read_text(encoding="utf-8")) if defaults_path.is_file() else {}
@@ -837,8 +840,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     body.get("input"), body.get("output"), body.get("current_strength"), body.get("target_strength", 1.0),
                 )
                 job = SUPERVISOR.start_commands(
-                    [plan.command()], name=plan.output.name, mode="Utility", kind="lora_rescale",
-                    settings={"output_dir": str(plan.output.parent), "output_name": plan.output.name},
+                    [plan.command()], name="Rescale LoRA", mode="Utility", kind="lora_rescale",
+                    settings={"output_dir": str(plan.output.parent)},
                 )
                 return self._json({"job": job, "output": str(plan.output)})
             if self.path == "/api/tools/accelerate-config":

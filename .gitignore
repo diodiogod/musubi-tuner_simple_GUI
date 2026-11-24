@@ -8,6 +8,7 @@ main.exp
 main.lib
 main.obj
 last_settings.json
+/lora_rescale_preferences.json
 job_history_local.json
 job_notes_local.json
 modern_gui_jobs.json

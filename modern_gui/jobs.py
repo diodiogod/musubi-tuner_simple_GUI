@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backends.lora_rescale import rescale_saved_path
 from job_performance import (
     append_job_log,
     compact_speed_history,
@@ -353,6 +354,12 @@ class JobSupervisor:
                 except OSError:
                     pass
             if stream == "output" and self._active:
+                if self._active.get("kind") == "lora_rescale":
+                    output = rescale_saved_path(message)
+                    if output is not None:
+                        self._active["name"] = output.name
+                        self._active["settings"].update(output_dir=str(output.parent), output_name=output.name)
+                    return
                 update = parse_training_line(message)
                 metrics = self._active.get("metrics", {})
                 metrics.update(update)
@@ -714,6 +721,8 @@ class JobSupervisor:
 
     @staticmethod
     def _phase(command: list[str]) -> str:
+        if command[1:3] == ["-m", "backends.lora_rescale"]:
+            return "Rescaling LoRA"
         joined = " ".join(str(value) for value in command).lower()
         if "cache_latents" in joined:
             return "Caching latents"

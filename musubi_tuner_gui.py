@@ -22,7 +22,7 @@ from backends import wan as wan_backend, flux2 as flux2_backend, krea2 as krea2_
 from backends import moss_settings, moss_image_face as moss_face_backend
 from backends.regularization_switches import FEATURES as REGULARIZATION_FEATURES, controlled_by, effective_settings as effective_regularization, normalize_switches
 from backends.numeric_settings import normalize_numbers, decimal_text
-from backends.lora_rescale import plan_rescale
+from backends.lora_rescale import load_rescale_preferences, plan_rescale, rescale_saved_path
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -151,6 +151,11 @@ class MusubiTunerGUI:
         self.hidden_frames = {}
         self.training_mode_var = tk.StringVar(value="Wan 2.2")
         self.appearance_mode_var = tk.StringVar(value=self._load_saved_appearance())
+        rescale = load_rescale_preferences()
+        self._rescale_source = tk.StringVar(value=rescale["input"])
+        self._rescale_current = tk.StringVar(value=rescale["current_strength"])
+        self._rescale_target = tk.StringVar(value=rescale["target_strength"])
+        self._rescale_output = tk.StringVar()
         self.setup_styles()
 
         self.current_process = None
@@ -7153,24 +7158,23 @@ class MusubiTunerGUI:
         rescale_frame = ttk.LabelFrame(main_frame, text="Rescale LoRA Strength")
         rescale_frame.pack(fill="x", pady=(0, 10))
         ttk.Label(rescale_frame, text="Save a copy of a standard LoRA, including MOSS-Image, for a new ComfyUI strength.").pack(anchor="w", padx=10, pady=(6, 0))
-        self._rescale_source = self._add_widget(
+        self._add_widget(
             rescale_frame, None, "Source LoRA", "Choose the original .safetensors LoRA.",
             kind="path_entry", options=[("Safetensors", "*.safetensors")], track_setting=False,
-        )
-        self._rescale_current = self._add_widget(
+        ).configure(textvariable=self._rescale_source)
+        self._add_widget(
             rescale_frame, None, "Current Strength", "The strength you already like in ComfyUI, for example 1.8.",
             track_setting=False,
-        )
-        self._rescale_target = self._add_widget(
+        ).configure(textvariable=self._rescale_current)
+        self._add_widget(
             rescale_frame, None, "Target Strength", "The strength to use with the new file. The default is 1.0.",
             track_setting=False,
-        )
-        self._rescale_target.insert(0, "1.0")
-        self._rescale_output = self._add_widget(
+        ).configure(textvariable=self._rescale_target)
+        self._add_widget(
             rescale_frame, None, "Output Filename (Optional)",
-            "Enter a .safetensors filename or path. Leave blank to save <source>_rescaled.safetensors beside the source.",
+            "Leave blank for <source>_rescaled.safetensors beside the source. Taken .safetensors names get a numeric suffix.",
             track_setting=False,
-        )
+        ).configure(textvariable=self._rescale_output)
         ttk.Button(rescale_frame, text="Save Rescaled LoRA", command=self.start_lora_rescale).pack(pady=10)
 
         console_frame = ttk.LabelFrame(main_frame, text="Tool Output"); console_frame.pack(fill='both', expand=True)
@@ -8834,6 +8838,12 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def process_console_output(self, line, output_widget):
         is_progress_line = line.endswith('\r')
         clean_line = line.strip()
+        if output_widget == self.convert_output_text and (self._active_job or {}).get("kind") == "lora_rescale":
+            output_path = rescale_saved_path(clean_line)
+            if output_path is not None:
+                output = {"output_dir": str(output_path.parent), "output_name": output_path.name}
+                self._active_job.update(output)
+                self._active_job["settings_snapshot"].update(output)
 
         # Check if user is at the bottom of the text widget
         is_at_bottom = output_widget.yview()[1] >= 0.99
@@ -9899,7 +9909,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         except (ValueError, OSError) as exc:
             messagebox.showerror("Rescale LoRA Strength", str(exc), parent=self.root)
             return
-        settings = {"training_mode": "Utility", "output_dir": str(plan.output.parent), "output_name": plan.output.name}
+        settings = {"training_mode": "Utility", "output_dir": str(plan.output.parent)}
         self._start_lora_tool(plan.command(), "lora_rescale", "Rescale LoRA Strength", settings, plan.source.stem)
 
     def _start_lora_tool(self, command, kind, title, settings, note):
