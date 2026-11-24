@@ -4,10 +4,10 @@
 [![Stars](https://img.shields.io/github/stars/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/stargazers)
 [![Issues](https://img.shields.io/github/issues/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/issues)
 [![Forks](https://img.shields.io/github/forks/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/network/members)
-[![GUI version](https://img.shields.io/badge/GUI_version-0.1.1-1f6feb?style=for-the-badge)](CHANGELOG.md)
+[![GUI version](https://img.shields.io/badge/GUI_version-0.1.2-1f6feb?style=for-the-badge)](CHANGELOG.md)
 [![Ko-Fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/diogogo)
 
-# Musubi Tuner Simple GUI v0.1.1
+# Musubi Tuner Simple GUI v0.1.2
 
 *An independently versioned GUI and experimental training fork based on
 [kohya-ss/Musubi Tuner](https://github.com/kohya-ss/musubi-tuner).* Includes the

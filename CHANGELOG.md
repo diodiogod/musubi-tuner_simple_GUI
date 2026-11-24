@@ -5,6 +5,16 @@ Studio, and the fork's training extensions. GUI releases follow Semantic
 Versioning independently of upstream Musubi Tuner. Earlier development remains
 documented in Git history; inherited Musubi package numbers are not GUI releases.
 
+## [0.1.2] - 2026-11-24
+
+### Changed
+
+- Restore the source LoRA and both strengths from the last successful export in Musubi Studio and Classic.
+
+### Fixed
+
+- Save to the next available numbered filename when the requested or automatically generated name is taken. Existing files are preserved, and the run log shows the filename actually saved.
+
 ## [0.1.1] - 2026-11-20
 
 ### Added
