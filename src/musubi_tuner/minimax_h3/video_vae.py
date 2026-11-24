@@ -332,6 +332,7 @@ class ViT3DDecoder(nn.Module):
         bias=True,
         eps=1e-5,
         num_register_tokens=4,
+        rope_dims=3,
     ):
         super().__init__()
         dim = heads * dim_head
@@ -339,7 +340,8 @@ class ViT3DDecoder(nn.Module):
         self.patch_size_t = patch_size_t
         self.out_channels = out_channels
         self.num_register_tokens = num_register_tokens
-        self.pos_embed = RotaryEmbeddingND(int(dim_head * rope_dim_ratio), rope_theta, n_dim=3)
+        self.rope_dims = rope_dims
+        self.pos_embed = RotaryEmbeddingND(int(dim_head * rope_dim_ratio), rope_theta, n_dim=rope_dims)
         self.x_embedder = nn.Linear(in_channels, dim)
         self.register_tokens = nn.Parameter(torch.empty(1, num_register_tokens, dim))
         self.register_buffer("mask_token", torch.empty(1, 1, dim))
@@ -363,9 +365,11 @@ class ViT3DDecoder(nn.Module):
             dim=1,
         )
 
-        position_ids = create_token_ids((frames, height, width), hidden_states.device)
+        if self.rope_dims == 2 and frames != 1:
+            raise ValueError("MiniMax H3 Image VAE decodes one latent frame.")
+        position_ids = create_token_ids((frames, height, width)[-self.rope_dims:], hidden_states.device)
         position_ids = position_ids.expand(batch_size, -1, -1)
-        suffix_ids = position_ids.new_zeros((batch_size, self.num_register_tokens + 1, 3))
+        suffix_ids = position_ids.new_zeros((batch_size, self.num_register_tokens + 1, self.rope_dims))
         rotary_emb = self.pos_embed(torch.cat((position_ids, suffix_ids), dim=1))
         for block in self.transformer_blocks:
             hidden_states = block(hidden_states, rotary_emb)
@@ -408,6 +412,7 @@ class MiniMaxH3VideoVAE(nn.Module):
         tile_size=256,
         tile_overlap_min=64,
         tiling=True,
+        picture_model=False,
     ):
         super().__init__()
         self.vae_ratio = math.prod(space_down)
@@ -433,12 +438,17 @@ class MiniMaxH3VideoVAE(nn.Module):
             double_z=True,
         )
         self.quant_conv = nn.Conv3d(2 * z_channels, 2 * embed_dim, kernel_size=1)
-        self.post_quant_conv = nn.Conv3d(embed_dim, z_channels, kernel_size=1)
+        self.picture_model = picture_model
+        self.post_quant_conv = (nn.Conv2d if picture_model else nn.Conv3d)(embed_dim, z_channels, kernel_size=1)
         self.decoder = ViT3DDecoder(
             patch_size=self.vae_ratio,
-            patch_size_t=self.vae_ratio_t,
+            patch_size_t=1 if picture_model else self.vae_ratio_t,
             in_channels=z_channels,
             out_channels=out_ch,
+            num_layers=24 if picture_model else 36,
+            heads=16 if picture_model else 32,
+            rope_dim_ratio=0.5 if picture_model else 0.75,
+            rope_dims=2 if picture_model else 3,
         )
         self.register_buffer("latents_mean", torch.tensor(LATENTS_MEAN))
         self.register_buffer("latents_std", torch.tensor(LATENTS_STD))
@@ -526,20 +536,23 @@ class MiniMaxH3VideoVAE(nn.Module):
         return self._stitch_tiles(tiles, latent_height_overlaps, latent_width_overlaps)
 
     def _decode_clip(self, latents: torch.Tensor) -> torch.Tensor:
+        def decode_tile(tile):
+            if self.picture_model:
+                return self.decoder(self.post_quant_conv(tile[:, :, 0]).unsqueeze(2))
+            return self.decoder(self.post_quant_conv(tile))
+
         if not self.use_tiling:
-            return self.decoder(self.post_quant_conv(latents))
+            return decode_tile(latents)
         height_starts, height_lengths, height_overlaps = self._split_tiles(latents.shape[-2] * self.vae_ratio)
         width_starts, width_lengths, width_overlaps = self._split_tiles(latents.shape[-1] * self.vae_ratio)
         tiles = [
             [
-                self.decoder(
-                    self.post_quant_conv(
-                        latents[
-                            ...,
-                            top // self.vae_ratio : (top + tile_height) // self.vae_ratio,
-                            left // self.vae_ratio : (left + tile_width) // self.vae_ratio,
-                        ]
-                    )
+                decode_tile(
+                    latents[
+                        ...,
+                        top // self.vae_ratio : (top + tile_height) // self.vae_ratio,
+                        left // self.vae_ratio : (left + tile_width) // self.vae_ratio,
+                    ]
                 )
                 for left, tile_width in zip(width_starts, width_lengths)
             ]
@@ -633,7 +646,11 @@ class MiniMaxH3VideoVAE(nn.Module):
         latent_mean = self.latents_mean.view(1, -1, 1, 1, 1).to(latents)
         latent_std = self.latents_std.view(1, -1, 1, 1, 1).to(latents)
         latents = latents * latent_std + latent_mean
-        if latents.shape[2] == 1:
+        if self.picture_model:
+            if latents.shape[2] != 1:
+                raise ValueError("MiniMax H3 Image VAE decodes one latent frame.")
+            pixels = self._decode_clip(latents)
+        elif latents.shape[2] == 1:
             # Upstream PR #1054: the temporal decoder needs at least two tokens of context.
             pixels = self._decode_video(latents.repeat(1, 1, 2, 1, 1))[:, :, :1]
         else:
@@ -677,12 +694,21 @@ def load_video_vae(
     disable_mmap: bool = False,
     *,
     load_decoder: bool = True,
+    picture_model: bool = False,
 ) -> MiniMaxH3VideoVAE:
     """Load strictly, skipping decoder weights entirely for encode-only caching."""
     from musubi_tuner.minimax_h3.checkpoint import load_safetensors_module, resolve_safetensors_files
+    files = resolve_safetensors_files(path)
+    if picture_model:
+        from safetensors import safe_open
+
+        with safe_open(str(files[0]), framework="pt") as handle:
+            key = next((name for name in handle.keys() if name.endswith("post_quant_conv.weight")), None)
+            if key is None or len(handle.get_slice(key).get_shape()) != 4:
+                raise ValueError("Choose the MiniMax H3 Image VAE. The H3 video VAE has a different decoder.")
 
     def factory():
-        vae = MiniMaxH3VideoVAE()
+        vae = MiniMaxH3VideoVAE(picture_model=picture_model)
         if not load_decoder:
             vae.decoder = None
             vae.post_quant_conv = None
@@ -691,10 +717,11 @@ def load_video_vae(
 
     return load_safetensors_module(
         factory,
-        resolve_safetensors_files(path),
+        files,
         device=device,
         dtype=dtype,
         key_prefixes=("first_stage_model.", "video_vae.", "vae."),
         disable_mmap=disable_mmap,
         ignore_key=(lambda key: key.startswith(("decoder.", "post_quant_conv."))) if not load_decoder else None,
+        optional_keys=("latents_mean", "latents_std") if picture_model else (),
     )

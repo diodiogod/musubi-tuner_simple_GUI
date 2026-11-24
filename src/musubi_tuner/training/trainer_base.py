@@ -14,6 +14,7 @@ import argparse
 import math
 import os
 import sys
+from copy import copy
 import random
 import time
 import json
@@ -104,6 +105,8 @@ class DiTOutput:
 
 
 class NetworkTrainer:
+    image_mask_stride = None
+
     def __init__(self):
         self.blocks_to_swap = None
         self.timestep_range_pool = []
@@ -764,7 +767,13 @@ class NetworkTrainer:
             # indices = (u * noise_scheduler.config.num_train_timesteps).long()
             t_min = args.min_timestep if args.min_timestep is not None else 0
             t_max = args.max_timestep if args.max_timestep is not None else 1000
-            indices = (u * (t_max - t_min) + t_min).long()
+            sampled = u * (t_max - t_min) + t_min
+            if args.timestep_sampling == "sigma_corrected":
+                # The training scheduler stores the noisiest timestep at index zero.
+                count = noise_scheduler.config.num_train_timesteps
+                indices = (count - sampled).long().clamp_(0, count - 1)
+            else:
+                indices = sampled.long()
 
             timesteps = noise_scheduler.timesteps[indices].to(device=device)  # 1 to 1000
 
@@ -1197,6 +1206,8 @@ class NetworkTrainer:
         )
 
         output = self.call_dit(args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype)
+        if "image_loss_mask" in batch:
+            output.extra["image_loss_mask"] = batch["image_loss_mask"]
         return self.compute_loss(args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step)
 
     def on_after_primary_backward(self, args, accelerator, vae) -> None:
@@ -1235,6 +1246,11 @@ class NetworkTrainer:
         loss = torch.nn.functional.mse_loss(output.pred.to(network_dtype), output.target, reduction="none")
         if weighting is not None:
             loss = loss * weighting
+        mask = getattr(output, "extra", {}).get("image_loss_mask")
+        if mask is not None:
+            from musubi_tuner.dataset.image_loss_masks import mean_image_loss
+
+            return mean_image_loss(loss, mask, args.image_mask_background_weight), {}
         return loss.mean(), {}
 
     def on_transformer_loaded(
@@ -1507,6 +1523,17 @@ class NetworkTrainer:
                 " / データセットに学習データがありません。latent/Text Encoderキャッシュを事前に作成したか確認してください"
             )
 
+        if getattr(args, "image_masked_loss", False):
+            from musubi_tuner.dataset.image_loss_masks import prepare_masks
+            from musubi_tuner.dataset.image_video_dataset import ImageDataset
+
+            if self.image_mask_stride is None:
+                raise ValueError("This training workflow does not support still-image loss masks.")
+            if not 0 <= args.image_mask_background_weight <= 1:
+                raise ValueError("Image mask background weight must be between 0 and 1.")
+            prepare_masks((dataset for dataset in train_dataset_group.datasets if isinstance(dataset, ImageDataset)),
+                          pixels_per_token=self.image_mask_stride)
+
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = collator_class(current_epoch, ds_for_collator)
         return train_dataset_group, collator, current_epoch
@@ -1673,11 +1700,14 @@ class NetworkTrainer:
             accelerator.print(f"load network weights from {args.network_weights}: {info}")
 
         if args.gradient_checkpointing:
-            transformer.enable_gradient_checkpointing(args.gradient_checkpointing_cpu_offload)
+            self.enable_transformer_checkpointing(args, transformer)
             network.enable_gradient_checkpointing()  # may have no effect
 
         # net_kwargs is reconstructed in the metadata phase from args.network_args
         return network
+
+    def enable_transformer_checkpointing(self, args, transformer):
+        transformer.enable_gradient_checkpointing(args.gradient_checkpointing_cpu_offload)
 
     def _build_optimizer_and_dataloader(self, args, accelerator, network, train_dataset_group, collator, transformer):
         # prepare optimizer, data loader etc.
@@ -1933,6 +1963,9 @@ class NetworkTrainer:
             "ss_discrete_flow_shift": args.discrete_flow_shift,
         }
         metadata.update(self.extra_metadata(args))
+        if getattr(args, "image_masked_loss", False):
+            metadata["ss_image_masked_loss"] = True
+            metadata["ss_image_mask_background_weight"] = args.image_mask_background_weight
 
         datasets_metadata = []
         # tag_frequency = {}  # merge tag frequency for metadata editor # TODO support tag frequency
@@ -2097,18 +2130,42 @@ class NetworkTrainer:
         from musubi_tuner.training.preview_recovery import PreviewRecovery
 
         preview_recovery = PreviewRecovery()
+        from musubi_tuner.training.run_control import ENV_KEY, RunControl
 
-        def _do_sample(epoch_arg, steps_arg):
+        control_dir = os.environ.get(ENV_KEY)
+        run_control = RunControl(control_dir) if control_dir and accelerator.num_processes == 1 else None
+        if run_control:
+            run_control.start(can_sample=sample_parameters is not None)
+        stop_after_checkpoint = False
+
+        def _do_sample(epoch_arg, steps_arg, *, force=False):
             nonlocal last_sampled_step
             if preview_recovery.disabled:
                 return
             if epoch_arg is not None and epoch_arg > 0 and steps_arg == last_sampled_step:
                 return
-            if not should_sample_images(args, steps_arg, epoch_arg):
+            sample_args = args
+            if force:
+                sample_args = copy(args)
+                sample_args.sample_every_n_steps = 1
+                sample_args.sample_every_n_epochs = None
+            if not should_sample_images(sample_args, steps_arg, epoch_arg):
                 return
             preview_started = time.time()
             preview_model = accelerator.unwrap_model(transformer)
             was_training = preview_model.training
+            preview_network = accelerator.unwrap_model(network)
+
+            def render_preview():
+                # LoRA hooks belong to the adapter network, so DiT.eval() does not turn their dropout off.
+                network_was_training = preview_network.training
+                try:
+                    preview_network.eval()
+                    self.sample_images(
+                        accelerator, sample_args, epoch_arg, steps_arg, vae, transformer, sample_parameters, dit_dtype,
+                    )
+                finally:
+                    preview_network.train(network_was_training)
 
             def restore_preview():
                 self.on_after_sample_images(
@@ -2124,14 +2181,13 @@ class NetworkTrainer:
                     lambda: self.on_before_sample_images(
                         accelerator, args, epoch_arg, steps_arg, vae, transformer, network, sample_parameters, dit_dtype
                     ),
-                    lambda: self.sample_images(
-                        accelerator, args, epoch_arg, steps_arg, vae, transformer, sample_parameters, dit_dtype
-                    ),
+                    render_preview,
                     restore_preview,
                     device=accelerator.device,
                     single_process=accelerator.num_processes == 1,
                 ):
                     last_sampled_step = steps_arg
+                    return True
             finally:
                 # Pause tqdm's clock so preview loading/rendering does not inflate s/it or ETA.
                 duration = time.time() - preview_started
@@ -2265,26 +2321,39 @@ class NetworkTrainer:
                         and args.save_every_n_steps > 0
                         and global_step % args.save_every_n_steps == 0
                     )
+                    action = run_control.action() if run_control else None
+                    manual_save = action in {"save", "save_state", "save_stop"}
+                    manual_state = action in {"save_state", "save_stop"}
 
-                    if should_sampling or should_saving:
+                    if should_sampling or should_saving or action:
                         optimizer_eval_fn()
-                        if should_sampling:
-                            _do_sample(None, global_step)
+                        sample_result = False
+                        if should_sampling or action == "sample":
+                            sample_result = bool(_do_sample(None, global_step, force=action == "sample"))
 
-                        if should_saving:
+                        if should_saving or manual_save:
                             accelerator.wait_for_everyone()
                             if accelerator.is_main_process:
                                 ckpt_name = train_utils.get_step_ckpt_name(args.output_name, global_step)
                                 save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
 
-                                if args.save_state:
+                                if should_saving and args.save_state:
                                     train_utils.save_and_remove_state_stepwise(args, accelerator, global_step)
+                                elif manual_state:
+                                    state_name = train_utils.STEP_STATE_NAME.format(args.output_name, global_step)
+                                    accelerator.save_state(os.path.join(args.output_dir, state_name))
 
-                                remove_step_no = train_utils.get_remove_step_no(args, global_step)
+                                remove_step_no = train_utils.get_remove_step_no(args, global_step) if should_saving else None
                                 if remove_step_no is not None:
                                     remove_ckpt_name = train_utils.get_step_ckpt_name(args.output_name, remove_step_no)
                                     remove_model(remove_ckpt_name)
                         optimizer_train_fn()
+                        if action and run_control:
+                            stop_after_checkpoint = action == "save_stop"
+                            run_control.complete(action, global_step,
+                                                 can_sample=sample_parameters is not None and not preview_recovery.disabled,
+                                                 success=action != "sample" or sample_result)
+                            logger.info("Run control: %s at step %s", action, global_step)
 
                 current_loss = loss.detach().item()
                 # DOWNSTREAM: exact resume. A step state may begin partway through the epoch. The recorder only
@@ -2318,8 +2387,11 @@ class NetworkTrainer:
                         logs.update(automatic_swap.logs)
                     accelerator.log(logs, step=global_step)
 
-                if global_step >= args.max_train_steps:
+                if stop_after_checkpoint or global_step >= args.max_train_steps:
                     break
+
+            if stop_after_checkpoint:
+                break
 
             if len(accelerator.trackers) > 0:
                 logs = {"loss/epoch": loss_recorder.moving_average}
@@ -2355,6 +2427,8 @@ class NetworkTrainer:
             network = accelerator.unwrap_model(network)
 
         accelerator.end_training()
+        if stop_after_checkpoint:
+            return
         optimizer_eval_fn()
 
         if is_main_process and (args.save_state or args.save_state_on_train_end):

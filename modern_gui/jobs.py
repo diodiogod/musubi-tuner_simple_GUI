@@ -22,6 +22,7 @@ from job_performance import (
 )
 
 from modern_gui.commands import build_command_plan
+from musubi_tuner.training.run_control import ENV_KEY as RUN_CONTROL_ENV, for_training_command
 from modern_gui.training_notes import effective_training_comment
 from modern_gui.stages import (
     prepare_standard_stage,
@@ -136,6 +137,7 @@ class JobSupervisor:
         self._log: deque[dict[str, Any]] = deque(maxlen=5000)
         self._next_log_id = 1
         self._stop_requested = False
+        self._run_control = None
 
     def history(self) -> list[dict[str, Any]]:
         # Older modern records predate explicit lineage fields. Derive them on
@@ -152,8 +154,16 @@ class JobSupervisor:
     def snapshot(self, after: int = 0) -> dict[str, Any]:
         with self._lock:
             active = dict(self._active) if self._active else None
+            if active and self._run_control:
+                active["run_control"] = self._run_control.gui_status()
             log = [entry for entry in self._log if entry["id"] > after]
             return {"active": active, "log": log, "last_log_id": self._next_log_id - 1}
+
+    def request_training_action(self, job_id, action):
+        with self._lock:
+            if not self._active or job_id != self._active["id"] or self._stop_requested or not self._run_control:
+                raise ValueError("This training process is no longer active.")
+            self._run_control.queue(action)
 
     def start(self, settings: dict[str, Any], run_cache: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -444,6 +454,12 @@ class JobSupervisor:
                     job_id = str(self._active["id"])
                 self._append_log("system", f"$ {subprocess.list2cmdline([str(value) for value in command])}")
                 environment = _subprocess_environment()
+                control = for_training_command(command, job_log_path(job_id))
+                environment.pop(RUN_CONTROL_ENV, None)
+                if control:
+                    environment[RUN_CONTROL_ENV] = str(control.directory)
+                with self._lock:
+                    self._run_control = control
                 creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
                 self._process = subprocess.Popen(
                     [str(value) for value in command],
@@ -467,6 +483,10 @@ class JobSupervisor:
                 )
                 output_reader.start()
                 return_code = self._process.wait()
+                with self._lock:
+                    if control and control.status().get("status") == "stopped":
+                        self._stop_requested = True
+                    self._run_control = None
                 self._process_scope.close()
                 # W&B and similar helpers may inherit stdout and keep the pipe
                 # open after Accelerate exits. Do not leave the job stuck in
@@ -483,6 +503,7 @@ class JobSupervisor:
                 self._process_scope.close()
             self._process = None
             self._process_scope = None
+            self._run_control = None
         return return_code
 
     def _run_staged(self, base_settings: dict[str, Any], stages: list[dict[str, Any]]) -> None:
@@ -618,7 +639,7 @@ class JobSupervisor:
         if return_code == 0 and context.get("kind") == "sample_test":
             sample_outputs = self._find_new_sample_outputs(context)
             captured = self._capture_sample_test_thumbnails(context)
-        if return_code == 0 and not staged:
+        if return_code == 0 and not staged and not self._stop_requested:
             for message in self._rename_final_training_artifacts(final_settings):
                 self._append_log("system", message)
         with self._lock:

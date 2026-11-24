@@ -25,16 +25,39 @@ const RunInsights = (()=>{
     dialog.querySelectorAll("[data-insight-panel]").forEach(p=>p.hidden=p.dataset.insightPanel!==name);
     if(name==="chart")dialogChart?.draw();
     if(name==="files"&&!selection.filesLoaded)loadFiles();
+    if(name==="dataset"&&!selection.datasetLoaded)loadDatasetLoss();
   }
   function initialize(){
     const dialog=$("#run-insights-dialog");
-    dialog.querySelectorAll("[data-insight-tab]").forEach(b=>{b.onclick=()=>tab(b.dataset.insightTab);b.onkeydown=e=>{if(!["ArrowLeft","ArrowRight"].includes(e.key))return;e.preventDefault();const buttons=[...dialog.querySelectorAll("[data-insight-tab]")];buttons[(buttons.indexOf(b)+(e.key==="ArrowLeft"?2:1))%3].click();buttons.find(x=>x.classList.contains("active")).focus()}});
+    dialog.querySelectorAll("[data-insight-tab]").forEach(b=>{b.onclick=()=>tab(b.dataset.insightTab);b.onkeydown=e=>{if(!["ArrowLeft","ArrowRight"].includes(e.key))return;e.preventDefault();const buttons=[...dialog.querySelectorAll("[data-insight-tab]")];const offset=e.key==="ArrowLeft"?buttons.length-1:1;buttons[(buttons.indexOf(b)+offset)%buttons.length].click();buttons.find(x=>x.classList.contains("active")).focus()}});
     $("#run-note-text").addEventListener("input",()=>{$("#run-note-status").textContent=$("#run-note-text").value===selection?.savedNote?"Saved locally":"Unsaved changes"});
     $("#run-note-save").onclick=async()=>{if(!selection)return;const current=selection,text=$("#run-note-text").value,button=$("#run-note-save");await withBusy(button,"Saving…",async()=>{try{await api("/api/jobs/notes",{method:"POST",body:JSON.stringify({source:current.job._source,index:current.job._history_index,key:current.job.insights_key,note:text})});current.savedNote=text;current.job.user_note=text;if(selection===current)$("#run-note-status").textContent=$("#run-note-text").value===text?"Saved locally":"Unsaved changes";renderJobs()}catch(e){toast(e.message,"error")}})};
     const dirty=()=>selection&&$("#run-note-text").value!==selection.savedNote;
     dialog.addEventListener("cancel",e=>{if(dirty()&&!confirm("Close without saving this run note?"))e.preventDefault()});
     dialog.querySelector(".dialog-close").onclick=e=>{e.stopImmediatePropagation();if(!dirty()||confirm("Close without saving this run note?"))dialog.close()};
     dialog.addEventListener("close",()=>{requestId++;dialogChart?.destroy();dialogChart=null;selection=null;dialog.querySelectorAll("video").forEach(v=>v.pause())});
+  }
+  async function loadDatasetLoss(){
+    const current = selection, host = $("#run-insights-dataset");
+    current.datasetLoaded = true;
+    host.textContent = "Reading per-image losses…";
+    try {
+      const report = await api(`/api/jobs/insights?${params(current.job)}&dataset_loss=1`);
+      if (selection !== current) return;
+      if (!report.records) {
+        host.textContent = "This run has no dataset loss log. Enable Record loss by training image in MOSS performance settings.";
+        return;
+      }
+      const scope = report.stages > 1 ? "Latest recorded stage. " : "";
+      const range = report.truncated ? "Most recent records. " : "";
+      host.innerHTML = `<p class="run-files-help">${scope}${range}${report.records.toLocaleString()} observations. Error is relative to images of the same bucket size at similar noise levels. Inspect repeatedly high-loss images and captions before editing the dataset.</p>`
+        + (report.items.length ? `<div class="run-checkpoint-list">${report.items.map(item =>
+          `<div title="${esc(item.path)}"><span><strong>${esc(item.image)}</strong><small>${item.count} observations</small></span><span>${(100*item.excess).toFixed(1)}%</span></div>`).join("")}</div>`
+          : '<p class="run-files-empty">More repeated observations are needed to rank the images.</p>');
+    } catch (error) {
+      if (selection === current) host.textContent = error.message;
+      current.datasetLoaded = false;
+    }
   }
   async function open(job,name="chart"){
     const dialog=$("#run-insights-dialog");if(!dialog.dataset.ready){initialize();dialog.dataset.ready="1"}

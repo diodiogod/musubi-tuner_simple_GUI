@@ -22,6 +22,7 @@ from musubi_tuner.dataset.architectures import (
     ARCHITECTURE_KREA2,
     ARCHITECTURE_MOSS_IMAGE,
     ARCHITECTURE_MINIMAX_H3,
+    ARCHITECTURE_MINIMAX_H3_PICTURE,
     ARCHITECTURE_QWEN_IMAGE,
     ARCHITECTURE_QWEN_IMAGE_EDIT,
     ARCHITECTURE_QWEN_IMAGE_LAYERED,
@@ -74,6 +75,7 @@ class BucketSelector:
         ARCHITECTURE_KREA2: RESOLUTION_STEPS_KREA2,
         ARCHITECTURE_MOSS_IMAGE: 16,
         ARCHITECTURE_MINIMAX_H3: RESOLUTION_STEPS_MINIMAX_H3,
+        ARCHITECTURE_MINIMAX_H3_PICTURE: RESOLUTION_STEPS_MINIMAX_H3,
     }
 
     def __init__(
@@ -180,6 +182,8 @@ class BucketBatchManager:
         self.bucket_resos.sort()
         self.num_timestep_buckets = num_timestep_buckets
         self.timestep_pool = None
+        self.image_loss_masks = {}
+        self.sample_paths = None
 
         # indices for enumerating batches. each batch is reso + batch_idx. reso is (width, height) or (width, height, frames)
         self.bucket_batch_indices: list[tuple[tuple[Any], int]] = []
@@ -280,9 +284,20 @@ class BucketBatchManager:
             if key not in varlen_keys:
                 batch_tensor_data[key] = torch.stack(batch_tensor_data[key])
 
+        if self.image_loss_masks:
+            masks = [self.image_loss_masks.get(item.latent_cache_path) for item in bucket[start:end]]
+            shape = next((mask.shape for mask in masks if mask is not None), None)
+            if shape is not None:
+                batch_tensor_data["image_loss_mask"] = torch.stack([
+                    torch.from_numpy(mask) if mask is not None else torch.full(shape, 255, dtype=torch.uint8)
+                    for mask in masks
+                ])
+
         if self.timestep_pool is not None:
             batch_tensor_data["timesteps"] = self.timestep_pool[idx][: end - start]  # use the pre-generated timesteps
         else:
             batch_tensor_data["timesteps"] = None
 
+        if self.sample_paths is not None:
+            batch_tensor_data["sample_paths"] = [self.sample_paths.get(item.item_key, item.latent_cache_path) for item in bucket[start:end]]
         return batch_tensor_data

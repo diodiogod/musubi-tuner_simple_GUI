@@ -65,10 +65,10 @@ Choose one file and save it in your existing model folder:
 - [Heal INT8 ConvRot (5.4 GB)](https://huggingface.co/KBlueLeaf/MOSS-Image-heal/resolve/main/comfyui/moss_image_heal_int8_convrot.safetensors?download=true) uses less memory. Leave on-load DiT quantization off when using this file.
 - [Heal BF16 (10.2 GB)](https://huggingface.co/KBlueLeaf/MOSS-Image-heal/resolve/main/comfyui/moss_image_heal_bf16.safetensors?download=true) is the unquantized checkpoint.
 
-Browse for the file under **MOSS diffusion model (DiT)**. You'll find this
-field in **New training → Model** in Modern and **Models** in Classic. Both
-interfaces provide browser download links next to the field. You can also
-browse to a copy you already have.
+Open **MOSS Heal ?** beside **MOSS diffusion model (DiT)** to see the
+downloads and model card. The picker is in **New training → Model** in Modern
+and **Models** in Classic. Use **Browse** to select a downloaded file or a
+copy you already have.
 
 The selected checkpoint is used for training and previews. Keep the same MOSS
 text encoder, tokenizer, and Flux.2 VAE. Switching only the diffusion
@@ -230,6 +230,14 @@ the skip-layer control applies only to the unconditional preview branch.
 
 ## Optional experiments
 
+**Use training masks (MOSS).** Put a grayscale `photo-masklabel.png` beside
+`photo.jpg` in the source dataset. Select **Use training masks (MOSS)** in
+Regularization. White gets full weight, black gets the background weight
+(start at 0.1), and gray interpolates. The DiT still sees the full image.
+Only the diffusion loss uses the masks. REPA, DOP and depth guidance keep
+their existing objectives. Images without masks use the full image, and
+you can reuse existing latent and caption caches.
+
 - **DOP** caches an additional class caption and adds a frozen-base comparison
   pass. Every caption must contain the configured trigger. It uses more compute
   and should not be assumed to prevent all overtraining.
@@ -327,6 +335,12 @@ REPA can help learning, but does not guarantee protection against overtraining,
 forgetting or reduced generation quality. Long-run MOSS quality is unverified.
 
 ## Optional Fizgig-style speed and optimizer settings
+
+**Keep activations for last N blocks** trades spare VRAM for fewer backward
+recomputations. It requires gradient checkpointing. Leave it at 0 for the
+existing behavior, or try 4 and check memory on your largest bucket and during
+previews. This adjusts where intermediate results are retained. All blocks
+selected by the LoRA recipe still train.
 
 In both GUIs, **Enable adapter weight noise** and **Enable structural depth
 guidance** are separate switches. Off disables the feature even when its saved

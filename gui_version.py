@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 GUI_NAME = "Musubi Tuner Simple GUI"
 GUI_TITLE = f"{GUI_NAME} v{__version__}"
 

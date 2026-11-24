@@ -18,6 +18,8 @@ from urllib.parse import unquote, urlparse
 from urllib.parse import parse_qs
 
 from backends.lora_rescale import load_rescale_preferences, plan_rescale
+from backends.lora_ema import plan_ema
+from backends.minimax_h3_picture import MODE as H3_PICTURE_MODE
 from modern_gui.commands import build_command_plan
 from modern_gui.training_notes import training_settings_summary
 from modern_gui.dataset_documents import (
@@ -53,7 +55,7 @@ from modern_gui.h3_datasets import (
     save_ref2va_document,
 )
 from modern_gui.jobs import SUPERVISOR
-from modern_gui.run_insights import decorate_run, load_notes, run_chart, run_files, run_key, save_note
+from modern_gui.run_insights import dataset_loss_report, decorate_run, load_notes, run_chart, run_files, run_key, save_note
 from job_performance import enrich_job, read_job_log
 from modern_gui.recovery import (
     clear_desktop_history,
@@ -111,9 +113,11 @@ LOCAL_ACTION_POST_PATHS = frozenset(
         "/api/face/open-results",
         "/api/tools/convert",
         "/api/tools/rescale-lora",
+        "/api/tools/lora-ema",
         "/api/tools/accelerate-config",
         "/api/jobs/start",
         "/api/jobs/stop",
+        "/api/jobs/training-action",
         "/api/jobs/stop-after-epoch",
         "/api/jobs/stop-after-next-epoch",
         "/api/jobs/open-path",
@@ -267,6 +271,8 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/jobs/insights":
                 query = parse_qs(parsed.query)
                 job = self._insights_job(query.get("source", [""])[0], int(query.get("index", ["-1"])[0]), query.get("key", [""])[0])
+                if query.get("dataset_loss", [""])[0] == "1":
+                    return self._json(dataset_loss_report(job))
                 payload = {"chart": run_chart(job)}
                 if query.get("files", [""])[0] == "1":
                     payload["files"] = run_files(job)
@@ -693,10 +699,9 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 )
                 resolved_lora = resolve_preview_lora(settings)
                 resolved_lora_multiplier = str(preview_lora_multiplier(settings)) if resolved_lora else ""
-                is_h3 = settings.get("training_mode") == "MiniMax H3 (Experimental)"
-                preview_mode = ("MiniMax H3 (Experimental)" if is_h3 else
-                                "MOSS-Image (Experimental)" if settings.get("training_mode") == "MOSS-Image (Experimental)" else
-                                "Krea 2 Turbo" if "--turbo" in command else "Krea 2")
+                preview_mode = settings["training_mode"] if settings.get("training_mode") in {
+                    "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)", H3_PICTURE_MODE,
+                } else "Krea 2 Turbo" if "--turbo" in command else "Krea 2"
                 try:
                     existing_outputs = [
                         str(path.resolve()) for path in save_path.glob("*")
@@ -844,6 +849,13 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                     settings={"output_dir": str(plan.output.parent)},
                 )
                 return self._json({"job": job, "output": str(plan.output)})
+            if self.path == "/api/tools/lora-ema":
+                command, output = plan_ema(body.get("checkpoints"), body.get("output"), body.get("decay", "0.5"))
+                job = SUPERVISOR.start_commands(
+                    [command], name="Average LoRA checkpoints", mode="Utility", kind="lora_ema",
+                    settings={"output_dir": str(output.parent), "output_name": output.stem},
+                )
+                return self._json({"job": job, "output": str(output)})
             if self.path == "/api/tools/accelerate-config":
                 accelerate = Path(sys.executable).parent / ("accelerate.exe" if sys.platform == "win32" else "accelerate")
                 command = f'"{accelerate if accelerate.exists() else "accelerate"}" config'
@@ -863,6 +875,9 @@ class MusubiWebHandler(BaseHTTPRequestHandler):
                 return self._json({"job": SUPERVISOR.start(settings, bool(body.get("run_cache", True)))})
             if self.path == "/api/jobs/stop":
                 return self._json({"job": SUPERVISOR.stop()})
+            if self.path == "/api/jobs/training-action":
+                SUPERVISOR.request_training_action(body.get("job_id"), str(body.get("action") or ""))
+                return self._json({"queued": True})
             if self.path in {"/api/jobs/stop-after-epoch", "/api/jobs/stop-after-next-epoch"}:
                 return self._json({"job": SUPERVISOR.stop_after_current_epoch(bool(body.get("enabled", True)))})
             if self.path in {"/api/jobs/prepare-continuation", "/api/jobs/prepare-recovery"}:

@@ -51,6 +51,10 @@ class WanNetworkTrainer(NetworkTrainer):
     def architecture_full_name(self) -> str:
         return ARCHITECTURE_WAN_FULL
 
+    @property
+    def image_mask_stride(self):
+        return self.config["vae_stride"][1]
+
     def handle_model_specific_args(self, args):
         self.config = WAN_CONFIGS[args.task]
         # we cannot use config.i2v because Fun-Control T2V has i2v flag TODO refactor this

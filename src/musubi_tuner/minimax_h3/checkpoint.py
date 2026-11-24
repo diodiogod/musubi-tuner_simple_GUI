@@ -169,6 +169,7 @@ def load_safetensors_module(
     cast_to_expected_dtype: bool = False,
     allow_quantized: bool = False,
     disable_mmap: bool = False,
+    optional_keys: tuple[str, ...] = (),
 ) -> ModuleT:
     files = [Path(path).resolve() for path in files]
     if not files:
@@ -220,7 +221,7 @@ def load_safetensors_module(
         if shard:
             model.load_state_dict(shard, strict=False, assign=True)
 
-    missing = expected_keys - seen
+    missing = expected_keys - seen - set(optional_keys)
     if missing or unexpected or shape_mismatches or dtype_mismatches:
         raise ValueError(_format_key_mismatch(missing, unexpected, shape_mismatches, dtype_mismatches))
 

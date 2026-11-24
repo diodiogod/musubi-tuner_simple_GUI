@@ -707,7 +707,12 @@ You can specify the range of timesteps for training. This is useful for focusing
 
 - `--min_timestep`: Specifies the minimum timestep for training (0-999, default: 0).
 - `--max_timestep`: Specifies the maximum timestep for training (1-1000, default: 1000).
-- `--preserve_distribution_shape`: If specified, it constrains timestep sampling to the `[min_timestep, max_timestep]` range using rejection sampling, which preserves the original distribution shape. By default, the `[0, 1]` range is scaled, which can distort the distribution. This option is only effective when `timestep_sampling` is not 'sigma'.
+- `--preserve_distribution_shape` uses rejection sampling within the given range for continuous timestep samplers. `sigma` and `sigma_corrected` use the scheduler table and scale the draw to match the selected range.
+
+Choose `sigma_corrected` in **Timestep Sampling** to apply the bounds in
+clean-to-noisy timestep order. A positive logit mean moves training toward
+higher noise in this mode. Existing `sigma` recipes retain the legacy table
+order. Keep the original mode when resuming a saved state exactly.
 
 <details>
 <summary>日本語</summary>
@@ -905,3 +910,11 @@ powerを1未満に設定した Polynomial Scheduler に似ていますが、Rex�
 ```
 
 </details>
+
+## Still-image training masks
+
+Place `photo-masklabel.png` beside `photo.jpg` and enable **Use still-image training masks** in **Regularization**. For MOSS, the switch is named **Use training masks (MOSS)**. The switches start off. The trainer matches sidecars when you enable the switch, so your existing latent and caption caches are still usable.
+
+White areas contribute fully to the main image loss. Black areas use **Background weight outside the mask**, which defaults to `0.1`. Set it to `0` to ignore black areas. Gray blends between these weights. The model still sees the whole photo. Unmasked images use the whole frame. Depth, DOP, REPA and base-preservation losses keep their own objectives.
+
+This applies to still images in Wan 2.2 and to the image workflows in FLUX.2, Krea 2, MOSS, compact MiniMax H3, and MiniMax H3 Image. Wan video clips use the full frame. For a MiniMax H3 LoRA trained on video model weights, choose the compact still-image workflow to use masks.

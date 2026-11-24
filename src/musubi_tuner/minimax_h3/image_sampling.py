@@ -22,6 +22,13 @@ import torch
 VIDEO_VAE_SPATIAL_RATIO = 16
 IMAGE_ALIGNMENT = 32
 DEFAULT_VIDEO_SHIFT = 12.0
+# MiniMax H3 Image release grid (also used by ComfyUI and AI Toolkit).
+H3_PICTURE_SIGMAS = (1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132, 0.0)
+
+
+def picture_head_indices(model_t: torch.Tensor) -> torch.Tensor:
+    grid = model_t.new_tensor(H3_PICTURE_SIGMAS[:-1])
+    return (1.0 - model_t.reshape(-1, 1) - grid).abs().argmin(dim=-1)
 
 
 def align_image_size(value: int, label: str = "size") -> int:
@@ -78,6 +85,7 @@ def sample_image_latent(
     dtype: torch.dtype = torch.bfloat16,
     step_callback: Callable[[int, int], None] | None = None,
     enable_grad_from_step: int | None = None,
+    picture_model: bool = False,
 ) -> torch.Tensor:
     """Denoise one image latent with H3's native clean-minus-noise velocity.
 
@@ -93,7 +101,11 @@ def sample_image_latent(
         raise ValueError(f"MiniMax-H3 image text states must be [1,L,5120], got {tuple(text.shape)}")
 
     latent = initialize_image_noise(width, height, seed=seed, device=device, dtype=dtype)
-    sigmas = build_image_sigma_schedule(steps, shift=shift, device=device)
+    if picture_model:
+        sigmas = torch.tensor(H3_PICTURE_SIGMAS, device=device, dtype=torch.float64)
+        steps = len(H3_PICTURE_SIGMAS) - 1
+    else:
+        sigmas = build_image_sigma_schedule(steps, shift=shift, device=device)
     grad_start = steps if enable_grad_from_step is None else max(0, min(int(enable_grad_from_step), steps))
 
     for index in range(steps):

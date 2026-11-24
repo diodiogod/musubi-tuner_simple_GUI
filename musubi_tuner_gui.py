@@ -23,6 +23,10 @@ from backends import moss_settings, moss_image_face as moss_face_backend
 from backends.regularization_switches import FEATURES as REGULARIZATION_FEATURES, controlled_by, effective_settings as effective_regularization, normalize_switches
 from backends.numeric_settings import normalize_numbers, decimal_text
 from backends.lora_rescale import load_rescale_preferences, plan_rescale, rescale_saved_path
+from backends.lora_ema import plan_ema
+from backends import image_masks, minimax_h3_picture
+from modern_gui.prompt_preview import build_h3_conditioned_preview
+from modern_gui.sample_prompts import prepare_sample_prompt_settings, validate_sample_prompts
 from backends.flux2 import FLUX2_VERSION_MAP
 from dataset_config_builder import DatasetConfigBuilder
 from prompt_library import PromptLibraryDialog, PromptLibraryStore, prompt_identity
@@ -40,6 +44,7 @@ from job_performance import (
 )
 from modern_gui.recovery import effective_history_settings
 from process_lifecycle import ProcessTreeScope
+from musubi_tuner.training.run_control import ENV_KEY as RUN_CONTROL_ENV, for_training_command
 from gui_version import GUI_TITLE
 
 # --- Dependency Check ---
@@ -159,6 +164,7 @@ class MusubiTunerGUI:
         self.setup_styles()
 
         self.current_process = None
+        self._run_control = None
         self._current_process_scope = None
         self.monitoring_active = False
         self.vram_thread = None
@@ -295,6 +301,7 @@ class MusubiTunerGUI:
         style.configure('NavActive.TButton', background=self.colors["page"], foreground=self.colors["accent"], borderwidth=0, relief='flat', padding=[10, 5], font=('Segoe UI Semibold', 9))
         style.configure('TButton', background=self.colors["surface_alt"], foreground=TEXT_COLOR, font=('Segoe UI Semibold', 9), bordercolor=self.colors["surface_alt"], lightcolor=self.colors["surface_alt"], darkcolor=self.colors["surface_alt"], borderwidth=0, relief='flat', padding=[11, 7])
         style.map('TButton', background=[('active', self.colors["border"]), ('pressed', self.colors["border"])], foreground=[('disabled', self.colors["disabled"])])
+        style.configure('FieldLink.TButton', background=self.colors["page"], foreground=self.colors["accent"], padding=(4, 2))
         style.configure('Accent.TButton', background=self.colors["accent_hover"], foreground='#FFFFFF', padding=[14, 8])
         style.map('Accent.TButton', background=[('active', self.colors["accent"]), ('pressed', '#0284C7')])
         style.configure('Danger.TButton', background=self.colors["danger_bg"], foreground=self.colors["danger"])
@@ -414,8 +421,8 @@ class MusubiTunerGUI:
         toolbar.grid(row=1, column=0, sticky="w", pady=(10, 0))
         ttk.Label(toolbar, text="Training mode", style="Header.TLabel").pack(side="left", padx=(0, 8))
         self.mode_combo = ttk.Combobox(toolbar, textvariable=self.training_mode_var,
-                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE],
-                                      state="readonly", width=25)
+                                      values=["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE, minimax_h3_picture.MODE],
+                                      state="readonly", width=30)
         self.mode_combo.pack(side="left", padx=(0, 12)); self.mode_combo.bind("<MouseWheel>", lambda e: "break")
         self.mode_combo.bind("<<ComboboxSelected>>", self.on_training_mode_change)
         ttk.Label(toolbar, text="Theme", style="Header.TLabel").pack(side="left", padx=(0, 7))
@@ -582,15 +589,24 @@ class MusubiTunerGUI:
             pass
         return None
 
-    def _add_widget(self, parent, key, label, tooltip, kind='entry', options=None, is_required=False, validate_num=False, is_path=False, is_dir=False, default_val=False, command=None, track_setting=True):
+    def _add_widget(self, parent, key, label, tooltip, kind='entry', options=None, is_required=False, validate_num=False, is_path=False, is_dir=False, default_val=False, command=None, track_setting=True, label_action=None):
         frame = ttk.Frame(parent)
         frame.pack(fill="x", padx=10, pady=5)
         frame.grid_columnconfigure(1, weight=1)
         label_widget = None
         if kind != 'checkbox':
             label_text = label.rstrip(":") + ("  *" if is_required else "")
-            label_widget = ttk.Label(frame, text=label_text, width=27, anchor="w")
-            label_widget.grid(row=0, column=0, sticky="w", padx=(0, 14))
+            if label_action:
+                label_group = ttk.Frame(frame)
+                label_group.grid(row=0, column=0, sticky="w", padx=(0, 14))
+                label_widget = ttk.Label(label_group, text=label_text, anchor="w")
+                label_widget.pack(side="left")
+                action = ttk.Button(label_group, text=label_action[0], style="FieldLink.TButton")
+                action.configure(command=lambda: label_action[1](action))
+                action.pack(side="left", padx=(6, 0))
+            else:
+                label_widget = ttk.Label(frame, text=label_text, width=27, anchor="w")
+                label_widget.grid(row=0, column=0, sticky="w", padx=(0, 14))
 
         widget = None
         if kind == 'path_entry':
@@ -680,6 +696,34 @@ class MusubiTunerGUI:
             ),
         )
 
+    def _open_moss_heal_downloads(self, anchor):
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.title(moss_settings.HEAL_HELP_TITLE)
+        popup.transient(self.root)
+        popup.resizable(False, False)
+        content = ttk.Frame(popup, padding=14)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text=moss_settings.HEAL_DOWNLOAD_HINT, wraplength=300, justify="left").pack(anchor="w", pady=(0, 10))
+        for link in moss_settings.HEAL_DOWNLOAD_LINKS:
+            ttk.Button(content, text=link["label"], command=lambda url=link["url"]: webbrowser.open_new_tab(url)).pack(fill="x", pady=(0, 5))
+
+        def close(event=None):
+            popup.destroy()
+            anchor.focus_set()
+
+        ttk.Button(content, text="Close", command=close).pack(anchor="e", pady=(5, 0))
+        popup.protocol("WM_DELETE_WINDOW", close)
+        popup.bind("<Escape>", close)
+        popup.update_idletasks()
+        x = anchor.winfo_rootx()
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 4
+        if 0 <= x <= popup.winfo_screenwidth() - popup.winfo_reqwidth() and 0 <= y <= popup.winfo_screenheight() - popup.winfo_reqheight():
+            popup.geometry(f"+{x}+{y}")
+        popup.deiconify()
+        popup.grab_set()
+        popup.focus_set()
+
     def _add_moss_fields(self, parent, keys):
         for key in keys:
             default = moss_settings.DEFAULTS[key]
@@ -694,6 +738,7 @@ class MusubiTunerGUI:
                 is_path=key in moss_settings.PATHS, is_dir=key in {'moss_tokenizer_cache_dir', 'moss_repa_cache_dir'},
                 default_val=default if isinstance(default, bool) else False,
                 command=(lambda key=key: self._on_regularization_toggle(key)) if key in REGULARIZATION_FEATURES else None,
+                label_action=(moss_settings.HEAL_HELP_LABEL, self._open_moss_heal_downloads) if key == "moss_dit_model" else None,
             )
             if kind in ('entry', 'path_entry'):
                 widget.insert(0, default)
@@ -814,19 +859,18 @@ class MusubiTunerGUI:
         # ---- MOSS model paths section ----
         moss_models = self.hidden_frames['moss_model_paths'] = ttk.LabelFrame(frame, text="MOSS-Image · Experimental")
         self._add_moss_fields(moss_models, ["moss_dit_model"])
-        heal_downloads = ttk.Frame(moss_models)
-        heal_downloads.pack(fill="x", padx=10, pady=(0, 5))
-        ttk.Label(heal_downloads, text=moss_settings.HEAL_DOWNLOAD_HINT, wraplength=660, justify="left").pack(anchor="w")
-        links = ttk.Frame(heal_downloads)
-        links.pack(anchor="w", pady=(4, 0))
-        for link in moss_settings.HEAL_DOWNLOAD_LINKS:
-            ttk.Button(links, text=link["label"], command=lambda url=link["url"]: webbrowser.open_new_tab(url)).pack(
-                side="left", padx=(0, 5),
-            )
         self._add_moss_fields(moss_models, [
             key for key in moss_settings.DEFAULTS
-            if key not in (*moss_settings.PERFORMANCE_KEYS, "moss_dit_model", "moss_clean_end_share") and not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_"))
+            if key not in (*moss_settings.PERFORMANCE_KEYS, "moss_dit_model", "moss_clean_end_share") and not key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_", "moss_repa_", "moss_sample_", "moss_ema_", "moss_automagic3_", "moss_timestep_", "moss_logit_", "moss_pretraining_", "moss_mask"))
         ])
+        h3_picture_models = self.hidden_frames["minimax_h3_picture_models"] = ttk.LabelFrame(frame, text="MiniMax H3 Image · Experimental")
+        for key, (label, help_text) in minimax_h3_picture.MODEL_FIELDS.items():
+            self._add_widget(h3_picture_models, key, label, help_text, kind="path_entry", is_path=True,
+                             options=[("Model files", "*.safetensors")])
+        model_links = ttk.Frame(h3_picture_models)
+        model_links.pack(anchor="w", padx=10, pady=6)
+        ttk.Button(model_links, text="Model files", command=lambda: webbrowser.open_new_tab(minimax_h3_picture.WEIGHTS_URL)).pack(side="left", padx=(0, 5))
+        ttk.Button(model_links, text="Training adapter", command=lambda: webbrowser.open_new_tab(minimax_h3_picture.ASSISTANT_URL)).pack(side="left")
         # ---- Krea 2 model paths section ----
         self.hidden_frames['krea2_model_paths'] = ttk.LabelFrame(frame, text="Krea 2 Model Paths")
 
@@ -997,6 +1041,7 @@ class MusubiTunerGUI:
         self._add_widget(models_frame, "vae_model", "VAE Model:", "Choose the VAE for the selected model. MOSS-Image requires a Flux.2 VAE (standard or small decoder); Wan, Krea 2, and MiniMax H3 VAEs are not compatible. Rebuild the image/latent cache after changing the VAE.", kind='path_entry', options=[("Model files", "*.safetensors *.pt")], is_required=True, is_path=True)
 
         output_frame = ttk.LabelFrame(frame, text="Output Configuration"); output_frame.pack(fill="x", padx=10, pady=10)
+        self._output_model_frame = output_frame
         self._add_widget(output_frame, "output_dir", "Output Directory:", "Base directory to save trained LoRAs. A subfolder will be automatically created.", kind='path_entry', is_dir=True, is_required=True, is_path=True)
         self._add_widget(output_frame, "output_name", "Output Name:", "Base filename for output LoRA (e.g., 'my_character'). Suffixes like '_LowNoise' will be added automatically.", is_required=True)
 
@@ -1552,8 +1597,9 @@ class MusubiTunerGUI:
             flow_frame, "timestep_sampling", "Timestep Sampling:",
             "Compact MiniMax H3 defaults to 'krea2_shift' because it is the tested recipe. 'h3_shifted_uniform' is an "
             "experimental full-schedule alternative based on Fizgig's finding that middle-concentrated sampling can weaken ordinary 20-step inference. "
-            "For other model families, keep the value selected by their mode unless you are following a specific advanced recipe.",
-            kind='combobox', options=["uniform", "shift", "sigma", "logsnr", "qinglong_flux", "krea2_shift", "h3_shifted_uniform"]
+            "'sigma_corrected' uses the entered range as actual noise levels and biases higher with a positive logit mean. "
+            "'sigma' keeps the legacy behavior for existing recipes.",
+            kind='combobox', options=["uniform", "shift", "sigma", "sigma_corrected", "logsnr", "qinglong_flux", "krea2_shift", "h3_shifted_uniform"]
         )
         self._add_widget(flow_frame, "num_timestep_buckets", "Timestep Buckets:", "Enables stratified sampling by dividing timesteps into buckets. Can improve training stability, especially with small datasets. (e.g., 10)", validate_num=True)
         self.hidden_frames['timestep_boundary'] = ttk.Frame(flow_frame)
@@ -1847,6 +1893,14 @@ class MusubiTunerGUI:
             key for key in moss_settings.DEFAULTS
             if key.startswith(("moss_depth_", "moss_keep_depth_", "moss_weight_"))
         ])
+        self.hidden_frames["moss_masks"] = ttk.LabelFrame(self.regularization_frame, text="MOSS · Masked training")
+        self._add_moss_fields(self.hidden_frames["moss_masks"], ["moss_masked_loss", "moss_mask_background_weight"])
+        image_mask_frame = self.hidden_frames["image_masks"] = ttk.LabelFrame(self.regularization_frame, text="Still-image masks")
+        self._add_widget(image_mask_frame, "image_masked_loss", image_masks.LABELS["image_masked_loss"],
+                         image_masks.HELP["image_masked_loss"], kind="checkbox")
+        background_key = "image_mask_background_weight"
+        self._add_widget(image_mask_frame, background_key, image_masks.LABELS[background_key], image_masks.HELP[background_key],
+                         validate_num=True).insert(0, image_masks.DEFAULTS[background_key])
         self.hidden_frames['krea2_regularization'] = ttk.LabelFrame(self.regularization_frame, text="Krea 2 · Generalization (Experimental)")
         ttk.Label(
             self.hidden_frames['krea2_regularization'],
@@ -2493,11 +2547,11 @@ class MusubiTunerGUI:
             preview_btn = ttk.Button(row, text="Preview", width=7,
                        command=lambda i=idx: self._test_sample_prompt(i))
             preview_btn.pack(side="right", padx=(3, 0))
-            if self.training_mode_var.get() in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            if self.training_mode_var.get() in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE, minimax_h3_picture.MODE):
                 ttk.Button(row, text="Base cover", command=lambda i=idx: self._test_sample_prompts(
                     [self._sample_prompts_data[i]], "Base model cover", "Before-training baseline", base_cover=True,
                 )).pack(side="right", padx=(3, 0))
-            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+            if self.training_mode_var.get() not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE, minimax_h3_picture.MODE):
                 preview_btn.configure(state="disabled")
                 ToolTip(preview_btn, "Standalone preview generation is available for Krea 2 and experimental MiniMax H3.")
             ttk.Button(row, text="Duplicate", width=9,
@@ -2606,7 +2660,7 @@ class MusubiTunerGUI:
         if settings.get("gradient_checkpointing_cpu_offload") and not settings.get("gradient_checkpointing"):
             messagebox.showerror("Validation Error", "Activation CPU offload requires Gradient Checkpointing.")
             return
-        if mode not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE):
+        if mode not in ("Krea 2", "MiniMax H3 (Experimental)", moss_settings.MODE, minimax_h3_picture.MODE):
             messagebox.showinfo("Not Available", "Sample test generation is available for Krea 2, MiniMax H3 and MOSS.")
             return
 
@@ -2648,6 +2702,8 @@ class MusubiTunerGUI:
         self.run_process(command, on_complete=self._on_test_sample_complete, output_widget=self.output_text, job_context={"attach_to_active": True})
 
     def _build_minimax_h3_test_sample_command(self, settings, prompt_items):
+        if minimax_h3_backend.is_multimodal(settings) and settings.get("minimax_h3_multimodal_task") in {"fl2va", "ref2va"}:
+            return build_h3_conditioned_preview(settings, prompt_items)
         if len(prompt_items) != 1:
             raise ValueError("Experimental MiniMax-H3 standalone previews currently accept one prompt at a time.")
         required = {
@@ -2931,8 +2987,12 @@ class MusubiTunerGUI:
         existing = self._sample_prompts_data[idx] if idx is not None else {}
         mode = self.training_mode_var.get()
         is_krea2 = mode == "Krea 2"
-        is_h3 = mode == "MiniMax H3 (Experimental)"
+        is_h3_picture = mode == minimax_h3_picture.MODE
+        is_h3 = mode in ("MiniMax H3 (Experimental)", minimax_h3_picture.MODE)
         is_moss = mode == moss_settings.MODE
+        h3_task = self.entries["minimax_h3_multimodal_task"].get() if is_h3 and minimax_h3_backend.is_multimodal(self.get_settings()) else ""
+        if is_h3_picture:
+            h3_task = ""
         is_image_mode = is_krea2 or is_h3 or is_moss
         is_krea2_turbo = is_krea2 and bool(
             (self.entries.get("krea2_turbo_dit") and self.entries["krea2_turbo_dit"].get().strip())
@@ -2984,7 +3044,7 @@ class MusubiTunerGUI:
         row1_fields = [
             ("Width", "width", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
             ("Height", "height", "768" if is_h3 else ("1024" if is_krea2 or is_moss else "512"), 6),
-            ("Steps", "steps", "28" if is_h3 else ("25" if is_moss else (("8" if is_krea2_turbo else "28") if is_krea2 else "20")), 5),
+            ("Steps", "steps", "6" if is_h3_picture else ("28" if is_h3 else ("25" if is_moss else (("8" if is_krea2_turbo else "28") if is_krea2 else "20"))), 5),
             ("Guidance", "guidance", "1.0" if is_h3 else ("3.0" if is_moss else (("1.0" if is_krea2_turbo else "5.5") if is_krea2 else "5.0")), 6),
         ]
         if not is_image_mode:
@@ -2999,6 +3059,10 @@ class MusubiTunerGUI:
             if is_h3 and key == "guidance":
                 e.configure(state="disabled")
                 ToolTip(e, "MiniMax H3 guidance is fixed at 1.0 because the model is guidance-distilled.")
+            if is_h3_picture and key == "steps":
+                e.delete(0, tk.END)
+                e.insert(0, "6")
+                e.configure(state="disabled")
             if is_krea2 and key in field_tooltips:
                 ToolTip(label_widget, field_tooltips[key])
                 ToolTip(e, field_tooltips[key])
@@ -3012,6 +3076,8 @@ class MusubiTunerGUI:
                 ("Y2", "y2", existing.get("y2", ""), 6),
                 ("Seed", "seed", existing.get("seed", ""), 8),
             ]
+        elif is_h3_picture:
+            row2_fields = [("Seed", "seed", existing.get("seed", "42"), 10)]
         elif is_h3 or is_moss:
             row2_fields = [
                 ("Flow Shift", "flow_shift", existing.get("flow_shift", "12.0" if is_h3 else "5.0"), 7),
@@ -3051,6 +3117,7 @@ class MusubiTunerGUI:
         if is_image_mode:
             ttk.Checkbutton(dlg, text="Standalone preview uses current LoRA (off = base model)", variable=preview_lora_var).pack(anchor="w", padx=10, pady=5)
         e_img_entry = None
+        condition_fields = {}
         if is_krea2:
             ttk.Label(
                 dlg,
@@ -3059,6 +3126,9 @@ class MusubiTunerGUI:
                 font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
+        elif is_h3_picture:
+            ttk.Label(dlg, text="MiniMax H3 Image generates one picture in six steps. Guidance is fixed at 1.",
+                      foreground=self.colors["muted"], wraplength=580).pack(anchor="w", padx=10, pady=(12, 0))
         elif is_h3:
             ttk.Label(
                 dlg,
@@ -3067,6 +3137,27 @@ class MusubiTunerGUI:
                 font=("Segoe UI", 9, "italic"),
                 wraplength=580,
             ).pack(anchor="w", padx=10, pady=(12, 0))
+            def condition_input(label, key, filetypes=None):
+                row = ttk.Frame(dlg)
+                row.pack(fill="x", padx=10, pady=3)
+                ttk.Label(row, text=label, width=20).pack(side="left")
+                var = tk.StringVar(value=existing.get(key, existing.get("image_path", "") if key == "first_frame" else ""))
+                condition_fields[key] = var
+                ttk.Entry(row, textvariable=var).pack(side="left", expand=True, fill="x")
+                if filetypes:
+                    def browse():
+                        path = filedialog.askopenfilename(parent=dlg, filetypes=filetypes)
+                        if path:
+                            var.set(path)
+                    ttk.Button(row, text="Browse", command=browse).pack(side="left", padx=(5, 0))
+
+            if h3_task == "fl2va":
+                images = [("Images", "*.png *.jpg *.jpeg *.webp")]
+                condition_input("First frame", "first_frame", images)
+                condition_input("Last frame", "last_frame", images)
+            elif h3_task == "ref2va":
+                condition_input("Reference manifest", "reference_jsonl", [("JSONL", "*.jsonl")])
+                condition_input("Manifest row (0 first)", "reference_index")
         elif is_moss:
             ttk.Label(dlg, text="MOSS preview recipe: 25 steps, DDIM + Simple, CFG 3, shift 5. Optional Turbo LoRA and strength live at the top of Samples. These settings affect generation only.",
                       foreground=self.colors["muted"], wraplength=580).pack(anchor="w", padx=10, pady=(12, 0))
@@ -3099,13 +3190,15 @@ class MusubiTunerGUI:
                 data["mu"]         = row2.e_mu.get().strip()
                 data["y1"]         = row2.e_y1.get().strip()
                 data["y2"]         = row2.e_y2.get().strip()
-            else:
+            elif not is_h3_picture:
                 data["flow_shift"] = row2.e_flow_shift.get().strip()
                 if is_h3:
                     data["frames"] = row2.e_frames.get().strip()
                     data["fps"] = row2.e_fps.get().strip()
             data["seed"]       = row2.e_seed.get().strip()
             data["image_path"] = e_img_entry.get().strip() if e_img_entry is not None else ""
+            data.update({key: existing[key] for key in ("first_frame", "last_frame", "reference_jsonl", "reference_index") if key in existing})
+            data.update({key: var.get().strip() for key, var in condition_fields.items()})
             data["enabled"]    = existing.get("enabled", True)
             if is_image_mode:
                 data["_preview_use_lora"] = preview_lora_var.get()
@@ -3172,6 +3265,10 @@ class MusubiTunerGUI:
         if not prompts_data:
             return ""
         mode = self.training_mode_var.get()
+        if mode in ("MiniMax H3 (Experimental)", minimax_h3_picture.MODE) and output_name_override is None:
+            settings = self.get_settings()
+            if mode == minimax_h3_picture.MODE or minimax_h3_backend.is_multimodal(settings):
+                return prepare_sample_prompt_settings(dict(settings, sample_prompts_data=prompts_data), write=True)["sample_prompts"]
         is_krea2 = mode == "Krea 2"
         lines = []
         for prompt_data in prompts_data:
@@ -3719,6 +3816,13 @@ class MusubiTunerGUI:
         self.start_btn = ttk.Button(train_button_frame, text="Run Training", style="Accent.TButton", command=self.start_selected_run); self.start_btn.pack(side="left", padx=(0, 5), expand=True, fill='x')
         ToolTip(self.start_btn, "Starts either one normal training run or the configured staged progression, according to the Run Mode selection above.")
         self.stop_btn = ttk.Button(train_button_frame, text="Stop Training", style="Danger.TButton", command=self.stop_training, state="disabled"); self.stop_btn.pack(side="left", padx=5, expand=True, fill='x')
+        self.run_actions = ttk.Menubutton(train_button_frame, text="Training actions", state="disabled")
+        actions = tk.Menu(self.run_actions, tearoff=False)
+        for action, title in (("sample", "Sample now"), ("save", "Save LoRA now"),
+                              ("save_state", "Save resumable checkpoint"), ("save_stop", "Save checkpoint and stop")):
+            actions.add_command(label=title, command=lambda action=action: self._queue_training_action(action))
+        self.run_actions.configure(menu=actions)
+        self.run_actions.pack(side="left", padx=(5, 0))
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(controls_frame, variable=self.progress_var, style='TProgressbar'); self.progress_bar.pack(pady=(5, 5), padx=10, fill='x')
         self.progress_label_var = tk.StringVar(value="Ready"); ttk.Label(controls_frame, textvariable=self.progress_label_var, anchor='center').pack(fill='x')
@@ -3820,8 +3924,18 @@ class MusubiTunerGUI:
             control_state = "disabled" if self.current_process else "normal"
             self.entries["use_staged_training"].configure(state=control_state)
             self.staged_config_btn.configure(state=control_state)
+            self.run_actions.configure(state="normal" if self.current_process and self._run_control else "disabled")
         except (AttributeError, KeyError):
             pass
+
+    def _queue_training_action(self, action):
+        if self._run_control is None:
+            return
+        try:
+            self._run_control.queue(action)
+            self.output_text.insert(tk.END, "\nTraining action queued for the next optimizer step.\n")
+        except (ValueError, OSError) as error:
+            messagebox.showwarning("Training actions", str(error), parent=self.root)
 
     def start_selected_run(self):
         if self.current_process:
@@ -7176,6 +7290,35 @@ class MusubiTunerGUI:
             track_setting=False,
         ).configure(textvariable=self._rescale_output)
         ttk.Button(rescale_frame, text="Save Rescaled LoRA", command=self.start_lora_rescale).pack(pady=10)
+        ema_frame = ttk.LabelFrame(main_frame, text="Average LoRA Checkpoints (Post-Hoc EMA)")
+        ema_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(ema_frame, text="Add checkpoints from the same run, one per line, oldest first.").pack(anchor="w", padx=10, pady=(6, 0))
+        self._ema_checkpoints = tk.Text(ema_frame, height=3, wrap="none")
+        self._ema_checkpoints.pack(fill="x", padx=10, pady=4)
+
+        def browse_ema_checkpoint():
+            path = filedialog.askopenfilename(parent=self.root, filetypes=[("LoRA checkpoint", "*.safetensors")])
+            if path:
+                previous = self._ema_checkpoints.get("1.0", "end-1c").strip()
+                self._ema_checkpoints.delete("1.0", tk.END)
+                self._ema_checkpoints.insert("1.0", "\n".join(filter(None, (previous, path))))
+
+        ttk.Button(ema_frame, text="Add Checkpoint", command=browse_ema_checkpoint).pack(anchor="w", padx=10, pady=(0, 4))
+        self._ema_decay = tk.StringVar(value="0.5")
+        self._ema_output = tk.StringVar()
+        for label, var, help_text in (
+            ("EMA Decay", self._ema_decay, "0.5 gives two checkpoints equal weight. Higher decay retains more of the running average."),
+            ("Output File (Optional)", self._ema_output, "Leave blank to add _ema to the last checkpoint’s name."),
+        ):
+            field_row = ttk.Frame(ema_frame)
+            field_row.pack(fill="x", padx=10, pady=2)
+            label_widget = ttk.Label(field_row, text=label, width=24)
+            label_widget.pack(side="left")
+            field = ttk.Entry(field_row, textvariable=var)
+            field.pack(side="left", fill="x", expand=True)
+            ToolTip(label_widget, help_text)
+            ToolTip(field, help_text)
+        ttk.Button(ema_frame, text="Save Averaged LoRA", command=self.start_lora_ema).pack(pady=8)
 
         console_frame = ttk.LabelFrame(main_frame, text="Tool Output"); console_frame.pack(fill='both', expand=True)
         self.convert_output_text = tk.Text(console_frame, wrap=tk.WORD, bg=self.colors["field"], fg=self.colors["text"], insertbackground=self.colors["text"], font=('Consolas', 9), relief=tk.FLAT, bd=0)
@@ -7212,6 +7355,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
     def on_training_mode_change(self, event=None):
         mode = self.training_mode_var.get()
         self.hidden_frames['moss_model_paths'].pack_forget()
+        self.hidden_frames["minimax_h3_picture_models"].pack_forget()
+        if not self._vae_frame.winfo_manager():
+            self._vae_frame.pack(fill="x", padx=10, pady=10, before=self._output_model_frame)
         is_wan = (mode == "Wan 2.2")
         self.title_label.config(text="Musubi Tuner")
         self.subtitle_label.config(text=f"{mode} · LoRA training studio")
@@ -7227,7 +7373,23 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else:
                 self._moss_sampling_frame.pack_forget()
 
-        if mode == moss_settings.MODE:
+        if mode == minimax_h3_picture.MODE:
+            self.mode_note_label.config(text="Experimental text-to-image LoRA · dedicated DiT and VAE · six-step previews")
+            for name in ("wan_dit", "wan_models", "flux2_model_paths", "krea2_model_paths", "minimax_h3_model_paths"):
+                self.hidden_frames[name].pack_forget()
+            self.hidden_frames["minimax_h3_picture_models"].pack(fill="x", padx=10, pady=10, before=self._vae_frame)
+            self._vae_frame.pack_forget()
+            if event is not None:
+                self.entries["network_type"].set("LoRA")
+                self.entries["mixed_precision"].set("bf16")
+                self.entries["attention_mechanism"].set("sdpa")
+                self.entries["gradient_checkpointing"].var.set(True)
+                self.entries["fp8_base"].var.set(False)
+                self.entries["fp8_scaled"].var.set(False)
+                self.entries["compile"].var.set(False)
+                self.entries["blocks_to_swap"].delete(0, tk.END)
+                self.entries["blocks_to_swap"].insert(0, "30")
+        elif mode == moss_settings.MODE:
             self.mode_note_label.config(text="MOSS image LoRA · Qwen3.5-9B text encoder · Flux.2 VAE")
             for name in ('wan_dit', 'wan_models', 'flux2_model_paths', 'krea2_model_paths', 'minimax_h3_model_paths'):
                 self.hidden_frames[name].pack_forget()
@@ -7547,6 +7709,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         is_flux2 = mode in ("Flux.2 Klein", "Flux.2 Dev")
         is_krea2 = (mode == "Krea 2")
         is_moss = (mode == moss_settings.MODE)
+        is_h3_picture = mode == minimax_h3_picture.MODE
         is_minimax_h3 = (mode == "MiniMax H3 (Experimental)")
         selected_h3_multimodal = bool(
             is_minimax_h3
@@ -7581,7 +7744,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             and self.entries.get("minimax_h3_training_workflow")
             and str(self.entries["minimax_h3_training_workflow"].get() or "").startswith("Video")
         )
-        self.entries["vae_model"].is_required = not h3_multimodal
+        self.entries["vae_model"].is_required = not h3_multimodal and not is_h3_picture
+        self.entries["minimax_h3_picture_dit"].is_required = is_h3_picture
+        self.entries["minimax_h3_picture_vae"].is_required = is_h3_picture
+        self.entries["minimax_h3_picture_text_encoder"].is_required = is_h3_picture
         self.entries["minimax_h3_video_vae"].is_required = h3_multimodal
         self.entries["minimax_h3_audio_vae"].is_required = h3_multimodal
         self.entries["dataset_config"].is_required = not refinement_only
@@ -7824,14 +7990,20 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             else: self.hidden_frames['fp8_t5_frame'].pack_forget()
         except KeyError: pass
         try:
+            if mode in image_masks.MODES and not h3_multimodal:
+                self.hidden_frames["image_masks"].pack(fill="x", padx=10, pady=10)
+            else:
+                self.hidden_frames["image_masks"].pack_forget()
             if mode == moss_settings.MODE:
                 self.hidden_frames['moss_ema'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['moss_repa'].pack(fill="x", padx=10, pady=10)
                 self.hidden_frames['moss_regularization'].pack(fill="x", padx=10, pady=10)
+                self.hidden_frames['moss_masks'].pack(fill="x", padx=10, pady=10)
             else:
                 self.hidden_frames['moss_ema'].pack_forget()
                 self.hidden_frames['moss_repa'].pack_forget()
                 self.hidden_frames['moss_regularization'].pack_forget()
+                self.hidden_frames['moss_masks'].pack_forget()
             if mode == moss_settings.MODE:
                 self.hidden_frames["moss_performance"].pack(fill="x", padx=10, pady=10)
             else:
@@ -7895,8 +8067,10 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 )
             elif mode == "Flux.2 Klein":
                 self.regularization_availability_var.set(
-                    "FLUX.2 Klein currently supports DOP. Krea-specific weight-noise and depth controls are hidden."
+                    "FLUX.2 Klein supports DOP and optional still-image masks."
                 )
+            elif mode in image_masks.MODES:
+                self.regularization_availability_var.set("Still-image loss masks are optional. Enable them below to use matching mask files.")
             else:
                 self.regularization_availability_var.set(
                     f"{mode} has no regularization methods exposed on this page yet. Saved experimental settings remain preserved."
@@ -8168,6 +8342,7 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
 
     def load_default_settings(self):
         defaults = {
+            **image_masks.DEFAULTS,
             "dataset_config": "", "project_root": "", "dit_high_noise": "", "dit_low_noise": "", "is_i2v": False,
             "train_high_noise": True, "train_low_noise": True,
             "min_timestep_low": "0", "max_timestep_low": "875", "min_timestep_high": "875", "max_timestep_high": "1000",
@@ -8749,6 +8924,11 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
                 env.pop(distributed_key, None)
             project_root = os.getcwd(); src_path = os.path.join(project_root, 'src')
             env['PYTHONPATH'] = f"{src_path}{os.pathsep}{env.get('PYTHONPATH', '')}"
+            env.pop(RUN_CONTROL_ENV, None)
+            console_log = (self._active_job or {}).get("console_log_path")
+            self._run_control = for_training_command(command, console_log) if console_log else None
+            if self._run_control:
+                env[RUN_CONTROL_ENV] = str(self._run_control.directory)
 
             if self.monitoring_active and PYNVML_AVAILABLE:
                 # Cache and Accelerate training commands may use different GPUs.
@@ -9035,11 +9215,21 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         finally:
             return_code = process.wait()
             if self.current_process is process:
+                if self._run_control and self._run_control.status().get("status") == "stopped":
+                    self._stop_requested = True
                 self.current_process = None
                 self._current_process_scope = None
+                self._run_control = None
+                self.root.after(0, self._update_run_mode_controls)
             if on_complete: self.root.after(0, on_complete, return_code)
 
     def _run_next_command_in_sequence(self, return_code):
+        if return_code == 0 and self._stop_requested:
+            self.command_sequence.clear()
+            self._staged_run = None
+            self._finalize_active_job("stopped", 0)
+            self.stop_all_activity()
+            return
         if return_code != 0:
             self._finalize_active_job("stopped" if self._stop_requested else "failed", return_code)
             self.output_text.insert(tk.END, f"\n--- Previous step failed with code {return_code}. Halting sequence. ---\n")
@@ -9087,6 +9277,9 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         elif mode == "MiniMax H3 (Experimental)":
             cache_commands = minimax_h3_backend.build_cache_commands(settings, python_executable)
             training_commands = minimax_h3_backend.build_commands(settings)
+        elif mode == minimax_h3_picture.MODE:
+            cache_commands = minimax_h3_picture.build_cache_commands(settings, python_executable)
+            training_commands = minimax_h3_picture.build_commands(settings)
         else:
             cache_commands = flux2_backend.build_cache_commands(settings, python_executable)
             training_commands = flux2_backend.build_commands(settings)
@@ -9506,6 +9699,25 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         mode = settings.get("training_mode", "Wan 2.2")
         if self.start_btn['state'] == 'disabled':
             messagebox.showerror("Validation Error", "Please fill all required fields before training."); return
+        if settings.get("image_masked_loss") and image_masks.supported(settings):
+            try:
+                image_masks.background_weight(settings)
+            except ValueError as exc:
+                messagebox.showerror("Still-image masks", str(exc), parent=self.root)
+                return
+        if mode == "MiniMax H3 (Experimental)" and minimax_h3_backend.is_multimodal(settings):
+            prompt_issues = validate_sample_prompts(settings)
+            if prompt_issues:
+                messagebox.showerror("Sample Prompts", "\n".join(prompt_issues), parent=self.root)
+                return
+        if mode == minimax_h3_picture.MODE:
+            try:
+                minimax_h3_picture.runtime_settings(settings)
+                if settings.get("network_type") != "LoRA":
+                    raise ValueError("MiniMax H3 Image supports LoRA training.")
+            except ValueError as exc:
+                messagebox.showerror("MiniMax H3 Image", str(exc), parent=self.root)
+                return
         if mode in ("Flux.2 Klein", "Flux.2 Dev") and settings.get("flux2_reference_guided"):
             if mode == "Flux.2 Dev":
                 messagebox.showerror("Validation Error", "Reference-Guided Learning currently supports Flux.2 Klein only.")
@@ -9770,6 +9982,8 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             cache_cmds = moss_backend.build_cache_commands(settings, python_executable)
         elif mode == "MiniMax H3 (Experimental)":
             cache_cmds = minimax_h3_backend.build_cache_commands(settings, python_executable)
+        elif mode == minimax_h3_picture.MODE:
+            cache_cmds = minimax_h3_picture.build_cache_commands(settings, python_executable)
         else:
             cache_cmds = flux2_backend.build_cache_commands(settings, python_executable)
         self.command_sequence.extend(cache_cmds)
@@ -9862,11 +10076,17 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
             return moss_backend.build_commands(settings)
         elif mode == "MiniMax H3 (Experimental)":
             return minimax_h3_backend.build_commands(settings)
+        elif mode == minimax_h3_picture.MODE:
+            return minimax_h3_picture.build_commands(settings)
         else:
             return flux2_backend.build_commands(settings)
 
     def show_command(self):
-        commands = self.build_training_commands()
+        try:
+            commands = self.build_training_commands()
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Build training command", str(exc), parent=self.root)
+            return
         if commands:
             full_command_str = ""
             for i, command in enumerate(commands):
@@ -9920,6 +10140,15 @@ Note: If you get a 'ValueError: fp16 mixed precision requires a GPU', try answer
         self._begin_job(kind, title, settings=settings, note=note)
         self.run_process(command, on_complete=lambda code: self._on_lora_tool_complete(code, title),
                          output_widget=self.convert_output_text, job_context={"attach_to_active": True})
+
+    def start_lora_ema(self):
+        try:
+            command, output = plan_ema(self._ema_checkpoints.get("1.0", "end-1c"), self._ema_output.get(), self._ema_decay.get())
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Average LoRA Checkpoints", str(exc), parent=self.root)
+            return
+        settings = {"training_mode": "Utility", "output_dir": str(output.parent), "output_name": output.stem}
+        self._start_lora_tool(command, "lora_ema", "Average LoRA Checkpoints", settings, output.name)
 
     def _on_lora_tool_complete(self, return_code, title):
         self._finalize_active_job("completed" if return_code == 0 else ("stopped" if self._stop_requested else "failed"), return_code)

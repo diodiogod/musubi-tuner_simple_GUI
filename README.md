@@ -4,10 +4,10 @@
 [![Stars](https://img.shields.io/github/stars/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/stargazers)
 [![Issues](https://img.shields.io/github/issues/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/issues)
 [![Forks](https://img.shields.io/github/forks/diodiogod/musubi-tuner_simple_GUI?style=for-the-badge)](https://github.com/diodiogod/musubi-tuner_simple_GUI/network/members)
-[![GUI version](https://img.shields.io/badge/GUI_version-0.1.2-1f6feb?style=for-the-badge)](CHANGELOG.md)
+[![GUI version](https://img.shields.io/badge/GUI_version-0.2.0-1f6feb?style=for-the-badge)](CHANGELOG.md)
 [![Ko-Fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/diogogo)
 
-# Musubi Tuner Simple GUI v0.1.2
+# Musubi Tuner Simple GUI v0.2.0
 
 *An independently versioned GUI and experimental training fork based on
 [kohya-ss/Musubi Tuner](https://github.com/kohya-ss/musubi-tuner).* Includes the
@@ -45,6 +45,7 @@ This fork is no longer just a Wan 2.2 front-end. The GUI now supports multiple m
 - `Krea 2`
 - `MiniMax H3 (Experimental)` — still-image LoRA directly from the pruned ConvRot INT8 base
 - `MOSS-Image (Experimental)` — image LoRA using MOSS-Image Base or the optional Heal checkpoint, including ComfyUI ConvRot weights
+- `MiniMax H3 Image (Experimental)` — text-to-image LoRA on the dedicated six-step MiniMax H3 Image model
 
 It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling, monitoring, continuation training, and conversion easier to manage from a single interface.
 
@@ -59,8 +60,10 @@ It keeps the underlying musubi-tuner workflow intact, but makes setup, sampling,
 - Local job history workspace for finished, failed, and stopped runs, including verified true-state recovery with preserved monitoring history
 - Save/load settings and auto-restore of your last session
 - LoRA format conversion and ComfyUI strength rescaling, including MOSS-Image
+- Post-hoc EMA for LoRA checkpoints from the same run, and live save, preview, and save-and-stop actions
 - Accelerate setup tab for first-time installation
 - Guided Differential Output Preservation (DOP) for Krea 2, experimental MiniMax H3 and MOSS-Image, and FLUX.2 Klein, including signed class-caption caches, live loss reporting, and per-stage overrides
+- Optional still-image loss masks for MOSS, Krea 2, FLUX.2, MiniMax H3, MiniMax H3 Image, and Wan 2.2 [mask setup](./docs/advanced_config.md#still-image-training-masks)
 - Dedicated Training Notes workspace with permanent custom comments plus a concise automatic summary, enabled by default for new recipes and rebuilt for each run/stage: source batch sizes, gradient accumulation, optimizer, noise schedule, precision and active experimental features are embedded in LoRA metadata. Explicit saved Off choices remain Off.
 
 ## Current Workspace Layout
@@ -501,6 +504,7 @@ This fork rides on top of upstream musubi-tuner, so the backend documentation is
 - Krea 2: [docs/krea2.md](./docs/krea2.md)
 - MiniMax H3 experimental image training: [docs/minimax_h3_experimental.md](./docs/minimax_h3_experimental.md)
 - MiniMax H3 official video and joint-audio training: [docs/minimax_h3.md](./docs/minimax_h3.md)
+- MiniMax H3 Image LoRA training [setup and model files](./docs/minimax_h3_picture_experimental.md)
 - Dataset config: [docs/dataset_config.md](./docs/dataset_config.md)
 - Sampling during training: [docs/sampling_during_training.md](./docs/sampling_during_training.md)
 - Advanced config: [docs/advanced_config.md](./docs/advanced_config.md)

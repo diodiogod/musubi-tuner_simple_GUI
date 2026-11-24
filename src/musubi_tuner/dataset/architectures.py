@@ -35,6 +35,8 @@ ARCHITECTURE_MOSS_IMAGE = "moss"
 ARCHITECTURE_MOSS_IMAGE_FULL = "moss_image"
 ARCHITECTURE_MINIMAX_H3 = "mmh3"
 ARCHITECTURE_MINIMAX_H3_FULL = "minimax_h3"
+ARCHITECTURE_MINIMAX_H3_PICTURE = "mmh3i"
+ARCHITECTURE_MINIMAX_H3_PICTURE_FULL = "minimax_h3_image"
 
 
 def round_down_frame_count(frame_count: int, architecture: str, vae_frame_stride: int) -> int:

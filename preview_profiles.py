@@ -1,6 +1,7 @@
 """Shared preview identity and starter prompts for both interfaces."""
 import os
 from pathlib import Path
+from backends.minimax_h3_picture import MODE as H3_PICTURE_MODE
 
 
 def standalone_preview_root():
@@ -18,6 +19,7 @@ def with_preview_output(settings):
 def preview_model_identity(settings):
     mode = str(settings.get("training_mode") or "")
     key = {"Krea 2": "krea2_dit_model", "MiniMax H3 (Experimental)": "minimax_h3_dit_model",
+           H3_PICTURE_MODE: "minimax_h3_picture_dit",
            "MOSS-Image (Experimental)": "moss_dit_model"}.get(mode, "dit_model")
     path = str(settings.get("krea2_turbo_dit") or "") if mode == "Krea 2" else ""
     path = path or str(settings.get(key) or "")
@@ -39,6 +41,8 @@ def prompt_defaults(settings):
         return dict(common, width=1024, height=1024, steps=25, guidance=3, flow_shift=5, sampler="ddim", scheduler="simple")
     if mode == "MiniMax H3 (Experimental)":
         return dict(common, width=768, height=768, frames=39, fps=24, steps=20, guidance=1, cfg_scale=1, flow_shift=12)
+    if mode == H3_PICTURE_MODE:
+        return dict(common, width=768, height=768, frames=1, steps=6, guidance=1)
     turbo = mode == "Krea 2" and (settings.get("krea2_turbo_dit") or settings.get("krea2_turbo_lora"))
     return dict(common, width=1024, height=1024, steps=8 if turbo else 28, guidance=1 if turbo else 5.5)
 

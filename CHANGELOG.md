@@ -5,6 +5,28 @@ Studio, and the fork's training extensions. GUI releases follow Semantic
 Versioning independently of upstream Musubi Tuner. Earlier development remains
 documented in Git history; inherited Musubi package numbers are not GUI releases.
 
+## [0.2.0] - 2026-11-24
+
+### Added
+
+- Train text-to-image LoRAs with **MiniMax H3 Image (Experimental)** in both GUIs. This mode uses its own checkpoint and VAE, separate caches, an optional frozen training adapter, and six-step previews. It was checked with synthetic inputs. Full-model runs are still unverified.
+- Use optional `-masklabel.png` sidecars to focus the training loss in MOSS, Krea 2, FLUX.2 Klein and Dev, MiniMax H3 Image, compact MiniMax H3, and Wan 2.2 still-image training. The option is off by default and works with existing caches.
+- Request a preview, save a LoRA or resumable checkpoint, or save and stop at the next completed optimizer step in either GUI.
+- Choose a first and last frame for native H3 FL2VA previews, or a reference manifest for Ref2VA. The inputs work with standalone and scheduled video samples.
+- Average LoRA checkpoints from the same run with post-hoc EMA in both GUIs.
+- Tune the memory and speed trade-off with partial MOSS gradient checkpointing, and optionally record per-image denoising losses for dataset review in Musubi Studio.
+- Choose `sigma_corrected` to apply timestep bounds and logit-mean bias in the intended direction. Existing `sigma` recipes retain their behavior.
+
+### Changed
+
+- Open **MOSS Heal ?** beside the model picker for INT8 and BF16 downloads and the model card.
+
+### Fixed
+
+- Disable LoRA dropout during training previews and restore the prior adapter mode afterward.
+- Keep the Krea 2 Turbo preview LoRA in CPU memory between samples.
+- Allow the Wan text encoder module to be imported without initializing CUDA.
+
 ## [0.1.2] - 2026-11-24
 
 ### Changed

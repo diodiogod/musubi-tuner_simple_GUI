@@ -1,7 +1,7 @@
 """Read-only run charts/artifacts and local annotations, independent of recipes."""
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 import hashlib
 import json
 import math
@@ -81,6 +81,52 @@ def record_chart_point(metrics: dict, update: dict, *, bounded: bool = True) -> 
 
 def _finite(value):
     return isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def dataset_loss_report(job):
+    """Rank repeatedly high-loss images against other images at similar noise and size."""
+    from job_performance import JOB_LOG_DIR
+
+    console = Path(str(job.get("console_log_path") or "")).resolve()
+    if console.parent != JOB_LOG_DIR.resolve():
+        return {}
+    folder = console.with_suffix("")
+    logs = [path for path in folder.glob("*/moss-sample-loss.jsonl")
+            if folder in path.resolve().parents and path.is_file()]
+    if not logs:
+        return {}
+    path = max(logs, key=lambda item: item.stat().st_mtime_ns)
+    groups = defaultdict(list)
+    max_bytes = 12_000_000
+    truncated = path.stat().st_size > max_bytes
+    with path.open("rb") as handle:
+        if truncated:
+            handle.seek(-max_bytes, 2)
+            handle.readline()
+        for line in handle:
+            try:
+                row = json.loads(line)
+                image, loss, timestep = row["image"], row["loss"], row["timestep"]
+                if isinstance(image, str) and _finite(loss) and _finite(timestep):
+                    groups[(tuple(row["grid"]), min(9, int(timestep / 100)))].append((image, loss))
+            except (TypeError, ValueError, KeyError):
+                continue
+
+    scores = defaultdict(list)
+    for observations in groups.values():
+        if len({image for image, _ in observations}) < 2:
+            continue
+        average = sum(loss for _, loss in observations) / len(observations)
+        if average > 0:
+            for image, loss in observations:
+                scores[image].append(loss / average - 1)
+    ranked = [
+        {"image": Path(image).name, "path": image, "count": len(values), "excess": sum(values) / len(values)}
+        for image, values in scores.items() if len(values) >= 2
+    ]
+    ranked.sort(key=lambda row: row["excess"], reverse=True)
+    return {"items": ranked[:20], "records": sum(map(len, groups.values())), "truncated": truncated,
+            "stages": len(logs)}
 
 
 def chart_payload(metrics: dict) -> dict:

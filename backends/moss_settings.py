@@ -2,20 +2,22 @@
 MODE = "MOSS-Image (Experimental)"
 DIT_LABEL = "MOSS diffusion model (DiT)"
 HEAL_MODEL_URL = "https://huggingface.co/KBlueLeaf/MOSS-Image-heal"
+HEAL_HELP_LABEL = "MOSS Heal ?"
+HEAL_HELP_TITLE = "MOSS Heal"
 HEAL_DOWNLOAD_LINKS = (
     {
-        "label": "Download Heal INT8 (5.4 GB)",
+        "label": "Download INT8 (5.4 GB)",
         "url": f"{HEAL_MODEL_URL}/resolve/main/comfyui/moss_image_heal_int8_convrot.safetensors?download=true",
     },
     {
-        "label": "Download Heal BF16 (10.2 GB)",
+        "label": "Download BF16 (10.2 GB)",
         "url": f"{HEAL_MODEL_URL}/resolve/main/comfyui/moss_image_heal_bf16.safetensors?download=true",
     },
-    {"label": "Heal model card", "url": HEAL_MODEL_URL},
+    {"label": "Model card", "url": HEAL_MODEL_URL},
 )
 HEAL_DOWNLOAD_HINT = (
-    "MOSS-Image-heal is an optional training base by KBlueLeaf. Download one file, then select it above. "
-    "INT8 uses less memory. Keep your MOSS text encoder and Flux.2 VAE."
+    "Heal is KBlueLeaf’s optional MOSS training base. INT8 uses less memory. "
+    "After downloading, choose the file with Browse and keep your current text encoder and VAE."
 )
 DEFAULTS = {
     "moss_dit_model": "", "moss_text_encoder": "", "moss_tokenizer_cache_dir": "",
@@ -43,11 +45,14 @@ DEFAULTS = {
     "moss_ema_enabled": False, "moss_ema_decay": "0.98", "moss_ema_device": "training",
     "moss_automagic3_min_lr": "0.00005", "moss_automagic3_max_lr": "0.001",
     "moss_fast_lora": False, "moss_text_pad_multiple": "0",
-    "moss_compile_checkpoint": "inside", "moss_sdpa_backend": "default",
+    "moss_compile_checkpoint": "inside", "moss_sdpa_backend": "default", "moss_checkpoint_skip_blocks": "0",
     "moss_clean_end_share": "",
     "moss_unpadded_batches": False,
+    "moss_masked_loss": False, "moss_mask_background_weight": "0.1",
+    "moss_record_sample_losses": False,
 }
-PERFORMANCE_KEYS = ("moss_fast_lora", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint", "moss_sdpa_backend")
+PERFORMANCE_KEYS = ("moss_fast_lora", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint",
+                    "moss_sdpa_backend", "moss_checkpoint_skip_blocks", "moss_record_sample_losses")
 MUON_ARGS = 'adjust_lr_fn="match_rms_adamw" weight_decay=0.01 momentum=0.95 nesterov=True ns_steps=5'
 CLEAN_END_DETAILS = (
     "Every training step takes one of your pictures and adds noise to it. MOSS practices removing that noise. "
@@ -126,6 +131,10 @@ REPA_LABELS = {
     "moss_fast_lora": "Fast BF16 LoRA compute (Fizgig-style)",
     "moss_text_pad_multiple": "Caption padding multiple (0 = off)",
     "moss_compile_checkpoint": "Checkpoint placement when compiling",
+    "moss_checkpoint_skip_blocks": "Keep activations for last N blocks",
+    "moss_masked_loss": "Use training masks (MOSS)",
+    "moss_mask_background_weight": "Background weight outside the mask",
+    "moss_record_sample_losses": "Record loss by training image",
     "moss_sdpa_backend": "MOSS SDPA backend preference",
     "moss_timestep_schedule": "Training noise schedule",
     "moss_ema_enabled": "Use EMA smoothed checkpoints (optional)",
@@ -273,6 +282,10 @@ HELP = {
     "moss_fast_lora": "Keep FP32 trainable weights while calculating plain LoRA in BF16, using Fizgig's smaller-activation approach. Optional; click ? for requirements and tradeoffs.",
     "moss_text_pad_multiple": "0 keeps exact caption lengths and is required for Unpadded image passes. Alternatively try 16 with masked batches to reduce compiler shape changes. Extra padding is masked; no recaching needed.",
     "moss_compile_checkpoint": "Inside follows Fizgig's MOSS compilation placement. Outside may reduce activation memory at higher resolutions. Used only when Compile is on.",
+    "moss_checkpoint_skip_blocks": "Uses spare VRAM to speed up backward by keeping intermediate results for the last N blocks. Requires gradient checkpointing. Start with 0 or try 4 if you have room, and leave headroom for large buckets and previews. It never skips training those blocks.",
+    "moss_masked_loss": "Use Fizgig or OneTrainer masks saved beside the photos as photo-masklabel.png. White counts fully; black uses the background weight; gray blends them. The full picture is still visible to MOSS. Images without masks train normally. No latent or text cache rebuild is needed.",
+    "moss_mask_background_weight": "How much of the area outside a training mask should contribute to the diffusion loss. Try 0.1 first. Use 0 to ignore black areas, or 1 to give all areas equal weight. This only applies when training masks are enabled.",
+    "moss_record_sample_losses": "Record each image's denoising error and noise level for dataset review. Use the run review to find images that consistently have higher error than similar-size images at similar noise levels. Inspect their captions and content before deciding to remove any.",
     "moss_sdpa_backend": "Default leaves PyTorch's choice unchanged. cuDNN preferred tries cuDNN with other SDPA backends available as fallbacks; new shapes take time to plan.",
     "moss_timestep_schedule": "Keep MOSS pretraining for the existing default, or try the community Sigmoid + High recipe. This changes which noise levels are practiced. No recaching is needed. Click ? for the differences.",
     "moss_ema_enabled": "Average recent adapter weights for smoother samples and LoRA exports. Optional and off by default. This is weight smoothing, not quality protection. Click ? for memory and resume details.",

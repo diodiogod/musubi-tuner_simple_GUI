@@ -142,7 +142,10 @@ def training_settings_summary(settings: dict[str, Any], *, dataset_text: str | N
     optimizer = str(settings.get("optimizer_type") or "").strip()
     if optimizer:
         parts.append(f"opt={optimizer}")
+    from backends.minimax_h3_picture import MODE as H3_PICTURE_MODE
+
     model_key = {"Krea 2": "krea2_dit_model", "MOSS-Image (Experimental)": "moss_dit_model",
+                 H3_PICTURE_MODE: "minimax_h3_picture_dit",
                  "MiniMax H3 (Experimental)": "minimax_h3_dit_model", "Flux.2 Klein": "flux2_dit_model",
                  "Flux.2 Dev": "flux2_dit_model"}.get(mode)
     if model_key and settings.get(model_key):
@@ -158,6 +161,8 @@ def training_settings_summary(settings: dict[str, Any], *, dataset_text: str | N
         parts.append(f"LR-bounds={settings.get('moss_automagic3_min_lr') or '0.00005'}..{settings.get('moss_automagic3_max_lr') or '0.001'}")
     if native_h3:
         parts.append("noise=linked uniform")
+    elif mode == H3_PICTURE_MODE:
+        parts.append("noise=H3 Image six-level schedule")
     elif mode != "MOSS-Image (Experimental)":
         for key, label in (("timestep_sampling", "noise"), ("discrete_flow_shift", "shift")):
             if str(settings.get(key) or "").strip():

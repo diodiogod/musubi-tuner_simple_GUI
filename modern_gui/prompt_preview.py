@@ -8,7 +8,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from modern_gui.sample_prompts import serialize_sample_prompt
+from backends.minimax_h3 import is_multimodal
+from backends import minimax_h3_picture
+from modern_gui.sample_prompts import h3_conditioning, serialize_sample_prompt
 from backends._common import setting_or_default
 from preview_profiles import with_preview_output
 
@@ -189,6 +191,8 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
     settings = with_preview_output(settings)
     if settings.get("training_mode") != "MiniMax H3 (Experimental)":
         raise ValueError("MiniMax H3 preview requires MiniMax H3 mode.")
+    if is_multimodal(settings) and settings.get("minimax_h3_multimodal_task") in {"fl2va", "ref2va"}:
+        return build_h3_conditioned_preview(settings, prompts)
     required = {
         "Pruned ConvRot INT8 DiT": settings.get("minimax_h3_dit_model"),
         "MiniMax H3 VAE": settings.get("vae_model"),
@@ -242,7 +246,7 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
         "--height", str(height),
         *(["--frames", str(frames), "--fps", str(int(prompt.get("fps") or 24))] if is_video else []),
         "--steps", str(int(prompt.get("steps") or (20 if is_video else 28))),
-        "--seed", str(int(prompt.get("seed") or 42)),
+        "--seed", str(int(setting_or_default(prompt, "seed", 42))),
         "--video_shift" if is_video else "--shift", str(float(prompt.get("flow_shift") or 12.0)),
         "--blocks_to_swap", str(int(settings.get("blocks_to_swap") or 30)),
         "--attn_mode", str(attention),
@@ -267,6 +271,57 @@ def build_minimax_h3_preview(settings: dict[str, Any], prompts: list[dict[str, A
     if lora and not (foundation and _same_path(lora, foundation)):
         command.extend(["--network_weights", lora, "--lora_multiplier", str(preview_lora_multiplier(settings))])
     return command, save_path
+
+
+def build_h3_conditioned_preview(settings, prompts):
+    enabled = [prompt for prompt in prompts if prompt.get("enabled", True)]
+    if len(enabled) != 1:
+        raise ValueError("Generate one conditioned MiniMax H3 prompt at a time.")
+    prompt = enabled[0]
+    if str(prompt.get("neg") or "").strip() or float(prompt.get("guidance") or 1) != 1:
+        raise ValueError("Leave the negative prompt blank and set MiniMax H3 guidance to 1.")
+    frames = int(prompt.get("frames") or 39)
+    conditioning = h3_conditioning(settings, prompt, frames)
+    output_dir = Path(str(settings.get("output_dir") or "")).expanduser() / (
+        settings.get("output_name") or "minimax_h3_test"
+    ) / "sample_test"
+    output = output_dir / f"minimax_h3_preview_{uuid.uuid4().hex[:12]}.mp4"
+    command = [
+        sys.executable, "src/musubi_tuner/minimax_h3_native_generate_video.py",
+        "--task", settings["minimax_h3_multimodal_task"], "--output", str(output),
+        "--prompt", str(prompt.get("prompt") or ""), "--frame_count", str(frames),
+        "--width", str(prompt.get("width") or 768), "--height", str(prompt.get("height") or 768),
+        "--steps", str(prompt.get("steps") or 20), "--seed", str(setting_or_default(prompt, "seed", 42)),
+        "--blocks_to_swap", str(setting_or_default(settings, "blocks_to_swap", 30)),
+        "--attn_mode", str(settings.get("attention_mechanism") or "sdpa"),
+        "--h3_shift_video", str(prompt.get("flow_shift") or settings.get("minimax_h3_shift_video") or 12),
+        "--text_encoder_blocks_to_swap", str(setting_or_default(settings, "minimax_h3_text_encoder_blocks_to_swap", 50)),
+    ]
+    for flag, key in (
+        ("dit", "minimax_h3_dit_model"), ("video_vae", "minimax_h3_video_vae"),
+        ("audio_vae", "minimax_h3_audio_vae"), ("text_encoder", "minimax_h3_text_encoder"),
+    ):
+        path = Path(str(settings.get(key) or "")).expanduser()
+        if not settings.get(key) or not path.exists():
+            raise ValueError(f"Choose an existing {flag.replace('_', ' ')} path for the native video preview.")
+        command.extend([f"--{flag}", str(path.resolve())])
+    for key, value in conditioning.items():
+        command.extend([f"--{key}", str(value)])
+    if frames < 120 or settings.get("minimax_h3_allow_experimental_duration"):
+        command.append("--allow_experimental_duration")
+    weights, multipliers = [], []
+    foundation = settings.get("minimax_h3_foundation_lora") if settings.get("minimax_h3_foundation_lora_enabled") else ""
+    if foundation and settings.get("preview_use_lora") is not False:
+        weights.append(str(foundation))
+        multipliers.append(str(settings.get("minimax_h3_foundation_lora_multiplier") or 1))
+    lora = resolve_preview_lora(settings)
+    if lora and not any(_same_path(lora, path) for path in weights):
+        weights.append(lora)
+        multipliers.append(str(preview_lora_multiplier(settings)))
+    if weights:
+        command.extend(["--lora_weight", *weights, "--lora_multiplier", *multipliers])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return command, output_dir
 
 
 def build_moss_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
@@ -335,6 +390,11 @@ def build_moss_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) 
 
 
 def build_prompt_preview(settings: dict[str, Any], prompts: list[dict[str, Any]]) -> tuple[list[str], Path]:
+    if settings.get("training_mode") == minimax_h3_picture.MODE:
+        runtime = minimax_h3_picture.runtime_settings(settings)
+        runtime["training_mode"] = "MiniMax H3 (Experimental)"
+        command, directory = build_minimax_h3_preview(runtime, [dict(prompt, frames=1, steps=6) for prompt in prompts])
+        return command + ["--h3_picture_model"], directory
     if settings.get("training_mode") == "MOSS-Image (Experimental)":
         return build_moss_preview(settings, prompts)
     if settings.get("training_mode") == "MiniMax H3 (Experimental)":

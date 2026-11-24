@@ -1,14 +1,51 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from backends.minimax_h3 import is_multimodal
+from backends.minimax_h3_picture import MODE as H3_PICTURE_MODE
+
 
 _UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 MINIMAX_H3_FIVE_FRAME_PREVIEW = "Five-frame video (recommended)"
+
+
+def h3_conditioning(settings, prompt, frames):
+    task = settings.get("minimax_h3_multimodal_task") or "t2va"
+    keys = {
+        "fl2va": ("first_frame", "last_frame"),
+        "ref2va": ("reference_jsonl",),
+    }.get(task, ())
+    if keys and frames < 5:
+        raise ValueError("Choose a video length of at least five frames for conditioned MiniMax H3 previews.")
+    values = {}
+    for key in keys:
+        raw = prompt.get(key) or (prompt.get("image_path") if key == "first_frame" else "")
+        path = Path(str(raw or "")).expanduser()
+        if not path.is_file() or (key == "reference_jsonl" and path.suffix.lower() != ".jsonl"):
+            raise ValueError(f"Choose an existing {key.replace('_', ' ')} for the {task.upper()} sample.")
+        values[key] = str(path.resolve())
+    if task == "ref2va":
+        index = str(prompt.get("reference_index") or "0")
+        if not index.isdigit():
+            raise ValueError("The reference manifest row must be a nonnegative whole number, starting at 0.")
+        values["reference_index"] = int(index)
+    return values
+
+
+def _native_h3_prompt(settings, prompt, frames):
+    from musubi_tuner.training.sampling_prompts import line_to_prompt_dict
+
+    fields = {key: value for key, value in prompt.items() if key not in {"image_path", "flow_shift"}}
+    sample = line_to_prompt_dict(serialize_sample_prompt(dict(fields, frames=frames), "MiniMax H3 (Experimental)"))
+    sample.update(h3_conditioning(settings, prompt, frames))
+    sample["allow_experimental_duration"] = frames == 5 or bool(settings.get("minimax_h3_allow_experimental_duration"))
+    return sample
 
 
 def minimax_h3_scheduled_preview_frames(settings: dict[str, Any]) -> int:
@@ -96,21 +133,24 @@ def prepare_sample_prompt_settings(
 
     mode = str(prepared.get("training_mode") or "Wan 2.2")
     prompts = enabled_sample_prompts(prepared)
+    native_h3 = mode == "MiniMax H3 (Experimental)" and is_multimodal(prepared)
     if mode == "MiniMax H3 (Experimental)":
         # Keep the prompt card's native-video frame setting for its standalone
         # Preview button, while scheduled samples use the explicit run setting.
         scheduled_frames = minimax_h3_scheduled_preview_frames(prepared)
         prompts = [dict(prompt, frames=scheduled_frames) for prompt in prompts]
-    lines = [
-        serialize_sample_prompt(prompt, mode)
-        for prompt in prompts
-    ]
+    elif mode == H3_PICTURE_MODE:
+        prompts = [dict(prompt, frames=1, steps=6, guidance=1, cfg_scale=1, flow_shift="", image_path="")
+                   for prompt in prompts]
+    lines = [serialize_sample_prompt(prompt, mode) for prompt in prompts]
     lines = [line for line in lines if line.strip()]
     if not lines:
         prepared["sample_prompts"] = ""
         return prepared
 
     destination = planned_sample_prompt_path(prepared)
+    if native_h3:
+        destination = destination.with_suffix(".json")
     prepared["sample_prompts"] = str(destination)
     if not write:
         return prepared
@@ -124,7 +164,11 @@ def prepare_sample_prompt_settings(
     )
     try:
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write("\n".join(lines))
+            if native_h3:
+                json.dump([_native_h3_prompt(prepared, prompt, scheduled_frames) for prompt in prompts], stream,
+                          ensure_ascii=False, indent=2)
+            else:
+                stream.write("\n".join(lines))
         os.replace(temporary_name, destination)
     except Exception:
         try:
@@ -159,6 +203,11 @@ def validate_sample_prompts(settings: dict[str, Any]) -> list[str]:
         if not isinstance(prompt, dict) or not prompt.get("enabled", True):
             continue
         label = f"Sample prompt {index + 1}"
+        if settings.get("training_mode") == "MiniMax H3 (Experimental)" and is_multimodal(settings):
+            try:
+                h3_conditioning(settings, prompt, minimax_h3_scheduled_preview_frames(settings))
+            except ValueError as exc:
+                errors.append(f"{label}. {exc}")
         if not str(prompt.get("prompt") or "").strip():
             errors.append(f"{label} is included but has no positive prompt.")
         for key, field_label in positive_integer_keys.items():

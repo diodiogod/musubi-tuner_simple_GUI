@@ -69,7 +69,8 @@ def generate(args: argparse.Namespace) -> Path:
         blocks_to_swap=args.text_encoder_blocks_to_swap,
     )
     with torch.no_grad():
-        hidden_states = encoder.encode(args.prompt)[0].detach().to("cpu")
+        options = {"max_length": 4096} if args.h3_picture_model else {}
+        hidden_states = encoder.encode(args.prompt, **options)[0].detach().to("cpu")
     del encoder
     gc.collect()
     clean_memory_on_device(device)
@@ -84,6 +85,7 @@ def generate(args: argparse.Namespace) -> Path:
         split_attn=args.split_attn,
         disable_mmap=args.disable_mmap,
         convrot_bwd_mode="bf16",
+        picture_model=args.h3_picture_model,
     ).eval().requires_grad_(False)
     if not transformer._has_convrot_int8:
         raise ValueError("This generator requires the pruned ConvRot INT8 MiniMax-H3 transformer")
@@ -105,19 +107,21 @@ def generate(args: argparse.Namespace) -> Path:
     else:
         transformer.to(device)
 
-    progress = tqdm(total=args.steps, desc="MiniMax-H3 denoising")
+    steps = 6 if args.h3_picture_model else args.steps
+    progress = tqdm(total=steps, desc="MiniMax-H3 denoising")
     try:
         latent = sample_image_latent(
             transformer,
             hidden_states,
             width=args.width,
             height=args.height,
-            steps=args.steps,
+            steps=steps,
             seed=args.seed,
             shift=args.shift,
             device=device,
             dtype=torch.bfloat16,
             step_callback=lambda _done, _total: progress.update(1),
+            picture_model=args.h3_picture_model,
         ).detach().to("cpu")
     finally:
         progress.close()
@@ -134,12 +138,13 @@ def generate(args: argparse.Namespace) -> Path:
         device=device,
         dtype=torch.float16,
         disable_mmap=args.disable_mmap,
+        picture_model=args.h3_picture_model,
     ).eval().requires_grad_(False)
     with torch.no_grad():
         pixels = decode_image_latent(
             vae,
             latent.to(device=device, dtype=torch.float16),
-            single_frame=args.image_vae_mode == "single_frame",
+            single_frame=args.h3_picture_model or args.image_vae_mode == "single_frame",
         )[0, :, 0].cpu()
     del vae, latent
     clean_memory_on_device(device)
@@ -154,6 +159,7 @@ def generate(args: argparse.Namespace) -> Path:
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate a still image with compact MiniMax-H3 and optional LoRA")
+    parser.add_argument("--h3_picture_model", action="store_true", help="use the dedicated six-step MiniMax H3 Image model")
     parser.add_argument("--dit", required=True, help="pruned ConvRot INT8 FL2VA transformer")
     parser.add_argument("--vae", required=True, help="MiniMax-H3 video VAE")
     parser.add_argument(

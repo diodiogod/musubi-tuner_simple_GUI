@@ -454,6 +454,7 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
         "--timestep_sampling",
         choices=[
             "sigma",
+            "sigma_corrected",
             "uniform",
             "sigmoid",
             "shift",
@@ -468,7 +469,8 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
             "qinglong_qwen",
         ],
         default="sigma",
-        help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
+        help="Timestep sampling method. sigma_corrected selects actual timesteps in the entered noise range. "
+        "sigma retains the original mapping for existing recipes."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
     )
     parser.add_argument(
@@ -483,6 +485,10 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
         default=1.0,
         help='Scale factor for sigmoid timestep sampling (only used when timestep-sampling is "sigmoid" or "shift"). / sigmoidタイムステップサンプリングの倍率（timestep-samplingが"sigmoid"または"shift"の場合のみ有効）。',
     )
+    parser.add_argument("--image_masked_loss", action="store_true",
+                        help="weight supported still-image training by matching photo-masklabel.png files")
+    parser.add_argument("--image_mask_background_weight", type=float, default=0.1,
+                        help="relative diffusion-loss weight outside the mask, from 0 to 1")
     parser.add_argument(
         "--weighting_scheme",
         type=str,
@@ -525,7 +531,7 @@ def _add_timestep_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="If specified, constrains timestep sampling to [min_timestep, max_timestep] "
         "using rejection sampling, preserving the original distribution shape. "
-        "By default, the [0, 1] range is scaled, which distorts the distribution. Only effective when `timestep_sampling` is not 'sigma'."
+        "By default, the [0, 1] range is scaled, which distorts the distribution. Has no effect with sigma or sigma_corrected."
         " / 指定すると、タイムステップのサンプリングを[最小タイムステップ、最大タイムステップ]に制約し、元の分布形状を保持します。"
         "デフォルトでは、[0, 1]の範囲がスケーリングされ、分布が歪むことがあります。timestep_samplingがsigma以外で有効です。",
     )

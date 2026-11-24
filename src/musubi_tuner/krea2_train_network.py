@@ -46,6 +46,8 @@ logging.basicConfig(level=logging.INFO)
 
 
 class Krea2NetworkTrainer(NetworkTrainer):
+    image_mask_stride = 8
+
     def __init__(self):
         super().__init__()
         self.vae_frame_stride = 1  # single image
@@ -395,8 +397,7 @@ class Krea2NetworkTrainer(NetworkTrainer):
         )
         turbo_network.apply_to(None, model, apply_text_encoder=False, apply_unet=True)
         turbo_network.load_weights(args.turbo_lora)
-        turbo_network.requires_grad_(False)
-        turbo_network.to(accelerator.device)
+        turbo_network.eval().requires_grad_(False)
         turbo_network.set_enabled(False)
         self._turbo_lora_network = turbo_network
         return turbo_network
@@ -430,7 +431,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
     def on_before_sample_images(self, accelerator, args, epoch, steps, vae, transformer, network, sample_parameters, dit_dtype):
         # Swap RAW -> Turbo base weights for sample generation (LoRA stays hooked and applies on top).
         if getattr(args, "turbo_lora", None):
-            logger.info("Krea 2: enabling Turbo LoRA for sampling")
+            logger.info("Krea 2: moving Turbo LoRA to the sample device")
+            self._turbo_lora_network.to(accelerator.device)
             self._turbo_lora_network.set_enabled(True)
             return
         if not args.turbo_dit:
@@ -486,8 +488,9 @@ class Krea2NetworkTrainer(NetworkTrainer):
     def on_after_sample_images(self, accelerator, args, epoch, steps, vae, transformer, network, sample_parameters, dit_dtype):
         # Restore RAW base weights after sampling.
         if getattr(args, "turbo_lora", None):
-            logger.info("Krea 2: disabling Turbo LoRA after sampling")
+            logger.info("Krea 2: returning Turbo LoRA to CPU after sampling")
             self._turbo_lora_network.set_enabled(False)
+            self._turbo_lora_network.to("cpu")
             return
         if not args.turbo_dit:
             return
@@ -566,6 +569,8 @@ class Krea2NetworkTrainer(NetworkTrainer):
         output = self.call_dit(
             args, accelerator, transformer, latents, batch, noise, noisy_input, timesteps, network_dtype
         )
+        if "image_loss_mask" in batch:
+            output.extra["image_loss_mask"] = batch["image_loss_mask"]
         diffusion_loss, metrics = self.compute_loss(
             args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step
         )

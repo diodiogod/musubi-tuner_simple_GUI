@@ -165,6 +165,10 @@ def split_optimizer_args(value):
 
 
 def build_common_train_args(cmd, settings):
+    from backends import image_masks
+
+    if settings.get("image_masked_loss") and image_masks.supported(settings):
+        cmd.extend(["--image_masked_loss", "--image_mask_background_weight", str(image_masks.background_weight(settings))])
     add_arg(cmd, "--optimizer_type", settings.get("optimizer_type"))
     add_arg(cmd, "--learning_rate", settings.get("learning_rate"))
     add_arg(cmd, "--max_grad_norm", settings.get("max_grad_norm"))

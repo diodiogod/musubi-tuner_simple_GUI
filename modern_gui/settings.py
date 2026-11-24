@@ -4,9 +4,10 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from backends import image_masks, minimax_h3_picture
 from backends.moss_settings import (
     MODE as MOSS_MODE, DEFAULTS as MOSS_DEFAULTS, CHOICES as MOSS_CHOICES, PATHS as MOSS_PATHS, HELP as MOSS_HELP,
-    DIT_LABEL as MOSS_DIT_LABEL, HEAL_DOWNLOAD_HINT, HEAL_DOWNLOAD_LINKS,
+    DIT_LABEL as MOSS_DIT_LABEL, HEAL_DOWNLOAD_HINT, HEAL_DOWNLOAD_LINKS, HEAL_HELP_LABEL, HEAL_HELP_TITLE,
 )
 from backends.regularization_switches import FEATURES, LABELS as SWITCH_LABELS, HELP as SWITCH_HELP, controlled_by, normalize_switches
 from backends.numeric_settings import normalize_numbers, decimal_setting
@@ -15,10 +16,11 @@ from backends.numeric_settings import normalize_numbers, decimal_setting
 ROOT = Path(__file__).resolve().parents[1]
 LAST_SETTINGS = ROOT / "last_settings.json"
 MINIMAX_H3_MODE = "MiniMax H3 (Experimental)"
-MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE, MOSS_MODE]
+MODES = ["Wan 2.2", "Flux.2 Klein", "Flux.2 Dev", "Krea 2", MINIMAX_H3_MODE, MOSS_MODE, minimax_h3_picture.MODE]
 STRUCTURED_KEYS = {"sample_prompts_data", "staged_training_config", "face_refinement_config"}
 CACHE_DEFAULTS = {"cache_incremental": True}
 MINIMAX_H3_DEFAULTS = {
+    **dict.fromkeys(minimax_h3_picture.MODEL_FIELDS, ""),
     "minimax_h3_block_memory_mode": "Fixed blocks (existing)",
     "minimax_h3_auto_swap_reserve_gb": "2.0",
     "minimax_h3_auto_swap_min_blocks": "2",
@@ -197,6 +199,8 @@ NUMERIC_CONTROLS = {
     "gradient_accumulation_steps": {"type": "number", "step": 1, "min": 1},
     "max_grad_norm": {"type": "number", "step": 0.1, "min": 0},
     "moss_depth_anchor_weight": {"step": 0.005, "min": 0},
+    "moss_checkpoint_skip_blocks": {"type": "number", "step": 1, "min": 0, "max": 42},
+    "moss_mask_background_weight": {"step": 0.05, "min": 0, "max": 1},
     "krea2_depth_anchor_weight": {"step": 0.005, "min": 0},
     "moss_depth_anchor_gradient_weight": {"step": 0.05, "min": 0},
     "krea2_depth_anchor_gradient_weight": {"step": 0.05, "min": 0},
@@ -211,7 +215,7 @@ CHOICES = {
     "lr_scheduler": ["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial", "rex"],
     "mixed_precision": ["no", "fp16", "bf16"],
     "attention_mechanism": ["sdpa", "xformers", "flash", "sageattn"],
-    "timestep_sampling": ["sigma", "uniform", "sigmoid", "shift", "flux_shift", "krea2_shift", "h3_shifted_uniform"],
+    "timestep_sampling": ["sigma", "sigma_corrected", "uniform", "sigmoid", "shift", "flux_shift", "krea2_shift", "h3_shifted_uniform"],
     "compile_backend": ["inductor", "eager", "aot_eager", "cudagraphs"],
     "compile_mode": ["default", "reduce-overhead", "max-autotune"],
     "compile_dynamic": ["auto", "true", "false"],
@@ -347,7 +351,8 @@ def load_settings() -> dict[str, Any]:
         "sample_every_n_epochs": "", "sample_every_n_steps": "", "sample_at_first": False,
         "staged_recache_latents": True, "staged_recache_text": False,
     }
-    for key, value in (guided_defaults | MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS | CACHE_DEFAULTS | MOSS_DEFAULTS).items():
+    for key, value in (guided_defaults | MINIMAX_H3_DEFAULTS | KREA2_DEPTH_DEFAULTS | FLUX2_REFERENCE_DEFAULTS
+                       | CACHE_DEFAULTS | MOSS_DEFAULTS | image_masks.DEFAULTS).items():
         payload.setdefault(key, value)
     if not payload.get("moss_timestep_schedule"):
         from backends.moss_settings import timestep_schedule
@@ -381,7 +386,7 @@ def _humanize(key: str) -> str:
 
 
 def _section_for(key: str) -> str:
-    if key in FEATURES:
+    if key in FEATURES or key in image_masks.DEFAULTS:
         return "regularization"
     if key in MOSS_DEFAULTS:
         from backends.moss_settings import PERFORMANCE_KEYS
@@ -393,7 +398,7 @@ def _section_for(key: str) -> str:
             return "regularization"
         if key.startswith("moss_automagic3_"):
             return "optimization"
-        if key.startswith(("moss_depth_", "moss_keep_", "moss_weight_", "moss_repa_")):
+        if key.startswith(("moss_depth_", "moss_keep_", "moss_weight_", "moss_repa_", "moss_mask")):
             return "regularization"
         if key.startswith("moss_sample_"):
             return "sampling"
@@ -464,6 +469,16 @@ def _section_for(key: str) -> str:
 
 
 def _field_for(key: str, value: Any) -> dict[str, Any]:
+    if key in image_masks.DEFAULTS:
+        field = {"key": key, "label": image_masks.LABELS[key], "help": image_masks.HELP[key], "modes": list(image_masks.MODES)}
+        if key == "image_masked_loss":
+            field["type"] = "boolean"
+        else:
+            field.update(type="text", decimal=True, min=0, max=1, step=0.05)
+        return field
+    if key in minimax_h3_picture.MODEL_FIELDS:
+        label, help_text = minimax_h3_picture.MODEL_FIELDS[key]
+        return {"key": key, "label": label, "type": "path", "modes": [minimax_h3_picture.MODE], "help": help_text}
     if key in MOSS_DEFAULTS:
         field = {"key": key, "label": _humanize(key), "type": "text", "modes": [MOSS_MODE], "help": MOSS_HELP[key]}
         field.update(NUMERIC_CONTROLS.get(key, {}))
@@ -472,13 +487,17 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
         from backends.moss_settings import REPA_LABELS, REPA_DETAILS, REPA_METRICS_HELP, SAMPLE_DETAILS, EMA_DETAILS, AUTOMAGIC3_DETAILS, TIMESTEP_DETAILS
         field["label"] = REPA_LABELS.get(key, field["label"])
         if key == "moss_dit_model":
-            field.update(label=MOSS_DIT_LABEL, download_hint=HEAL_DOWNLOAD_HINT, download_links=HEAL_DOWNLOAD_LINKS)
+            field.update(label=MOSS_DIT_LABEL, model_downloads={
+                "label": HEAL_HELP_LABEL, "title": HEAL_HELP_TITLE, "description": HEAL_DOWNLOAD_HINT,
+                "links": HEAL_DOWNLOAD_LINKS,
+            })
         if controlled_by(key):
             field["enabled_by"] = controlled_by(key)
         from backends.moss_settings import PERFORMANCE_KEYS
         if key in PERFORMANCE_KEYS:
             from backends.performance_help import DETAILS
-            field["help_detail"] = DETAILS[key]
+            if key in DETAILS:
+                field["help_detail"] = DETAILS[key]
         if key == "moss_text_pad_multiple":
             field.update(type="number", step=1, min=0, max=512)
         if key == "moss_repa_enabled":
@@ -583,6 +602,9 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     if key in CHOICES:
         field["options"] = CHOICES[key]
         field["allow_custom"] = key not in {"training_mode", "appearance_mode", "network_type"}
+    if key == "timestep_sampling":
+        field["help"] = ("Controls how noise levels are drawn during training. Choose sigma_corrected to apply timestep "
+                         "bounds in the expected direction and use the logit mean. Sigma preserves the original behavior for saved recipes.")
     modes = MODE_RULES.get(key)
     if key.startswith("flux2_") or key == "fp8_text_encoder":
         modes = ["Flux.2 Klein", "Flux.2 Dev"]
@@ -593,7 +615,7 @@ def _field_for(key: str, value: Any) -> dict[str, Any]:
     elif key.startswith("minimax_h3_"):
         modes = [MINIMAX_H3_MODE]
     if key in {"network_type", "mixed_precision", "compile", "fp8_base", "fp8_scaled"}:
-        field["disabled_modes"] = [MINIMAX_H3_MODE]
+        field["disabled_modes"] = [MINIMAX_H3_MODE, minimax_h3_picture.MODE]
     if modes:
         field["modes"] = modes
     return field

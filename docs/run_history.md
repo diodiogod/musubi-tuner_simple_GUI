@@ -47,3 +47,9 @@ frontend at commit `fe1fb5d26088b162fe7ab67a045b0ec88bc7f25d`
 (`src/fizgig/web/static/app.js`, run history and loss graph). The local
 implementation is separate and accommodates Musubi's existing history/log data;
 it does not copy Fizgig's training or history persistence layer.
+
+## Live training actions
+
+Use **Training actions** on Modern **Run** or Classic **Monitor** during training. Preview uses the run’s saved prompts. **Save LoRA** writes the current adapter. **Save checkpoint and state** also writes the optimizer and scheduler for exact resume. **Save and stop** writes both, then ends the run at the completed optimizer step. The trainer handles each action after any gradient accumulation for that step.
+
+For MOSS, enable **Record loss by training image** before starting and open **Run Review → Dataset loss**. The list compares raw diffusion losses for images at similar noise levels and resolutions. It only ranks images with repeated comparable observations. Use it to inspect images or captions that consistently show higher loss.

@@ -29,6 +29,25 @@ class MossImageNetworkTrainer(NetworkTrainer):
         self._repa_targets = None
         self._sampling_adapter = None
         self._ema = None
+        self._sample_loss_log = None
+
+    def train(self, args):
+        if getattr(args, "moss_record_sample_losses", False):
+            import os
+            from uuid import uuid4
+            from musubi_tuner.moss_image.sample_losses import SampleLossLog
+            from musubi_tuner.training.run_control import ENV_KEY
+
+            directory = os.environ.get(ENV_KEY)
+            path = (Path(directory) / "moss-sample-loss.jsonl" if directory else
+                    Path(args.output_dir) / f"{args.output_name}-sample-loss-{uuid4().hex[:8]}.jsonl")
+            self._sample_loss_log = SampleLossLog(path)
+            logger.info("MOSS per-image loss log: %s", path)
+        try:
+            return super().train(args)
+        finally:
+            if self._sample_loss_log is not None:
+                self._sample_loss_log.flush()
 
     @property
     def architecture(self):
@@ -39,6 +58,13 @@ class MossImageNetworkTrainer(NetworkTrainer):
         return ARCHITECTURE_MOSS_IMAGE_FULL
 
     def handle_model_specific_args(self, args):
+        skip_blocks = getattr(args, "moss_checkpoint_skip_blocks", 0)
+        if not 0 <= skip_blocks <= 42:
+            raise ValueError("MOSS retained activation blocks must be between 0 and 42.")
+        if skip_blocks and not args.gradient_checkpointing:
+            raise ValueError("Enable gradient checkpointing to retain activations for selected MOSS blocks.")
+        if not 0 <= getattr(args, "moss_mask_background_weight", 0.1) <= 1:
+            raise ValueError("MOSS mask background weight must be between 0 and 1.")
         from musubi_tuner.moss_image.performance import prepare_compile
         prepare_compile(args, getattr(args, "blocks_to_swap", 0) or 0)
         from musubi_tuner.moss_image.timesteps import clean_end_policy
@@ -93,11 +119,22 @@ class MossImageNetworkTrainer(NetworkTrainer):
             raise ValueError("MOSS caption padding must be from 0 to 512.")
         if any(not isinstance(item, ImageDataset) for item in dataset.datasets):
             raise ValueError("MOSS-Image supports image datasets only. Remove video datasets from this run.")
+        if getattr(args, "moss_masked_loss", False):
+            from musubi_tuner.dataset.image_loss_masks import prepare_masks
+            prepare_masks(dataset.datasets, pixels_per_token=16)
+        if self._sample_loss_log is not None:
+            from musubi_tuner.dataset.image_loss_masks import sources_by_stem
+
+            for item in dataset.datasets:
+                item.batch_manager.sample_paths = {stem: str(next(iter(paths))) for stem, paths in sources_by_stem(item).items()
+                                                   if len(paths) == 1}
         if getattr(args, "moss_repa_enabled", False):
             self._repa_dataset = dataset
         return dataset, collator, epoch
 
     def _prepare_sampling(self, args, accelerator, vae_dtype):
+        if self._sample_loss_log is not None and accelerator.num_processes != 1:
+            raise ValueError("MOSS per-image loss recording requires a single training process.")
         # Depth decoding also needs the VAE when no sample prompts were provided.
         prompts = self.process_sample_prompts(args, accelerator, args.sample_prompts) if args.sample_prompts else None
         vae = None
@@ -143,6 +180,11 @@ class MossImageNetworkTrainer(NetworkTrainer):
             return transformer
         return model_utils.compile_transformer(args, transformer, [transformer.layers], disable_linear=False)
 
+    def enable_transformer_checkpointing(self, args, transformer):
+        transformer.enable_gradient_checkpointing(
+            args.gradient_checkpointing_cpu_offload, skip_blocks=getattr(args, "moss_checkpoint_skip_blocks", 0),
+        )
+
     def scale_shift_latents(self, latents):
         return latents
 
@@ -166,10 +208,13 @@ class MossImageNetworkTrainer(NetworkTrainer):
 
     def extra_metadata(self, args):
         keys = ["moss_ema_enabled", "moss_ema_decay", "moss_ema_device", "moss_pretraining_schedule", "moss_sigmoid_high",
-                "moss_clean_end_share", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint", "moss_sdpa_backend"]
+                "moss_clean_end_share", "moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint",
+                "moss_sdpa_backend", "moss_checkpoint_skip_blocks"]
         if getattr(args, "moss_repa_enabled", False):
             keys += ["moss_repa_enabled", "moss_repa_weight", "moss_repa_encoder", "moss_repa_block",
                      "moss_repa_image_size", "moss_repa_device", "moss_repa_cache_size", "moss_repa_cache_dir"]
+        if getattr(args, "moss_masked_loss", False):
+            keys += ["moss_masked_loss", "moss_mask_background_weight"]
         return {"ss_" + key: str(getattr(args, key, "")) for key in keys}
 
     def _register_hooks_and_resume(self, args, accelerator, network):
@@ -249,17 +294,27 @@ class MossImageNetworkTrainer(NetworkTrainer):
         # Musubi's continuous samplers add one to the time after mixing noise.
         # MOSS conditions on sigma*1000. Its own schedules and the shared sigma
         # sampler already return that exact value.
-        if args.moss_pretraining_schedule or getattr(args, "moss_sigmoid_high", False) or args.timestep_sampling == "sigma":
+        if args.moss_pretraining_schedule or getattr(args, "moss_sigmoid_high", False) or args.timestep_sampling in {"sigma", "sigma_corrected"}:
             return timesteps
         return timesteps - 1
 
-    def compute_loss(self, args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step):
+    def compute_loss(self, args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step, mask=None,
+                     sample_paths=None):
         sigma = (self._model_timesteps(args, timesteps).float() / 1000).clamp_min(1e-6).view(-1, 1, 1, 1, 1)
         loss = torch.nn.functional.mse_loss(output.pred.float(), output.target.float(), reduction="none")
+        if self._sample_loss_log is not None and sample_paths:
+            self._sample_loss_log.add(
+                sample_paths, sigma.flatten() * 1000, loss.detach().mean(dim=(1, 2, 3, 4)),
+                global_step + 1, self._moss_epoch.value, tuple(loss.shape[-2:]),
+            )
         if args.weighting_scheme == "sigma_sqrt":
             loss = loss * sigma.pow(-2)
         elif args.weighting_scheme == "cosmap":
             loss = loss * (2 / (math.pi * (1 - 2 * sigma + 2 * sigma.square())))
+        if mask is not None:
+            from musubi_tuner.dataset.image_loss_masks import mean_image_loss
+
+            return mean_image_loss(loss, mask, args.moss_mask_background_weight), {}
         return loss.mean(), {}
 
     def call_dit(self, args, accelerator, transformer, latents, batch, noise,
@@ -311,7 +366,10 @@ class MossImageNetworkTrainer(NetworkTrainer):
             output = self.call_dit(args, accelerator, transformer, latents, batch, noise, noisy, times, network_dtype)
         finally:
             self._repa_capture = None  # DOP and previews must never capture features.
-        loss, metrics = self.compute_loss(args, output, times, noise_scheduler, dit_dtype, network_dtype, global_step)
+        loss, metrics = self.compute_loss(
+            args, output, times, noise_scheduler, dit_dtype, network_dtype, global_step, mask=batch.get("image_loss_mask"),
+            sample_paths=batch.get("sample_paths"),
+        )
         if self._repa is not None:
             repa_loss, repa_metrics = self._repa.loss(features.pop("image"), target, *latents.shape[-2:])
             metrics.update({"loss/diffusion": loss.detach(), **repa_metrics})
@@ -441,6 +499,12 @@ class MossImageNetworkTrainer(NetworkTrainer):
 
 def moss_setup_parser(parser):
     parser.add_argument("--moss_unpadded_batches", action="store_true")
+    parser.add_argument("--moss_checkpoint_skip_blocks", type=int, default=0,
+                        help="Keep activations for the final N blocks instead of recomputing them. Uses extra VRAM.")
+    parser.add_argument("--moss_masked_loss", action="store_true",
+                        help="Use matching photo-masklabel.png files to weight the diffusion loss.")
+    parser.add_argument("--moss_mask_background_weight", type=float, default=0.1)
+    parser.add_argument("--moss_record_sample_losses", action="store_true")
     parser.add_argument("--moss_clean_end_share", default="")
     parser.add_argument("--moss_text_pad_multiple", type=int, default=0)
     parser.add_argument("--moss_compile_checkpoint", choices=("inside", "outside"), default="inside")

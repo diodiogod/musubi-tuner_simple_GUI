@@ -782,6 +782,8 @@ class MiniMaxH3NetworkTrainer(NetworkTrainer):
         return base.mul(upper - lower).add(lower)
 
     def handle_model_specific_args(self, args: argparse.Namespace):
+        if getattr(args, "image_masked_loss", False):
+            raise ValueError("Use compact still-image training for MiniMax H3 loss masks.")
         self.dit_dtype = torch.bfloat16
         self._i2v_training = False
         self._control_training = False

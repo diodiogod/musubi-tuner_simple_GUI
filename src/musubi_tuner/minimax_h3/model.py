@@ -80,6 +80,8 @@ class MiniMaxH3Config:
     # Comfy's published pruned checkpoints replace the full timestep MLP with a
     # compact sampled curve.  ``None`` is the original BF16 architecture.
     adaln_curve_grid: int | None = None
+    picture_model: bool = False
+    gate_compress: bool = False
 
     def __post_init__(self) -> None:
         integer_fields = (
@@ -407,6 +409,10 @@ class DiTBlock(nn.Module):
             dtype=dtype,
             device=device,
         )
+        if config.gate_compress:
+            # Sparse-attention checkpoints can include this gate. Dense attention does not use it.
+            self.attn.to_gate_compress = nn.Linear(config.hidden_size, config.attention_inner_dim, bias=False,
+                                                   dtype=dtype, device=device)
         self.mlp = MLP(config.hidden_size, config.ffn_hidden_size, dtype=dtype, device=device)
         self.adaln_proj = AdalnProj(
             config.time_embed_dim,
@@ -443,7 +449,7 @@ class FinalLayer(nn.Module):
         hidden_size: int,
         timestep_dim: int,
         video_output_dim: int,
-        audio_output_dim: int,
+        audio_output_dim: int | None,
         *,
         norm_eps: float = 1e-5,
         use_adaln_curve: bool = False,
@@ -462,7 +468,10 @@ class FinalLayer(nn.Module):
             device=device,
         )
         self.video_out = nn.Linear(hidden_size, video_output_dim, dtype=torch.float32, device=device)
-        self.audio_out = nn.Linear(hidden_size, audio_output_dim, dtype=torch.float32, device=device)
+        self.audio_out = (
+            nn.Linear(hidden_size, audio_output_dim, dtype=torch.float32, device=device)
+            if audio_output_dim is not None else None
+        )
 
     def forward(
         self,
@@ -515,7 +524,9 @@ class MiniMaxH3Model(nn.Module):
         self.attn_mode = attn_mode
         self.split_attn = split_attn
         self.video_patch_proj = nn.Linear(config.video_patch_dim, config.hidden_size, dtype=torch.float32, device=device)
-        self.audio_patch_proj = nn.Linear(config.audio_in_channels, config.hidden_size, dtype=torch.float32, device=device)
+        self.audio_patch_proj = None if config.picture_model else nn.Linear(
+            config.audio_in_channels, config.hidden_size, dtype=torch.float32, device=device
+        )
         self.condition_proj = nn.Linear(config.text_dim, config.hidden_size, dtype=dtype, device=device)
         if config.adaln_curve_grid is None:
             self.time_embedder = TimeEmbedder(
@@ -548,8 +559,8 @@ class MiniMaxH3Model(nn.Module):
         self.final_layer = FinalLayer(
             config.hidden_size,
             config.time_embed_dim,
-            config.video_patch_dim,
-            config.audio_in_channels,
+            config.video_patch_dim * (6 if config.picture_model else 1),
+            None if config.picture_model else config.audio_in_channels,
             norm_eps=config.final_norm_eps,
             use_adaln_curve=config.adaln_curve_grid is not None,
             dtype=dtype,
@@ -812,7 +823,8 @@ class MiniMaxH3Model(nn.Module):
         geometry = H3VideoGeometry(1, video_latents.shape[-2], video_latents.shape[-1])
         position_ids = build_image_position_grid(text_length, geometry, device=execution_device)
         rotation_table = self._rotation_table(position_ids, hidden_states.dtype)
-        timestep_embeddings = self._timestep_embeddings(torch.as_tensor(model_t).reshape(-1)[:1], execution_device)
+        timestep = torch.as_tensor(model_t, device=execution_device, dtype=torch.float32).reshape(-1)[:1]
+        timestep_embeddings = self._timestep_embeddings(timestep, execution_device)
         modulation_segments = (((0, text_length, 1), (text_length, hidden_states.shape[1], 0)),)
 
         for index, block in enumerate(self.blocks):
@@ -837,6 +849,11 @@ class MiniMaxH3Model(nn.Module):
                 self.offloader.submit_move_blocks_forward(self.blocks, index)
 
         predicted_rows = self.final_layer.forward_video_only(hidden_states[:, text_length:], timestep_embeddings)
+        if self.config.picture_model:
+            from musubi_tuner.minimax_h3.image_sampling import picture_head_indices
+
+            head = picture_head_indices(timestep)
+            predicted_rows = predicted_rows.unflatten(-1, (6, self.config.video_patch_dim)).index_select(-2, head).squeeze(-2)
         return unpack_video_rows(predicted_rows, geometry).to(output_dtype)
 
     @staticmethod
@@ -1055,12 +1072,13 @@ def load_h3_transformer(
     split_attn: bool = False,
     disable_mmap: bool = False,
     convrot_bwd_mode: str = "bf16",
+    picture_model: bool = False,
 ) -> MiniMaxH3Model:
     if dtype != torch.bfloat16:
         raise ValueError("MiniMax-H3 R1 accepts only BF16 transformer checkpoints")
     files = resolve_safetensors_files(checkpoint_path)
     metadata = load_safetensors_metadata(files)
-    if metadata.get("config") is not None:
+    if metadata.get("config") is not None and not picture_model:
         config = parse_h3_transformer_config(metadata)
         return load_safetensors_module(
             lambda: MiniMaxH3Model(config, attn_mode=attn_mode, split_attn=split_attn, dtype=dtype),
@@ -1074,7 +1092,8 @@ def load_h3_transformer(
     # The published Comfy pruned artifact deliberately has no safetensors
     # metadata. Its architecture is self-identifying through the compact AdaLN
     # table and a marker tensor beside every quantized projection.
-    scale_shapes, manifest = inspect_convrot_int8_checkpoint(files)
+    prefixes = ("model.diffusion_model.", "diffusion_model.") if picture_model else ()
+    scale_shapes, manifest = inspect_convrot_int8_checkpoint(files, key_prefixes=prefixes)
     table_info = manifest.get("adaln_t_table")
     if table_info is None:
         raise ValueError(
@@ -1086,18 +1105,27 @@ def load_h3_transformer(
         raise ValueError(
             f"MiniMax-H3 pruned adaln_t_table must be rank-2 FP32, got {table_dtype} {tuple(table_shape)}"
         )
-    config = MiniMaxH3Config(time_embed_dim=table_shape[1], adaln_curve_grid=table_shape[0])
+    output_shape = manifest.get("final_layer.video_out.weight", ((), None))[0]
+    has_audio = "audio_patch_proj.weight" in manifest
+    if picture_model and (has_audio or not output_shape or output_shape[0] != 6 * VIDEO_CHANNELS * math.prod(VIDEO_PATCH_SIZE)):
+        raise ValueError("Choose the pruned MiniMax H3 Image checkpoint with six output heads and no audio stream.")
+    if not picture_model and not has_audio and output_shape and output_shape[0] == 6 * VIDEO_CHANNELS * math.prod(VIDEO_PATCH_SIZE):
+        raise ValueError("This checkpoint is MiniMax H3 Image. Select that separate training mode.")
+    gate_compress = picture_model and "blocks.0.attn.to_gate_compress.weight" in manifest
+    config = MiniMaxH3Config(time_embed_dim=table_shape[1], adaln_curve_grid=table_shape[0],
+                             picture_model=picture_model, gate_compress=gate_compress)
     expected_quant_modules = {
         f"blocks.{index}.{suffix}"
         for index in range(config.num_layers)
         for suffix in ("attn.qkv_proj", "attn.out_proj", "mlp.fc1", "mlp.fc2")
     }
     actual_quant_modules = set(scale_shapes)
-    if actual_quant_modules != expected_quant_modules:
+    optional_gates = {f"blocks.{i}.attn.to_gate_compress" for i in range(config.num_layers)} if gate_compress else set()
+    if not expected_quant_modules <= actual_quant_modules <= expected_quant_modules | optional_gates:
         raise ValueError(
             "MiniMax-H3 pruned checkpoint quantization coverage mismatch: "
             f"missing={sorted(expected_quant_modules - actual_quant_modules)[:20]}, "
-            f"unexpected={sorted(actual_quant_modules - expected_quant_modules)[:20]}"
+            f"unexpected={sorted(actual_quant_modules - expected_quant_modules - optional_gates)[:20]}"
         )
 
     def factory() -> MiniMaxH3Model:
@@ -1111,11 +1139,13 @@ def load_h3_transformer(
         files,
         device=device,
         dtype=None,
+        key_prefixes=prefixes,
         key_transform=lambda key: key.removesuffix(".weight_scale") + ".scale_weight"
         if key.endswith(".weight_scale")
         else key,
         ignore_key=lambda key: key.endswith(".comfy_quant"),
-        strict_dtype=True,
+        strict_dtype=not picture_model,
+        cast_to_expected_dtype=picture_model,
         allow_quantized=True,
         disable_mmap=disable_mmap,
     )

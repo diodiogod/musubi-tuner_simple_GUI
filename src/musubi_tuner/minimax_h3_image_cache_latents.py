@@ -9,20 +9,20 @@ import torch
 
 import musubi_tuner.cache_latents as cache_latents
 from musubi_tuner.dataset import config_utils
-from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
+from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3, ARCHITECTURE_MINIMAX_H3_PICTURE
 from musubi_tuner.dataset.cache_io import (
     is_latent_cache_minimax_h3_image_current,
     save_latent_cache_minimax_h3_image,
 )
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
-from musubi_tuner.dataset.image_video_dataset import ItemInfo
+from musubi_tuner.dataset.image_video_dataset import ImageDataset, ItemInfo
 from musubi_tuner.minimax_h3.video_vae import encode_video_target, load_video_vae
 
 
 logger = logging.getLogger(__name__)
 
 
-def encode_and_save_batch(vae, batch: list[ItemInfo], cache_seed: int, cache_subject_refs: bool = False) -> None:
+def encode_and_save_batch(vae, batch: list[ItemInfo], cache_seed: int, cache_subject_refs: bool = False, *, picture_model=False) -> None:
     device = next(vae.parameters()).device
     dtype = next(vae.parameters()).dtype
     for item in batch:
@@ -43,10 +43,11 @@ def encode_and_save_batch(vae, batch: list[ItemInfo], cache_seed: int, cache_sub
                     encode_video_target(vae, ref_pixels, cache_seed, f"{item.item_key}:subject_ref:{index}")[0]
                 )
         logger.info("Saving MiniMax-H3 image latent %s to %s", tuple(latent.shape), item.latent_cache_path)
-        save_latent_cache_minimax_h3_image(item, latent, reference_latents)
+        save_latent_cache_minimax_h3_image(item, latent, reference_latents, picture_model=picture_model)
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument("--h3_picture_model", action="store_true", help="use the dedicated MiniMax H3 Image VAE and cache format")
     parser.add_argument("--cache_seed", type=int, default=42, help="deterministic VAE posterior-sampling seed")
     parser.add_argument("--disable_mmap", action="store_true", help="disable memory-mapped VAE loading")
     parser.add_argument(
@@ -73,9 +74,11 @@ def main() -> None:
     blueprint = BlueprintGenerator(ConfigSanitizer()).generate(
         config_utils.load_user_config(args.dataset_config),
         args,
-        architecture=ARCHITECTURE_MINIMAX_H3,
+        architecture=ARCHITECTURE_MINIMAX_H3_PICTURE if args.h3_picture_model else ARCHITECTURE_MINIMAX_H3,
     )
     group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group)
+    if args.h3_picture_model and (args.teacher_conditions or any(not isinstance(ds, ImageDataset) or ds.has_control for ds in group.datasets)):
+        raise ValueError("MiniMax H3 Image currently supports captioned image datasets without control images.")
     if args.debug_mode is not None:
         cache_latents.show_datasets(
             group.datasets,
@@ -89,11 +92,13 @@ def main() -> None:
     if not args.vae:
         raise ValueError("MiniMax-H3 video VAE checkpoint is required")
     logger.info("Loading MiniMax-H3 video VAE from %s", args.vae)
-    vae = load_video_vae(args.vae, device=device, dtype=dtype, disable_mmap=args.disable_mmap, load_decoder=False)
+    vae = load_video_vae(args.vae, device=device, dtype=dtype, disable_mmap=args.disable_mmap,
+                         load_decoder=False, picture_model=args.h3_picture_model)
     vae.requires_grad_(False).eval()
 
     def encode(batch: list[ItemInfo]):
-        encode_and_save_batch(vae, batch, args.cache_seed, args.teacher_conditions == "subject_ref")
+        encode_and_save_batch(vae, batch, args.cache_seed, args.teacher_conditions == "subject_ref",
+                              picture_model=args.h3_picture_model)
 
     cache_latents.encode_datasets(
         group.datasets,
@@ -102,7 +107,7 @@ def main() -> None:
         skip_existing_validator=(
             (lambda _path: False)
             if args.teacher_conditions == "subject_ref" and not args.validate_cache
-            else is_latent_cache_minimax_h3_image_current
+            else lambda path: is_latent_cache_minimax_h3_image_current(path, picture_model=args.h3_picture_model)
         ),
     )
 

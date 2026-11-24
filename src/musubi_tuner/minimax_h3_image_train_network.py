@@ -10,8 +10,11 @@ from typing import Optional
 import torch
 from accelerate import Accelerator
 
-from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3, ARCHITECTURE_MINIMAX_H3_FULL
-from musubi_tuner.minimax_h3.image_sampling import decode_image_latent, sample_image_latent
+from musubi_tuner.dataset.architectures import (
+    ARCHITECTURE_MINIMAX_H3, ARCHITECTURE_MINIMAX_H3_FULL,
+    ARCHITECTURE_MINIMAX_H3_PICTURE, ARCHITECTURE_MINIMAX_H3_PICTURE_FULL,
+)
+from musubi_tuner.minimax_h3.image_sampling import H3_PICTURE_SIGMAS, decode_image_latent, sample_image_latent
 from musubi_tuner.minimax_h3.image_text_encoder import DEFAULT_PROCESSOR_ID, load_minimax_h3_te
 from musubi_tuner.minimax_h3.model import load_h3_transformer
 from musubi_tuner.minimax_h3.packing import H3ReferenceGeometry, H3VideoGeometry, build_h3_layout
@@ -44,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
     """Image-only H3 path: one still image, no audio, frozen INT8 base."""
+
+    image_mask_stride = 16
 
     def __init__(self) -> None:
         super().__init__()
@@ -232,6 +237,9 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         for parameter in prompts:
             if parameter.get("negative_prompt") not in {None, ""}:
                 raise ValueError("MiniMax-H3 is guidance-distilled; preview negative prompts and CFG are unsupported")
+            picture_model = self.architecture == ARCHITECTURE_MINIMAX_H3_PICTURE
+            if picture_model:
+                parameter.update(sample_steps=6, frame_count=1)
             parameter.setdefault("sample_steps", 28)
             parameter.setdefault("width", 768)
             parameter.setdefault("height", 768)
@@ -263,7 +271,8 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 for parameter in prompts:
                     prompt = parameter.get("prompt", "")
                     if prompt not in encoded:
-                        encoded[prompt] = encoder.encode(prompt)[0].detach().to("cpu")
+                        options = {"max_length": 4096} if picture_model else {}
+                        encoded[prompt] = encoder.encode(prompt, **options)[0].detach().to("cpu")
                     parameter["mmh3_hidden_states"] = encoded[prompt]
         finally:
             del encoder
@@ -320,6 +329,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 shift=shift,
                 device=device,
                 dtype=torch.bfloat16,
+                picture_model=self.architecture == ARCHITECTURE_MINIMAX_H3_PICTURE,
             )
         else:
             logger.info("Generating experimental five-frame MiniMax-H3 scheduled preview")
@@ -348,7 +358,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             with torch.no_grad():
                 decode_latent = latent.to(device=decode_device, dtype=torch.float16)
                 if frame_count == 1:
-                    pixels = decode_image_latent(vae, decode_latent).cpu()
+                    pixels = decode_image_latent(vae, decode_latent, single_frame=self.architecture == ARCHITECTURE_MINIMAX_H3_PICTURE).cpu()
                 else:
                     video = decode_video_latent(vae, decode_latent, frame_count=frame_count).cpu()
                     pixels = video.permute(3, 0, 1, 2).unsqueeze(0).float().div_(255.0)
@@ -370,6 +380,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             device="cpu",
             dtype=torch.float16,
             disable_mmap=args.disable_numpy_memmap,
+            picture_model=self.architecture == ARCHITECTURE_MINIMAX_H3_PICTURE,
         )
 
     def load_transformer(
@@ -390,6 +401,7 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             split_attn=split_attn,
             disable_mmap=args.disable_numpy_memmap,
             convrot_bwd_mode=args.convrot_bwd_mode,
+            picture_model=self.architecture == ARCHITECTURE_MINIMAX_H3_PICTURE,
         )
         if not model._has_convrot_int8:
             raise ValueError(
@@ -623,6 +635,8 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
                 sigma=timesteps.float() / 1000.0,
                 schedule=args.h3_guidance_distillation_schedule,
             )
+        if "image_loss_mask" in batch:
+            output.extra["image_loss_mask"] = batch["image_loss_mask"]
         diffusion_loss, metrics = self.compute_loss(
             args,
             output,
@@ -642,7 +656,10 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
             ).pow(2).mean().sqrt().detach()
             direct_strength = float(getattr(args, "h3_teacher_direct_loss_weight", 0.0))
             if teacher_conditioned and direct_strength > 0.0:
-                direct = torch.nn.functional.mse_loss(output.pred.float(), ordinary_target.float())
+                from musubi_tuner.dataset.image_loss_masks import image_mse_loss
+
+                direct = image_mse_loss(output.pred.float(), ordinary_target.float(), batch.get("image_loss_mask"),
+                                        getattr(args, "image_mask_background_weight", 0.1))
                 scale = diffusion_loss.detach() / direct.detach().clamp_min(1e-12)
                 direct_scaled = direct * scale
                 total = total + direct_strength * direct_scaled
@@ -825,7 +842,53 @@ class MiniMaxH3ImageNetworkTrainer(NetworkTrainer):
         }
 
 
+class MiniMaxH3PictureNetworkTrainer(MiniMaxH3ImageNetworkTrainer):
+    """LoRA training for the dedicated six-head MiniMax H3 Image checkpoint."""
+
+    process_batch = NetworkTrainer.process_batch
+
+    @property
+    def architecture(self):
+        return ARCHITECTURE_MINIMAX_H3_PICTURE
+
+    @property
+    def architecture_full_name(self):
+        return ARCHITECTURE_MINIMAX_H3_PICTURE_FULL
+
+    def handle_model_specific_args(self, args):
+        super().handle_model_specific_args(args)
+        if (guidance_protection_enabled(args) or args.h3_base_preservation_enabled or args.depth_anchor_weight
+                or dop_enabled(args) or args.h3_teacher_matching or args.h3_foundation_lora or args.base_weights):
+            raise ValueError("MiniMax H3 Image currently supports direct text-to-image LoRA training and an optional frozen Image training adapter.")
+        args.timestep_sampling = "uniform"
+        args.num_timestep_buckets = None
+        args.show_timesteps = None
+        args.weighting_scheme = "none"
+
+    def _build_dataset(self, args):
+        from musubi_tuner.dataset.image_video_dataset import ImageDataset
+
+        group, collator, epoch = super()._build_dataset(args)
+        if any(not isinstance(dataset, ImageDataset) or dataset.has_control for dataset in group.datasets):
+            raise ValueError("MiniMax H3 Image needs captioned images without control images.")
+        return group, collator, epoch
+
+    def get_noisy_model_input_and_timesteps(self, args, noise, latents, timesteps, noise_scheduler, device, dtype):
+        grid = torch.tensor(H3_PICTURE_SIGMAS[:-1], device=device)
+        index = torch.randint(len(grid), (latents.shape[0],), device=device)
+        sigma = grid[index]
+        shaped = sigma.reshape(-1, *(1 for _ in latents.shape[1:]))
+        return torch.lerp(latents.float(), noise.float(), shaped).to(dtype), sigma * 1000.0 + 1.0
+
+    def extra_metadata(self, args):
+        metadata = super().extra_metadata(args)
+        metadata["ss_minimax_h3_training_mode"] = "minimax_h3_image_t2i"
+        metadata["ss_minimax_h3_pdd_heads"] = len(H3_PICTURE_SIGMAS) - 1
+        return metadata
+
+
 def minimax_h3_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument("--h3_picture_model", action="store_true", help="train the dedicated MiniMax H3 Image checkpoint")
     foundation = parser.add_argument_group("MiniMax-H3 frozen foundation LoRA")
     foundation.add_argument(
         "--h3_foundation_lora",
@@ -926,7 +989,8 @@ def main() -> None:
     args.dit_dtype = "bfloat16"
     if args.vae_dtype is None:
         args.vae_dtype = "bfloat16"
-    MiniMaxH3ImageNetworkTrainer().train(args)
+    trainer = MiniMaxH3PictureNetworkTrainer() if args.h3_picture_model else MiniMaxH3ImageNetworkTrainer()
+    trainer.train(args)
 
 
 if __name__ == "__main__":

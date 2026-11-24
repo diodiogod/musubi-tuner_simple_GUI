@@ -75,8 +75,12 @@ def merge_lora_weights_with_post_hoc_ema(
 
         print(f"Loading weights from {file} for merging with beta={beta:.4f}")
         with MemoryEfficientSafeOpen(file) as f:
+            if set(f.keys()) != state_dict.keys():
+                raise ValueError(f"{file} has different adapter tensors. Choose checkpoints from the same LoRA run.")
             for key in f.keys():
                 value = f.get_tensor(key)
+                if value.shape != state_dict[key].shape:
+                    raise ValueError(f"{file} has a different shape for {key}. Choose checkpoints from the same LoRA run.")
                 if key.endswith(".alpha"):
                     # compare alpha tensors and raise an error if they differ
                     if key not in state_dict or torch.allclose(state_dict[key], value.to(torch.float32)):

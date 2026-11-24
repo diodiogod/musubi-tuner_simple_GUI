@@ -27,6 +27,8 @@ logging.basicConfig(level=logging.INFO)
 
 
 class Flux2NetworkTrainer(NetworkTrainer):
+    image_mask_stride = 16
+
     def __init__(self):
         super().__init__()
 
@@ -420,6 +422,8 @@ class Flux2NetworkTrainer(NetworkTrainer):
         )
         if teacher_prediction is not None:
             output.target = teacher_prediction.to(output.pred.dtype)
+        if "image_loss_mask" in batch:
+            output.extra["image_loss_mask"] = batch["image_loss_mask"]
         normal_loss, metrics = self.compute_loss(
             args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step
         )
@@ -435,7 +439,10 @@ class Flux2NetworkTrainer(NetworkTrainer):
             ).pow(2).mean().sqrt().detach()
             direct_strength = float(args.flux2_reference_direct_loss_weight)
             if teacher_conditioned and direct_strength > 0.0:
-                direct_loss = torch.nn.functional.mse_loss(output.pred.float(), ordinary_target.float())
+                from musubi_tuner.dataset.image_loss_masks import image_mse_loss
+
+                direct_loss = image_mse_loss(output.pred.float(), ordinary_target.float(), batch.get("image_loss_mask"),
+                                             getattr(args, "image_mask_background_weight", 0.1))
                 direct_scaled = direct_loss * normal_loss.detach() / direct_loss.detach().clamp_min(1e-12)
                 total_loss = total_loss + direct_strength * direct_scaled
                 metrics["loss/teacher"] = normal_loss.detach()

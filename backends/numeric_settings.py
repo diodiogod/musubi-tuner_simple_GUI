@@ -4,7 +4,7 @@ import math
 
 DECIMAL_KEYS = {
     "learning_rate", "max_grad_norm", "lr_warmup_steps", "network_alpha_low", "network_alpha_high",
-    "moss_text_pad_multiple",  # integer validation remains with the owning feature
+    "moss_text_pad_multiple", "moss_checkpoint_skip_blocks",  # integer validation remains with the owning feature
 }
 DECIMAL_SUFFIXES = (
     "_sigma", "_weight", "_decay", "_multiplier", "_shift", "_mean", "_std", "_ratio",

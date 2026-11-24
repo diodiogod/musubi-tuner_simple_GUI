@@ -16,6 +16,7 @@ from musubi_tuner.dataset.architectures import (
     ARCHITECTURE_KANDINSKY5_FULL,
     ARCHITECTURE_KREA2_FULL,
     ARCHITECTURE_MINIMAX_H3_FULL,
+    ARCHITECTURE_MINIMAX_H3_PICTURE_FULL,
     ARCHITECTURE_QWEN_IMAGE_FULL,
     ARCHITECTURE_WAN_FULL,
     ARCHITECTURE_Z_IMAGE_FULL,
@@ -231,7 +232,7 @@ MINIMAX_H3_IMAGE_POSTERIOR_POLICY = "video_vae=fp32"
 
 
 def save_latent_cache_minimax_h3_image(
-    item_info: ItemInfo, latent: torch.Tensor, reference_latents: Optional[list[torch.Tensor]] = None
+    item_info: ItemInfo, latent: torch.Tensor, reference_latents: Optional[list[torch.Tensor]] = None, *, picture_model=False
 ):
     """Save one H3 video-VAE frame for the experimental image-only trainer."""
     if latent.ndim != 4 or tuple(latent.shape[:2]) != (24, 1):
@@ -256,12 +257,12 @@ def save_latent_cache_minimax_h3_image(
     save_latent_cache_common(
         item_info,
         sd,
-        ARCHITECTURE_MINIMAX_H3_FULL,
+        ARCHITECTURE_MINIMAX_H3_PICTURE_FULL if picture_model else ARCHITECTURE_MINIMAX_H3_FULL,
         extra_metadata={"posterior_policy": MINIMAX_H3_IMAGE_POSTERIOR_POLICY},
     )
 
 
-def is_latent_cache_minimax_h3_image_current(path: str) -> bool:
+def is_latent_cache_minimax_h3_image_current(path: str, *, picture_model=False) -> bool:
     """Return whether an H3 image cache was encoded with the FP32 VAE policy.
 
     Older experimental caches did not record a posterior policy and were
@@ -274,7 +275,7 @@ def is_latent_cache_minimax_h3_image_current(path: str) -> bool:
         with safetensors_utils.MemoryEfficientSafeOpen(path) as cache:
             metadata = cache.metadata() or {}
             return (
-                metadata.get("architecture") == ARCHITECTURE_MINIMAX_H3_FULL
+                metadata.get("architecture") == (ARCHITECTURE_MINIMAX_H3_PICTURE_FULL if picture_model else ARCHITECTURE_MINIMAX_H3_FULL)
                 and metadata.get("posterior_policy") == MINIMAX_H3_IMAGE_POSTERIOR_POLICY
             )
     except Exception as exc:
@@ -543,6 +544,8 @@ def save_text_encoder_output_cache_minimax_h3_image(
     unconditional_hidden_states: Optional[torch.Tensor] = None,
     teacher_hidden_states: Optional[torch.Tensor] = None,
     teacher_token_tags: Optional[torch.Tensor] = None,
+    *,
+    picture_model=False,
 ):
     """Save raw layer-50 Qwen3-VL states; image-caption rows use text modality tag 1."""
     if hidden_states.ndim != 2 or hidden_states.shape[1] != 5120:
@@ -580,7 +583,8 @@ def save_text_encoder_output_cache_minimax_h3_image(
         sd["varlen_mmh3_teacher_ref_token_tags_int64"] = teacher_token_tags.to(torch.int64)
     elif teacher_token_tags is not None:
         raise ValueError("MiniMax-H3 teacher token tags require teacher hidden states")
-    save_text_encoder_output_cache_common(item_info, sd, ARCHITECTURE_MINIMAX_H3_FULL, merge_existing=False)
+    architecture = ARCHITECTURE_MINIMAX_H3_PICTURE_FULL if picture_model else ARCHITECTURE_MINIMAX_H3_FULL
+    save_text_encoder_output_cache_common(item_info, sd, architecture, merge_existing=False)
 
 
 def save_text_encoder_output_cache_kandinsky5(

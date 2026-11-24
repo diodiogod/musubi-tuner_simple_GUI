@@ -505,3 +505,7 @@ The native sampler builds one common base grid, derives independent shifted vide
 - No numbered reference-directory convention.
 - Dataset `batch_size` is fixed to 1; use gradient accumulation for larger effective batches.
 - No padded multi-sample packed layouts.
+
+## Conditioned prompt previews
+
+In the native video workflow, select FL2VA or Ref2VA in model setup and open a sample prompt. For **FL2VA**, choose a first and last frame. For **Ref2VA**, choose the reference JSONL and enter the row number, starting at 0. Both the standalone preview and scheduled video sample use that input. Choose the five-frame setting for a short scheduled preview. Standalone preview uses the frame count on the card.

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from backends import flux2, krea2, minimax_h3, wan, moss_image
+from backends import flux2, krea2, minimax_h3, minimax_h3_picture, wan, moss_image
 from modern_gui.sample_prompts import prepare_sample_prompt_settings
 from modern_gui.training_notes import effective_training_comment
 
@@ -117,6 +117,9 @@ def build_command_plan(settings: dict[str, Any], preview: bool = False) -> dict[
     elif mode == "MiniMax H3 (Experimental)":
         cache = minimax_h3.build_cache_commands(settings, python_executable)
         train = minimax_h3.build_commands(settings)
+    elif mode == minimax_h3_picture.MODE:
+        cache = minimax_h3_picture.build_cache_commands(settings, python_executable)
+        train = minimax_h3_picture.build_commands(settings)
     elif mode in {"Flux.2 Klein", "Flux.2 Dev"}:
         cache = flux2.build_cache_commands(settings, python_executable)
         train = flux2.build_commands(settings)

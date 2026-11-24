@@ -30,6 +30,12 @@ def build_commands(settings):
     add_arg(cmd, "--blocks_to_swap", settings.get("blocks_to_swap"))
     for key in ("moss_unpadded_batches", "moss_text_pad_multiple", "moss_compile_checkpoint", "moss_sdpa_backend"):
         add_arg(cmd, "--" + key, settings.get(key))
+    if settings.get("moss_checkpoint_skip_blocks"):
+        add_arg(cmd, "--moss_checkpoint_skip_blocks", settings["moss_checkpoint_skip_blocks"])
+    if settings.get("moss_masked_loss"):
+        cmd.append("--moss_masked_loss")
+        add_arg(cmd, "--moss_mask_background_weight", settings["moss_mask_background_weight"])
+    add_arg(cmd, "--moss_record_sample_losses", settings.get("moss_record_sample_losses"))
     for name in ("weight_noise_sigma", "weight_noise_mode", "weight_noise_bound_norm",
                  "depth_anchor_weight", "depth_anchor_model", "depth_anchor_input_size",
                  "depth_anchor_gradient_weight", "depth_anchor_vae_device", "keep_depth_helpers_on_gpu"):
@@ -86,6 +92,17 @@ def training_options(settings):
         raise ValueError("MOSS caption padding must be a whole number from 0 to 512. Try 16, or 0 to disable.")
     if settings.get("moss_unpadded_batches") and multiple:
         raise ValueError("Unpadded MOSS image passes require Caption padding = 0.")
+    skip = float(settings.get("moss_checkpoint_skip_blocks") or 0)
+    if not math.isfinite(skip) or not 0 <= skip <= 42 or not skip.is_integer():
+        raise ValueError("MOSS retained activation blocks must be a whole number between 0 and 42.")
+    if skip and not settings.get("gradient_checkpointing"):
+        raise ValueError("Enable gradient checkpointing to retain activations for selected MOSS blocks.")
+    result["moss_checkpoint_skip_blocks"] = int(skip)
+    if result.get("moss_masked_loss"):
+        background = number_value(result, "moss_mask_background_weight", 0.1)
+        if not 0 <= background <= 1:
+            raise ValueError("MOSS mask background weight must be between 0 and 1.")
+        result["moss_mask_background_weight"] = background
     if settings.get("moss_fast_lora") and str(settings.get("network_type", "LoRA")).lower() != "lora":
         raise ValueError("Fast MOSS LoRA compute supports plain LoRA. Turn it off to use LoKr/LoHa.")
     if settings.get("moss_fast_lora") and (settings.get("full_bf16") or settings.get("full_fp16")):

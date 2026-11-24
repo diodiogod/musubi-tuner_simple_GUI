@@ -2,8 +2,8 @@
 
 Fizgig and OneTrainer reserve ``photo-masklabel.png`` for photo's loss mask.
 Do not guess from the word "mask": photos such as ``person_with_mask.jpg``
-remain ordinary training images. This only excludes sidecars; it does not
-enable masked-loss training or delete any files.
+remain ordinary training images. MOSS can opt in to reading the excluded
+sidecars as loss masks.
 """
 from pathlib import Path
 

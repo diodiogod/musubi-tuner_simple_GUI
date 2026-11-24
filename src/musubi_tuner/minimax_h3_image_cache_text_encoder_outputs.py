@@ -10,7 +10,9 @@ from safetensors import safe_open
 
 import musubi_tuner.cache_text_encoder_outputs as cache_text_encoder_outputs
 from musubi_tuner.dataset import config_utils
-from musubi_tuner.dataset.architectures import ARCHITECTURE_MINIMAX_H3
+from musubi_tuner.dataset.architectures import (
+    ARCHITECTURE_MINIMAX_H3, ARCHITECTURE_MINIMAX_H3_PICTURE, ARCHITECTURE_MINIMAX_H3_PICTURE_FULL,
+)
 from musubi_tuner.dataset.cache_io import save_text_encoder_output_cache_minimax_h3_image
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
 from musubi_tuner.dataset.image_video_dataset import ItemInfo
@@ -56,6 +58,8 @@ def is_valid_minimax_h3_text_cache(
     cache_dtype: str = "float32",
     require_unconditional: bool = False,
     require_teacher: bool = False,
+    *,
+    picture_model=False,
 ) -> bool:
     """Accept caption-matching caches produced by the corrected Comfy-style tower."""
     path = str(getattr(item, "text_encoder_output_cache_path", "") or "")
@@ -64,6 +68,8 @@ def is_valid_minimax_h3_text_cache(
     try:
         with safe_open(path, framework="pt", device="cpu") as cache:
             metadata = cache.metadata() or {}
+            if picture_model and metadata.get("architecture") != ARCHITECTURE_MINIMAX_H3_PICTURE_FULL:
+                return False
             keys = list(cache.keys())
             if metadata.get("caption1", "") != str(getattr(item, "caption", "") or ""):
                 return False
@@ -98,6 +104,8 @@ def encode_and_save_batch(
     teacher_encoder=None,
     teacher_processor=None,
     teacher_conditions: str | None = None,
+    *,
+    picture_model=False,
 ) -> None:
     use_dop = bool(dop_trigger_word or dop_class_word)
     signature = None
@@ -106,7 +114,8 @@ def encode_and_save_batch(
         signature = dop_signature(dop_trigger_word, dop_class_word)
     for item in batch:
         logger.info("Encoding MiniMax-H3 caption for %s", item.item_key)
-        hidden_states = encoder.encode(item.caption)[0].to(dtype=cache_dtype)
+        options = {"max_length": 4096} if picture_model else {}
+        hidden_states = encoder.encode(item.caption, **options)[0].to(dtype=cache_dtype)
         teacher_hidden_states = teacher_token_tags = None
         if teacher_encoder is not None:
             if teacher_conditions == "subject_ref":
@@ -156,10 +165,12 @@ def encode_and_save_batch(
             unconditional_hidden_states,
             teacher_hidden_states,
             teacher_token_tags,
+            picture_model=picture_model,
         )
 
 
 def setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument("--h3_picture_model", action="store_true", help="use the dedicated MiniMax H3 Image caption cache format")
     parser.add_argument(
         "--text_encoder",
         required=True,
@@ -221,10 +232,17 @@ def main() -> None:
     blueprint = BlueprintGenerator(ConfigSanitizer()).generate(
         config_utils.load_user_config(args.dataset_config),
         args,
-        architecture=ARCHITECTURE_MINIMAX_H3,
+        architecture=ARCHITECTURE_MINIMAX_H3_PICTURE if args.h3_picture_model else ARCHITECTURE_MINIMAX_H3,
     )
     group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group)
     datasets = group.datasets
+    if args.h3_picture_model:
+        from musubi_tuner.dataset.image_video_dataset import ImageDataset
+
+        if args.teacher_conditions or args.cache_h3_unconditional or args.dop_trigger_word or args.dop_class_word or any(
+            not isinstance(ds, ImageDataset) or ds.has_control for ds in datasets
+        ):
+            raise ValueError("MiniMax H3 Image currently caches captions for text-to-image LoRA training.")
     all_cache_files, all_cache_paths = cache_text_encoder_outputs.prepare_cache_files_and_paths(datasets)
 
     teacher_encoder = teacher_processor = None
@@ -272,6 +290,7 @@ def main() -> None:
             teacher_encoder,
             teacher_processor,
             args.teacher_conditions,
+            picture_model=args.h3_picture_model,
         )
 
     # Precision is part of the cache contract so changing the UI option rebuilds only
@@ -279,6 +298,7 @@ def main() -> None:
     cache_validator = lambda item: is_valid_minimax_h3_text_cache(
         item, args.dop_trigger_word, args.dop_class_word, args.cache_dtype, args.cache_h3_unconditional,
         bool(args.teacher_conditions),
+        picture_model=args.h3_picture_model,
     )
 
     cache_text_encoder_outputs.process_text_encoder_batches(

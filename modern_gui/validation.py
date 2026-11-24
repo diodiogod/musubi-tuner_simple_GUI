@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backends import image_masks, minimax_h3_picture
+
 import re
 import math
 
@@ -27,6 +29,11 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
             error(key, f"{label} is required.")
 
     mode = settings.get("training_mode", "Wan 2.2")
+    if settings.get("image_masked_loss") and image_masks.supported(settings):
+        try:
+            image_masks.background_weight(settings)
+        except ValueError as exc:
+            error("image_mask_background_weight", str(exc))
     if mode == "MOSS-Image (Experimental)":
         from backends.moss_image import training_options
         from backends.moss_settings import timestep_schedule
@@ -69,10 +76,19 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
     h3_multimodal = mode == "MiniMax H3 (Experimental)" and str(
         settings.get("minimax_h3_training_workflow") or ""
     ).startswith("Video")
-    if not h3_multimodal:
+    if not h3_multimodal and mode != minimax_h3_picture.MODE:
         require("vae_model", "VAE model")
 
-    if mode == "Wan 2.2":
+    if mode == minimax_h3_picture.MODE:
+        for key, (label, _) in minimax_h3_picture.MODEL_FIELDS.items():
+            value = str(settings.get(key) or "").strip()
+            if key != "minimax_h3_picture_assistant":
+                require(key, label)
+            if value and (Path(value).suffix.lower() != ".safetensors" or not Path(value).expanduser().is_file()):
+                error(key, f"Choose an existing .safetensors file for {label}.")
+        if settings.get("network_type") not in {None, "", "LoRA"}:
+            error("network_type", "MiniMax H3 Image supports LoRA training.")
+    elif mode == "Wan 2.2":
         if not settings.get("train_low_noise") and not settings.get("train_high_noise"):
             error("train_low_noise", "Enable at least one Wan noise model.")
         if settings.get("train_low_noise"):
@@ -502,7 +518,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
         warning("max_train_steps", "Both limits are set; the epoch limit takes precedence. Clear epochs to train by steps.")
 
     h3_multimodal = mode == "MiniMax H3 (Experimental)" and str(settings.get("minimax_h3_training_workflow") or "").startswith("Video")
-    if settings.get("dop_enabled") and not h3_multimodal:
+    if settings.get("dop_enabled") and not h3_multimodal and mode != minimax_h3_picture.MODE:
         if mode not in {"Krea 2", "Flux.2 Klein", "MiniMax H3 (Experimental)", "MOSS-Image (Experimental)"}:
             error("dop_enabled", "DOP is supported for Krea 2, FLUX.2 Klein, experimental MiniMax H3, and experimental MOSS-Image.")
         try:
@@ -615,7 +631,7 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
 
     for message in validate_sample_prompts(settings):
         error("sample_prompts_data", message)
-    if mode == "MiniMax H3 (Experimental)":
+    if mode in {"MiniMax H3 (Experimental)", minimax_h3_picture.MODE}:
         for index, prompt in enumerate(enabled_sample_prompts(settings), start=1):
             label = f"Sample prompt {index}"
             if str(prompt.get("neg") or "").strip():
@@ -630,9 +646,9 @@ def validate_training_settings(settings: dict[str, Any]) -> dict[str, list[dict[
                 continue  # The generic prompt validator reports the malformed field.
             if guidance != 1.0 or cfg_scale != 1.0:
                 error("sample_prompts_data", f"{label} must keep MiniMax H3 guidance and CFG at 1.0.")
-            if frames != 1 and (frames < 5 or (frames - 5) % 17):
+            if mode != minimax_h3_picture.MODE and frames != 1 and (frames < 5 or (frames - 5) % 17):
                 error("sample_prompts_data", f"{label} frames must be 1 or MiniMax H3 video lengths 5, 22, 39, ...")
-            elif frames != 1:
+            elif mode != minimax_h3_picture.MODE and frames != 1:
                 five_frame_scheduled = (
                     str(settings.get("minimax_h3_training_preview_mode") or "Five-frame video (recommended)").strip().lower()
                     in {"five_frame", "five-frame video (experimental)", "five-frame video (recommended)"}
